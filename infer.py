@@ -8,76 +8,96 @@ from axonn.lightning import AxonnStrategy
 from model import get_model
 from transformers import AutoTokenizer
 import torch
+import torch.distributed as dist
+import time
 
-
+def print_rank0(msg):
+    if dist.get_rank() == 0:
+        print(f"{msg}")
 
 def init_everything(num_nodes=1, dtype="bf16-mixed"):
     torch.distributed.init_process_group(backend="nccl")
     world_size = torch.distributed.get_world_size()
-    assert world_size == 1, "does not support tensor parallelism yet"
-    assert num_nodes == 1, "does not support multi-node yet"
+    strategy = AxonnStrategy(
+            G_intra_r=world_size,
+            G_intra_c=1,
+            G_intra_d=1,
+            overlap_communication=True,
+            enable_timers=False,
+        )
     fabric = Fabric(
         accelerator="gpu",
-        devices=1,
+        devices=torch.cuda.device_count(),
         num_nodes=num_nodes,
         precision=dtype,
+        strategy=strategy,
     )
     fabric.launch()
+    # this is very important to ensure that the same token is sampled on each TP rank!
+    seed_everything(1234)
     return fabric
+
+@torch.no_grad()
+def prefill(model, tokens):
+    # Forward pass through the model
+    input_pos = torch.arange(0, tokens.size(0), device="cuda", dtype=torch.int64)
+    logits = model(tokens.view(1, -1), input_pos)["logits"]
+    token_id = torch.distributions.Categorical(logits=logits[0, -1]).sample()
+    return token_id
+    
+@torch.no_grad()
+def generate(model, tokens, input_pos):
+    # Forward pass through the model
+    logits = model(tokens.view(1, -1), input_pos)["logits"]
+    token_id = torch.distributions.Categorical(logits=logits[0, -1]).sample()
+    input_pos.add_(1)
+    return token_id
 
 if __name__ == "__main__":
     # Assuming model and fabric setup functions exist as init_everything() and get_model()
     fabric = init_everything()
-    model_id = "meta-llama/Llama-2-7b-hf"
+    model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
     model = get_model(
         model_id,
         fabric,
         litgpt_checkpoint_directory=f"./external/checkpoints/{model_id}"
     )
-    model.max_seq_length = 256  # arbitrary sequence length
-
+   
+    
     # Initialize prompt and tokenizer
-    prompt = "High Performance Computing is"
+    prompt = "You are a helpful chatbot. Answer the following question.\nHow to bake a cake?"
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     tokens = tokenizer(prompt, return_tensors="pt")["input_ids"].squeeze().cuda()
-    tokens_to_gen = 16
-    prefill_token = True
-    prompt_size = tokens.size(0)
+    tokens_to_gen = 256
 
     # Print the initial prompt details
-    print(f"Initial prompt: '{prompt}'")
-    print(f"Tokenized prompt (IDs): {tokens.tolist()}")
-    print(f"Prompt size: {prompt_size}")
+    print_rank0(f"Initial prompt: '{prompt}'")
+    #print(f"Tokenized prompt (IDs): {tokens.tolist()}")
 
     # Setup input position and model's KV cache for fast generation
-    input_pos = torch.arange(0, prompt_size, device="cuda", dtype=torch.int64)
     model.set_kv_cache(batch_size=1, device='cuda', dtype=torch.bfloat16)
 
     # Generation loop
     output_tokens = []
-    print("\nStarting token generation:")
+    #print("\nStarting token generation:")
+    start = time.time()
     with torch.no_grad():
         for step in range(tokens_to_gen):
-            # Forward pass through the model
-            logits = model(tokens.view(1, -1), input_pos)["logits"]
-            token_id = torch.distributions.Categorical(logits=logits[0, -1]).sample()
-            
-            # Append token to output and log details
-            output_tokens.append(token_id.item())
-            print(f"Step {step + 1}: Generated token ID {token_id.item()}, "
-                  f"Text: '{tokenizer.decode([token_id])}'")
-
-            # Update `tokens` and `input_pos` for the next step
-            if prefill_token:
-                prefill_token = False
-                input_pos = torch.tensor([prompt_size], device="cuda", dtype=torch.int64)
+            if step == 0: # prefill
+                next_token = prefill(model, tokens)
+                input_pos = torch.tensor([tokens.size(0)], device="cuda", dtype=torch.int64)
             else:
-                input_pos.add_(1)
-            tokens = token_id
-
+                next_token = generate(model, tokens, input_pos)
+            # Append token to output and log details
+            output_tokens.append(next_token.item())
+            tokens = next_token
+    end = time.time()
+    time_taken = end - start
     # Decode and display the final generated output
     generated_text = tokenizer.decode(output_tokens)
-    print("\nGenerated text:\n" + "-" * 40)
-    print(generated_text)
-    print("-" * 40)
+    print_rank0("\nGenerated text:\n" + "-" * 40)
+    print_rank0(generated_text)
+    print_rank0("-" * 40)
 
+    tokens_per_second = len(output_tokens) / time_taken
+    print_rank0(f"Output {tokens_per_second} tok/s") 
