@@ -206,14 +206,17 @@ class TPLinear(torch.nn.Module):
         dist.all_reduce(x, group=self.inner_group)    
         return x
     
+    def matmul(self, w, x):
+        return F.linear(x, w)
+
+    @torch.compiler.disable(recursive=False)
     def forward(
         self,
         x,
         cache_weights_in_all_gather=False,
     ):
-        weight = self.weight
 
-        x = F.linear(x, weight)
+        x = self.matmul(self.weight, x)
         x = self.all_reduce(x)
 
         if self.bias is None:

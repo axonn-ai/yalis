@@ -42,15 +42,16 @@ def prefill(model, tokens):
     # Forward pass through the model
     input_pos = torch.arange(0, tokens.size(0), device="cuda", dtype=torch.int64)
     logits = model(tokens.view(1, -1), input_pos)["logits"]
-    token_id = torch.distributions.Categorical(logits=logits[0, -1]).sample()
+    #token_id = torch.distributions.Categorical(logits=logits[0, -1]).sample()
+    token_id = torch.argmax(logits[0, -1])
     return token_id
     
 @torch.no_grad()
 def generate(model, tokens, input_pos):
     # Forward pass through the model
     logits = model(tokens.view(1, -1), input_pos)["logits"]
-    token_id = torch.distributions.Categorical(logits=logits[0, -1]).sample()
-    input_pos.add_(1)
+    #token_id = torch.distributions.Categorical(logits=logits[0, -1]).sample()
+    token_id = torch.argmax(logits[0, -1])
     return token_id
 
 if __name__ == "__main__":
@@ -61,13 +62,13 @@ if __name__ == "__main__":
         model_id,
         fabric,
         litgpt_checkpoint_directory=f"./external/checkpoints/{model_id}"
-    )
-   
-    
+    ).cuda()
+
+
     # Initialize prompt and tokenizer
     prompt = "You are a helpful chatbot. Answer the following question.\nHow to bake a cake?"
     tokenizer = AutoTokenizer.from_pretrained(model_id)
-    tokens = tokenizer(prompt, return_tensors="pt")["input_ids"].squeeze().cuda()
+    prompt_tokens = tokenizer(prompt, return_tensors="pt")["input_ids"].squeeze().cuda()
     tokens_to_gen = 256
 
     # Print the initial prompt details
@@ -78,26 +79,30 @@ if __name__ == "__main__":
     model.set_kv_cache(batch_size=1, device='cuda', dtype=torch.bfloat16)
 
     # Generation loop
-    output_tokens = []
     #print("\nStarting token generation:")
-    start = time.time()
-    with torch.no_grad():
-        for step in range(tokens_to_gen):
-            if step == 0: # prefill
-                next_token = prefill(model, tokens)
-                input_pos = torch.tensor([tokens.size(0)], device="cuda", dtype=torch.int64)
-            else:
-                next_token = generate(model, tokens, input_pos)
-            # Append token to output and log details
-            output_tokens.append(next_token.item())
-            tokens = next_token
-    end = time.time()
-    time_taken = end - start
-    # Decode and display the final generated output
-    generated_text = tokenizer.decode(output_tokens)
-    print_rank0("\nGenerated text:\n" + "-" * 40)
-    print_rank0(generated_text)
-    print_rank0("-" * 40)
+    for TRIAL in range(10):
+        start = time.time()
+        tokens = prompt_tokens
+        output_tokens = []
+        with torch.no_grad():
+            for step in range(tokens_to_gen):
+                if step == 0: # prefill
+                    next_token = prefill(model, tokens)
+                    input_pos = torch.tensor([tokens.size(0)], device="cuda", dtype=torch.int64)
+                else:
+                    next_token = generate(model, tokens, input_pos)
+                    input_pos.add_(1)
+                # Append token to output and log details
+                output_tokens.append(next_token.item())
+                tokens = next_token.clone()
+        end = time.time()
+        time_taken = end - start
+        # Decode and display the final generated output
+        generated_text = tokenizer.decode(output_tokens)
+        if TRIAL == 0:
+            print_rank0("\nGenerated text:\n" + "-" * 40)
+            print_rank0(generated_text)
+            print_rank0("-" * 40)
 
-    tokens_per_second = len(output_tokens) / time_taken
-    print_rank0(f"Output {tokens_per_second} tok/s") 
+        tokens_per_second = len(output_tokens) / time_taken
+        print_rank0(f"Output {tokens_per_second} tok/s") 
