@@ -17,9 +17,14 @@ from litgpt.config import Config
 import sys
 
 from torch.utils import checkpoint
+from .tensor_parallel import TPLinear
+from copy import deepcopy
+from axonn import axonn as ax
+from axonn.intra_layer.communication import Drop, Gather
+
 
 class GPT(nn.Module):
-    def __init__(self, config: Config, gradient_checkpointing=False)-> None:
+    def __init__(self, config: Config)-> None:
         super().__init__()
         assert config.padded_vocab_size is not None
         self.config = config
@@ -34,7 +39,6 @@ class GPT(nn.Module):
         )
         self.max_seq_length = self.config.block_size
         self.mask_cache: Optional[torch.Tensor] = None
-        self.gradient_checkpointing = gradient_checkpointing
 
     @property
     def max_seq_length(self) -> int:
@@ -99,12 +103,10 @@ class GPT(nn.Module):
         x = self.transformer.wte(idx)  # token embeddings of shape (b, t, n_embd)
         if self.config.scale_embeddings:
             x = x * torch.tensor(self.config.n_embd**0.5, dtype=x.dtype)
-
+        x = Drop.apply(x, ax.comm_handle.inner_intra_layer_parallel_group)
         for block in self.transformer.h:
-            if self.gradient_checkpointing:
-                x = checkpoint.checkpoint(block, x, cos, sin, mask, input_pos)
-            else:
-                x = block(x, cos, sin, mask, input_pos)
+            x = block(x, cos, sin, mask, input_pos)
+        x = Gather.apply(x, ax.comm_handle.inner_intra_layer_parallel_group)
         x = self.transformer.ln_f(x)
         x = self.lm_head(x)  # (b, t, vocab_size)
         if self.config.final_logit_softcapping is not None:
@@ -253,10 +255,17 @@ class CausalSelfAttention(nn.Module):
         super().__init__()
         shape = (config.n_head + 2 * config.n_query_groups) * config.head_size
         # key, query, value projections for all heads, but in a batch
-        self.attn = nn.Linear(config.n_embd, shape, bias=config.bias)
+        if not config.tensor_parallel:
+            self.attn = nn.Linear(config.n_embd, shape, bias=config.bias)
+        else:
+            self.attn = TPLinear(config.n_embd, shape, bias=config.bias)
+
         # output projection
         # if `head_size` is explicitly specified in the config, `n_emd` might not be equal to `head_size * n_head`
-        self.proj = nn.Linear(config.head_size * config.n_head, config.n_embd, bias=config.bias)
+        if not config.tensor_parallel:
+            self.proj = nn.Linear(config.head_size * config.n_head, config.n_embd, bias=config.bias)
+        else:
+            self.proj = TPLinear(config.head_size * config.n_head, config.n_embd, bias=config.bias, transpose=True)
         # disabled by default
         self.kv_cache: Optional[KVCache] = None
         self.apply_sliding_window_attention = (
@@ -265,6 +274,14 @@ class CausalSelfAttention(nn.Module):
         )
 
         self.config = config
+        if config.tensor_parallel:
+            self.config = deepcopy(self.config)
+            attention_world_size = ax.config.G_intra_r
+            assert self.config.n_head % attention_world_size == 0
+            self.config.n_head //= attention_world_size
+            assert self.config.n_query_groups % attention_world_size == 0
+            self.config.n_query_groups //= attention_world_size
+            
 
     def forward(
         self,
@@ -384,6 +401,7 @@ class CausalSelfAttention(nn.Module):
 class GptNeoxMLP(nn.Module):
     def __init__(self, config: Config) -> None:
         super().__init__()
+        assert not config.tensor_parallel
         self.fc = nn.Linear(config.n_embd, config.intermediate_size, bias=config.bias)
         self.proj = nn.Linear(config.intermediate_size, config.n_embd, bias=config.bias)
 
@@ -398,14 +416,18 @@ class GptNeoxMLP(nn.Module):
 class LLaMAMLP(nn.Module):
     def __init__(self, config: Config) -> None:
         super().__init__()
-        self.gate_up_proj = nn.Linear(config.n_embd, 2*config.intermediate_size, bias=config.bias)
-        self.proj = nn.Linear(config.intermediate_size, config.n_embd, bias=config.bias)
+        if not config.tensor_parallel:
+            self.gate_up_proj = nn.Linear(config.n_embd, 2*config.intermediate_size, bias=config.bias)
+            self.proj = nn.Linear(config.intermediate_size, config.n_embd, bias=config.bias)
+        else:
+            self.gate_up_proj = TPLinear(config.n_embd, 2*config.intermediate_size, bias=config.bias)
+            self.proj = TPLinear(config.intermediate_size, config.n_embd, bias=config.bias, transpose=True)
 
         self.config = config
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.gate_up_proj(x)
-        x_fc_1, x_fc_2 = torch.split(x, self.config.intermediate_size,  dim=-1)
+        x_fc_1, x_fc_2 = x[..., ::2], x[..., 1::2]
         x = torch.nn.functional.silu(x_fc_1) * x_fc_2
         return self.proj(x)
 
@@ -421,6 +443,7 @@ class GemmaMLP(LLaMAMLP):
 class LLaMAMoE(nn.Module):
     def __init__(self, config: Config) -> None:
         super().__init__()
+        assert not config.tensor_parallel
         self.gate = nn.Linear(config.n_embd, config.n_expert, bias=False)
         self.experts = nn.ModuleList(LLaMAMLP(config) for _ in range(config.n_expert))
 
@@ -494,7 +517,6 @@ def build_rope_cache(
 
     return torch.cos(idx_theta), torch.sin(idx_theta)
 
-
 def batched_index_select(t, dim, idx):
     """index_select for batched index and unbatched t"""
     if idx.dim() == 1:
@@ -511,7 +533,6 @@ def batched_index_select(t, dim, idx):
     # unflatten batch dims
     res = res.view(*batch_shape, *res.shape[1:])
     return res
-
 
 def batched_index_copy_(t, dim, idx, val):
     """Index copy for batched t, idx, val"""

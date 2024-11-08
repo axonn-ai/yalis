@@ -221,7 +221,8 @@ def copy_weights_hf_llama(
 
         gate_proj = load_param(gate_proj, f"layer {i} gate_proj", dtype, verbose=debug_mode)
         up_proj = load_param(up_proj, f"layer {i} up_proj", dtype, verbose=debug_mode)
-        gate_up_proj = torch.cat([gate_proj, up_proj])
+        #gate_up_proj = torch.cat([gate_proj, up_proj])
+        gate_up_proj = torch.stack((gate_proj, up_proj), dim=1).reshape(2 * gate_proj.size(0), -1)
         state_dict[f"transformer.h.{i}.mlp.gate_up_proj.weight"] = gate_up_proj
         del gate_up_proj_weights[i]
 
