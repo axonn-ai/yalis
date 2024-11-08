@@ -103,10 +103,12 @@ class GPT(nn.Module):
         x = self.transformer.wte(idx)  # token embeddings of shape (b, t, n_embd)
         if self.config.scale_embeddings:
             x = x * torch.tensor(self.config.n_embd**0.5, dtype=x.dtype)
-        x = Drop.apply(x, ax.comm_handle.inner_intra_layer_parallel_group)
+        if self.config.tensor_parallel:
+            x = Drop.apply(x, ax.comm_handle.inner_intra_layer_parallel_group)
         for block in self.transformer.h:
             x = block(x, cos, sin, mask, input_pos)
-        x = Gather.apply(x, ax.comm_handle.inner_intra_layer_parallel_group)
+        if self.config.tensor_parallel:
+            x = Gather.apply(x, ax.comm_handle.inner_intra_layer_parallel_group)
         x = self.transformer.ln_f(x)
         x = self.lm_head(x)  # (b, t, vocab_size)
         if self.config.final_logit_softcapping is not None:
