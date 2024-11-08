@@ -14,8 +14,7 @@ def get_model(model_id, fabric, litgpt_checkpoint_directory, random_init=False):
     checkpoint_dir = Path(litgpt_checkpoint_directory)
     config = Config.from_file(checkpoint_dir / "model_config.yaml")
     config.tensor_parallel = tensor_parallel
-    model = GPT(config)
-    model = fabric.setup_module(model)
+    model = GPT(config).to(torch.bfloat16)
     if not random_init:
         checkpoint_path = checkpoint_dir / "lit_model.pth"
         load_checkpoint(fabric, model, checkpoint_path)
