@@ -201,7 +201,6 @@ class TPLinear(torch.nn.Module):
         self._old_state_dict = self.state_dict
         self.state_dict = self._modified_state_dict
 
-    #@torch.compiler.disable(recursive=True)
     def all_reduce(self, x):
         dist.all_reduce(x, group=self.inner_group)    
         return x
@@ -209,7 +208,6 @@ class TPLinear(torch.nn.Module):
     def matmul(self, w, x):
         return F.linear(x, w)
 
-    #@torch.compiler.disable(recursive=False)
     def forward(
         self,
         x,
