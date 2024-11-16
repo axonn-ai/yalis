@@ -50,7 +50,6 @@ def prefill(model, tokens):
     # Forward pass through the model
     input_pos = torch.arange(0, tokens.size(0), device="cuda", dtype=torch.int64)
     logits = model(tokens.view(1, -1), input_pos)["logits"]
-    #token_id = torch.distributions.Categorical(logits=logits[0, -1]).sample()
     token_id = torch.argmax(logits[0, -1])
     return token_id
     
@@ -58,9 +57,21 @@ def prefill(model, tokens):
 def generate(model, tokens, input_pos):
     # Forward pass through the model
     logits = model(tokens.view(1, -1), input_pos)["logits"]
-    #token_id = torch.distributions.Categorical(logits=logits[0, -1]).sample()
     token_id = torch.argmax(logits[0, -1])
     return token_id
+
+def compiled_fns():
+    #torch._dynamo.config.automatic_dynamic_shapes = True
+    #torch._inductor.config.triton.unique_kernel_names = True
+    #torch._inductor.config.coordinate_descent_tuning = True
+    #https://github.com/pytorch/pytorch/blob/347f96061f1cff603983b9be19ec92b374329a5b/benchmarks/gpt_fast/generate.py#L19
+    torch._inductor.config.coordinate_descent_tuning = True
+    torch._inductor.config.triton.unique_kernel_names = True
+    torch._inductor.config.fx_graph_cache = True  # Experimental feature to reduce compilation times, will be on by default in future
+    torch._inductor.config.assert_indirect_indexing = False
+    prefill_compiled = torch.compile(prefill, fullgraph=True)
+    generate_compiled = torch.compile(generate, fullgraph=True, mode="reduce-overhead")
+    return prefill_compiled, generate_compiled
 
 if __name__ == "__main__":
     # Assuming model and fabric setup functions exist as init_everything() and get_model()
@@ -71,6 +82,8 @@ if __name__ == "__main__":
         fabric,
         litgpt_checkpoint_directory=f"./external/checkpoints/{model_id}"
     ).cuda()
+
+    prefill_fn, generate_fn = compiled_fns()
 
 
     # Initialize prompt and tokenizer
@@ -90,23 +103,25 @@ if __name__ == "__main__":
     #print("\nStarting token generation:")
     for TRIAL in range(10):
         start = time.time()
-        tokens = prompt_tokens
         output_tokens = []
-        with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16, cache_enabled=True):
+        with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16, cache_enabled=False):
             for step in range(tokens_to_gen):
                 if step == 0: # prefill
-                    next_token = prefill(model, tokens)
-                    input_pos = torch.tensor([tokens.size(0)], device="cuda", dtype=torch.int64)
+                    next_token = prefill_fn(model, prompt_tokens)
+                    input_pos = torch.tensor([prompt_tokens.size(0)], device="cuda", dtype=torch.int64)
+                    tokens = next_token.clone()
                 else:
-                    next_token = generate(model, tokens, input_pos)
-                    input_pos.add_(1)
+                    with torch.nn.attention.sdpa_kernel(
+                                torch.nn.attention.SDPBackend.MATH):
+                        next_token = generate_fn(model, tokens, input_pos)
+                        input_pos.add_(1)
+                        tokens.copy_(next_token)
                 # Append token to output and log details
-                output_tokens.append(next_token.item())
-                tokens = next_token.clone()
+                output_tokens.append(next_token.clone())
         end = time.time()
         time_taken = end - start
         # Decode and display the final generated output
-        generated_text = tokenizer.decode(output_tokens)
+        generated_text = tokenizer.decode([x.item() for x in output_tokens])
         if TRIAL == 0:
             print_rank0("\nGenerated text:\n" + "-" * 40)
             print_rank0(generated_text)
