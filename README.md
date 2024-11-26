@@ -1,2 +1,2 @@
 # yalis
-YALIS stands for Yet Another LLM Infernce Framework. It is what it is. 
+YALIS stands for Yet Another LLM Inference Framework. It is what it is. 
