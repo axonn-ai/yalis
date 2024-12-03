@@ -45,6 +45,7 @@ def init_everything(dtype="bf16-mixed"):
     seed_everything(1234)
     return fabric
 
+
 @torch.no_grad()
 def prefill(model, tokens):
     # Forward pass through the model
@@ -53,6 +54,7 @@ def prefill(model, tokens):
     token_id = torch.argmax(logits[0, -1])
     return token_id
     
+
 @torch.no_grad()
 def generate(model, tokens, input_pos):
     # Forward pass through the model
@@ -107,6 +109,7 @@ if __name__ == "__main__":
         with torch.no_grad(), torch.autocast("cuda", dtype=torch.bfloat16, cache_enabled=False):
             for step in range(tokens_to_gen):
                 if step == 0: # prefill
+
                     next_token = prefill_fn(model, prompt_tokens)
                     input_pos = torch.tensor([prompt_tokens.size(0)], device="cuda", dtype=torch.int64)
                     tokens = next_token.clone()

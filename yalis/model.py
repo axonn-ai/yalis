@@ -3,7 +3,7 @@ from litgpt.model import Config
 from pathlib import Path
 import sys
 from litgpt.utils import load_checkpoint
-from external.model import GPT
+from yalis.external.model import GPT
 import torch.distributed as dist
 
 
