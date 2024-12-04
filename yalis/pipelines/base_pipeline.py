@@ -15,6 +15,7 @@ def prefill(model, tokens):
     token_id = torch.argmax(logits[0, -1])
     return token_id
 
+#todo - verify does not work
 #@torch.compile(fullgraph=True)
 @torch.no_grad()
 def verify(model, tokens, target_pos):

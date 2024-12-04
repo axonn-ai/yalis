@@ -1,5 +1,5 @@
 import torch
-from .base_pipline import BasePipeline, prefill, generate
+from .base_pipeline import BasePipeline, prefill, generate
 from yalis import print_rank0
 from typing import Optional
 import time
@@ -10,7 +10,6 @@ class BasicInferencePipeline(BasePipeline):
                  tokenizer,
                  dtype,
                  device,):
-        pass
         super().__init__(device)
         self.model = model
         self.dtype = dtype

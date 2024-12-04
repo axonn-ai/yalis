@@ -1,29 +1,41 @@
-import yalis
-from yalis.pipelines import BasicInferencePipeline
+try:
+    from mpi4py import MPI
+except ImportError:
+    pass
+
+from yalis import ModelConfig, InferenceConfig, print_rank0, LLMEngine
 from transformers import AutoTokenizer
-import torch
+
 
 if __name__ == "__main__":
-    # Assuming model and fabric setup functions exist as init_everything() and get_model()
-    fabric = yalis.init_everything()
-    model_id = "meta-llama/Meta-Llama-3-70B-Instruct"
-    model = yalis.model.get_model(
-        model_id,
-        fabric,
-        litgpt_checkpoint_directory=f"../yalis/external/checkpoints/{model_id}"
-    ).cuda()
+    # Model ID from Hugging Face
+    model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
 
-    # Initialize prompt and tokenizer
+    # Input prompt for the model
     prompt = "You are a helpful chatbot. Answer the following question.\nHow to bake a cake?"
+
+    # Tokenizer for encoding the prompt
     tokenizer = AutoTokenizer.from_pretrained(model_id)
+
+    # Tokenize the input prompt
+    prompt_tokens = tokenizer(prompt, return_tensors="pt").input_ids.squeeze(0)  # Remove batch dimension
+
+    # Number of tokens to generate
     tokens_to_gen = 256
-    # Print the initial prompt details
-    yalis.print_rank0(f"Initial prompt: '{prompt}'")
-    #print(f"Tokenized prompt (IDs): {tokens.tolist()}")
+
+    # configs
+    model_config = ModelConfig(model_name=model_id, precision="bf16")
+    inference_config = InferenceConfig()
+
+    engine = LLMEngine(model_config=model_config, inference_config=inference_config)
+
+    for _ in range(10):
+        output_tokens = engine.generate(prompt_tokens)
+
+    output_tokens = output_tokens.cpu()
+
+    # Decode the token IDs into text
+    detokenized_text = tokenizer.decode(output_tokens, skip_special_tokens=True)
+    print_rank0(detokenized_text)
 
 
-    # Initialize pipeline
-    pipeline = BasicInferencePipeline(model, tokenizer, torch.bfloat16, "cuda")
-    pipeline.setup()
-
-    pipeline.run(prompt, tokens_to_gen, profile=True)
