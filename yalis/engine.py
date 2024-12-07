@@ -4,6 +4,9 @@ from .config import ModelConfig, InferenceConfig
 from .model import get_model 
 from .initialize import init_distributed
 from .utils import print_rank0
+import logging
+import torch.distributed as dist
+import torch._dynamo
 
 # These flags are taken from the following URL - 
 # https://github.com/pytorch/pytorch/blob/347f96061f1cff603983b9be19ec92b374329a5b/benchmarks/gpt_fast/generate.py#L19
@@ -18,6 +21,7 @@ precision_to_dtype = {
     "fp32" : torch.float32,
 } 
 
+@torch._dynamo.disable
 @torch.no_grad()
 @torch.compile(fullgraph=True)
 def prefill(model, tokens):
@@ -31,11 +35,14 @@ def prefill(model, tokens):
     Returns:
         token_id: The next predicted token.
     """
-    input_pos = torch.arange(0, tokens.size(0), device="cuda", dtype=torch.int64)
-    logits = model(tokens.view(1, -1), input_pos)["logits"]
-    token_id = torch.argmax(logits[0, -1])
+
+    input_pos = torch.arange(0, tokens.size(1), device= "cuda", dtype=torch.int64).unsqueeze(0).repeat(tokens.size(0),1).to("cuda")
+
+    logits = model(tokens, input_pos)["logits"]
+    token_id = torch.argmax(logits[:, -1, :], dim=1).unsqueeze(1)
     return token_id
-    
+
+@torch._dynamo.disable
 @torch.no_grad()
 @torch.compile(fullgraph=True, mode="reduce-overhead")
 def generate(model, tokens, input_pos, get_probs=False):
@@ -52,8 +59,8 @@ def generate(model, tokens, input_pos, get_probs=False):
         token_id: The next predicted token.
         logits: (Optional) The raw logits from the model.
     """
-    logits = model(tokens.view(1, -1), input_pos)["logits"]
-    token_id = torch.argmax(logits[0, -1])
+    logits = model(tokens, input_pos)["logits"]
+    token_id = torch.argmax(logits[:, -1, :], dim=1).unsqueeze(1)
     if get_probs:
         return token_id, logits
     else:
@@ -113,7 +120,7 @@ class LLMEngine:
         Returns:
             output_tokens (List[Tensor]): List of generated token IDs.
         """
-        output_tokens = []
+        output_tokens = [[] for _ in range(input_tokens.size(0))]
         # Start timing the operation
         start = torch.cuda.Event(enable_timing=True)
         end = torch.cuda.Event(enable_timing=True)
@@ -121,11 +128,10 @@ class LLMEngine:
 
         with torch.no_grad(), torch.autocast(self.device, dtype=self.dtype, cache_enabled=False):
             tokens = input_tokens.clone().to(self.device)  # Move prompt tokens to the device
-
             for step in range(tokens_to_generate):
                 if step == 0:  # Prefill step
                     next_token = prefill(self.model, tokens)  # Call prefill function
-                    input_pos = torch.tensor([tokens.size(0)], device=self.device, dtype=torch.int64)
+                    input_pos = torch.tensor([tokens.size(1)], device=self.device, dtype=torch.int64).repeat(tokens.size(0), 1)
                     tokens = next_token.clone()
                 else:  # Generation step
                     with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
@@ -134,7 +140,8 @@ class LLMEngine:
                         tokens.copy_(next_token)  # Copy the new token into tokens
 
                 # Append the generated token to output
-                output_tokens.append(next_token.clone())
+                for prompt_no, new_token in enumerate(next_token):
+                    output_tokens[prompt_no].append(new_token.clone())
 
         # End timing and calculate elapsed time
         end.record()

@@ -61,6 +61,7 @@ class ModelConfig:
             raise ValueError("Either 'model_name' or 'model_path' must be provided.")
 
         if self.precision not in {"fp32", "fp16", "bf16"}:
+
             raise ValueError(f"Invalid precision: {self.precision}. Supported values are 'fp32', 'fp16', 'bf16'.")
 
     def __repr__(self):
