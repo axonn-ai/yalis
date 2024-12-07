@@ -18,7 +18,7 @@ if __name__ == "__main__":
         ]
 
     # Tokenizer for encoding the prompt
-    tokenizer = AutoTokenizer.from_pretrained(model_id, use_auth_token="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")
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
 
     # Tokenize the input prompt
     prompt_tokens = tokenizer(prompt, return_tensors="pt").input_ids  # Remove batch dimension
