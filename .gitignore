@@ -1,0 +1,7 @@
+__pycache__/
+
+external/
+
+*.sh
+
+yalis/external/checkpoints/
