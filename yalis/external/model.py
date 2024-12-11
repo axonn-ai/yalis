@@ -530,7 +530,8 @@ def batched_index_select(t, dim, idx):
     res = res.view(*t.shape[:dim], -1, idx_size, *t.shape[dim + 1 :])
     # move batch dim to front, this is np.rollaxis(res, dim, 0) for tensors
     dims = [dim] + list(range(res.dim()))
-    del dims[dim + 1]
+    #del dims[dim + 1]
+    dims = dims[:dim + 1] + dims[dim + 2:]
     res = res.permute(dims)
     # unflatten batch dims
     res = res.view(*batch_shape, *res.shape[1:])

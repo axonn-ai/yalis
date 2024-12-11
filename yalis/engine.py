@@ -21,7 +21,7 @@ precision_to_dtype = {
     "fp32" : torch.float32,
 } 
 
-@torch._dynamo.disable
+#@torch._dynamo.disable
 @torch.no_grad()
 @torch.compile(fullgraph=True)
 def prefill(model, tokens):
@@ -42,7 +42,7 @@ def prefill(model, tokens):
     token_id = torch.argmax(logits[:, -1, :], dim=1).unsqueeze(1)
     return token_id
 
-@torch._dynamo.disable
+#@torch._dynamo.disable
 @torch.no_grad()
 @torch.compile(fullgraph=True, mode="reduce-overhead")
 def generate(model, tokens, input_pos, get_probs=False):
