@@ -19,7 +19,7 @@ precision_to_dtype = {
 } 
 
 @torch.no_grad()
-@torch.compile(fullgraph=True)
+#@torch.compile(fullgraph=True)
 def prefill(model, tokens):
     """
     Prefill function for generating the first token.
@@ -37,7 +37,7 @@ def prefill(model, tokens):
     return token_id
     
 @torch.no_grad()
-@torch.compile(fullgraph=True, mode="reduce-overhead")
+#@torch.compile(fullgraph=True, mode="reduce-overhead")
 def generate(model, tokens, input_pos, get_probs=False):
     """
     Generate function for producing the next token(s).
@@ -83,6 +83,7 @@ class LLMEngine:
         self.fabric = init_distributed()
         self.device = device
         self.dtype = precision_to_dtype[self.model_config.precision]
+        self.generate_cuda_graph = None
         self._initialize_model()
 
     def _initialize_model(self):
@@ -120,21 +121,44 @@ class LLMEngine:
         start.record()
 
         with torch.no_grad(), torch.autocast(self.device, dtype=self.dtype, cache_enabled=False):
-            tokens = input_tokens.clone().to(self.device)  # Move prompt tokens to the device
+            prompt_tokens = input_tokens.clone().to(self.device)  # Move prompt tokens to the device
 
             for step in range(tokens_to_generate):
                 if step == 0:  # Prefill step
-                    next_token = prefill(self.model, tokens)  # Call prefill function
-                    input_pos = torch.tensor([tokens.size(0)], device=self.device, dtype=torch.int64)
-                    tokens = next_token.clone()
+                    next_token = prefill(self.model, prompt_tokens)  # Call prefill function
+                    input_pos = torch.tensor([prompt_tokens.size(0)], device=self.device, dtype=torch.int64)
+                    generate_input_tokens = next_token.clone()
+                    generate_output_tokens = next_token.clone()
                 else:  # Generation step
                     with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
-                        next_token = generate(self.model, tokens, input_pos)  # Call generate function
-                        input_pos.add_(1)  # Increment position
-                        tokens.copy_(next_token)  # Copy the new token into tokens
+                        if self.generate_cuda_graph is None:
+                            print("Recording CUDA graph for generate")
+                            s = torch.cuda.Stream()
+                            s.wait_stream(torch.cuda.current_stream())
+                            print("Warming up")
+                            with torch.cuda.stream(s):
+                                for _ in range(3):
+                                    next_token = generate(self.model, generate_input_tokens, input_pos)  # Call generate function
+                                    generate_output_tokens.copy_(next_token)                            
+
+                            torch.cuda.current_stream().wait_stream(s)
+                            graphed_model = torch.cuda.CUDAGraph()
+                            print("Storing ops in CUDA graph")
+                            with torch.cuda.graph(graphed_model):
+                                next_token = generate(self.model, generate_input_tokens, input_pos)
+                                generate_output_tokens.copy_(next_token)
+                            print("Done creating CUDA graph")
+                            input_pos.add_(1)  # Increment position
+                            generate_input_tokens.copy_(generate_output_tokens)  # Copy the new token into tokens
+                            self.generate_cuda_graph = graphed_model
+                        else:
+                            self.generate_cuda_graph.replay()
+                            input_pos.add_(1)  # Increment position
+                            generate_input_tokens.copy_(generate_output_tokens)  # Copy the new token into tokens
+
 
                 # Append the generated token to output
-                output_tokens.append(next_token.clone())
+                output_tokens.append(generate_output_tokens.clone())
 
         # End timing and calculate elapsed time
         end.record()

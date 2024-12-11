@@ -20,9 +20,6 @@ if __name__ == "__main__":
     # Tokenize the input prompt
     prompt_tokens = tokenizer(prompt, return_tensors="pt").input_ids.squeeze(0)  # Remove batch dimension
 
-    # Number of tokens to generate
-    tokens_to_gen = 256
-
     # configs
     model_config = ModelConfig(model_name=model_id, precision="bf16")
     inference_config = InferenceConfig()
@@ -30,7 +27,7 @@ if __name__ == "__main__":
     engine = LLMEngine(model_config=model_config, inference_config=inference_config)
 
     for _ in range(10):
-        output_tokens = engine.generate(prompt_tokens)
+        output_tokens = engine.generate(prompt_tokens, tokens_to_generate=256)
 
     output_tokens = output_tokens.cpu()
 
