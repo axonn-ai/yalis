@@ -147,7 +147,7 @@ class LLMEngine:
         end.record()
         torch.cuda.synchronize()  # Wait for all events to finish
         time_taken = start.elapsed_time(end) / 1000  # Time in seconds
-        tput = len(output_tokens) / time_taken
+        tput = sum([len(o) for o in output_tokens]) / time_taken
         #print(f"Generation took {time_taken:.2f} seconds.")
         print_rank0(f"Throughput = {tput:.2f} tok/s")
 

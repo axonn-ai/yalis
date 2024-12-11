@@ -31,7 +31,6 @@ def init_distributed():
             accelerator="gpu",
             devices=1,
             num_nodes=1,
-            precision=dtype,
         )
     fabric.launch()
     # this is very important to ensure that the same token is sampled on each TP rank!
