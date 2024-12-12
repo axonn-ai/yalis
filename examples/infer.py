@@ -41,10 +41,7 @@ if __name__ == "__main__":
     # detokenized_texts = [tokenizer.decode(output_tokens_for_prompt, skip_special_tokens=True) for output_tokens_for_prompt in output_tokens]
 
     for prompt, output in zip(prompts, detokenized_text):
-        print(f"prompt = {prompt}")
-        print(f"output = {output}")
-        print("==========================\n\n")
-
-
-
+        print_rank0(f"prompt = {prompt}")
+        print_rank0(f"output = {output}")
+        print_rank0("==========================\n\n")
 

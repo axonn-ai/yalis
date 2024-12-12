@@ -291,10 +291,10 @@ class CausalSelfAttention(nn.Module):
         q_per_kv = self.config.n_head // self.config.n_query_groups
         total_qkv = q_per_kv + 2  # each group has 1+ queries, 1 key, and 1 value
         qkv = qkv.view(B, T, self.config.n_query_groups, total_qkv, self.config.head_size)
-        qkv = qkv.permute(0, 2, 3, 1, 4)  # (B, n_query_groups, total_qkv, T, hs)
+        #qkv = qkv.permute(0, 2, 3, 1, 4)  # (B, n_query_groups, total_qkv, T, hs)
 
         # split batched computation into three
-        q, k, v = qkv.split((q_per_kv, 1, 1), dim=2)
+        q, k, v = qkv.split((q_per_kv, 1, 1), dim=3)
 
         # maybe repeat k and v if for the non multi-head attention cases
         # training: flash attention requires it
@@ -302,13 +302,13 @@ class CausalSelfAttention(nn.Module):
        
         #print(q_per_kv, self.config.n_head, self.config.n_query_groups) 
         #assert self.config.n_query_groups == self.config.n_head, "GQA not tested yet"
-        if self.config.n_query_groups != self.config.n_head:
-            k = k.expand(B, self.config.n_query_groups, q_per_kv, T, self.config.head_size)
-            v = v.expand(B, self.config.n_query_groups, q_per_kv, T, self.config.head_size)
+        #if self.config.n_query_groups != self.config.n_head:
+        #    k = k.expand(B, self.config.n_query_groups, q_per_kv, T, self.config.head_size)
+        #    v = v.expand(B, self.config.n_query_groups, q_per_kv, T, self.config.head_size)
 
-        q = q.reshape(B, -1, T, self.config.head_size).transpose(1, 2).contiguous()  # (B, nh_q, T, hs)
-        k = k.reshape(B, -1, T, self.config.head_size).transpose(1, 2).contiguous()  # (B, nh_k, T, hs)
-        v = v.reshape(B, -1, T, self.config.head_size).transpose(1, 2).contiguous()  # (B, nh_v, T, hs)
+        q = q.reshape(B, T, -1, self.config.head_size).contiguous()  # (B, T, nh_q, hs)
+        k = k.reshape(B, T, -1, self.config.head_size).contiguous()  # (B, T, nh_k, hs)
+        v = v.reshape(B, T, -1, self.config.head_size).contiguous()  # (B, T, nh_v, hs)
         
         assert self.config.rope_n_elem == self.config.head_size, "partial rope is not supported yet"
 
@@ -318,7 +318,6 @@ class CausalSelfAttention(nn.Module):
         #k = torch.cat((k_roped, k[..., self.config.rope_n_elem :]), dim=-1)
 
         k_cache, v_cache = self.kv_cache.k, self.kv_cache.v
-        #print(k_cache.shape, v_cache.shape, k.shape, v.shape)
 
         if self.apply_sliding_window_attention:
             raise NotImplementedError
@@ -370,7 +369,8 @@ class CausalSelfAttention(nn.Module):
         device: Optional[torch.device] = None,
         dtype: Optional[torch.dtype] = None,
     ) -> "KVCache":
-        heads = 1 if self.config.n_query_groups == 1 else self.config.n_head
+        
+        heads = self.config.n_query_groups
         v_shape = (batch_size, max_seq_length, heads, self.config.head_size)
         if rope_cache_length is None:
             if self.config.rotary_percentage != 1.0:
@@ -570,9 +570,6 @@ def batched_index_copy_(t, dim, idx, val):
         # fall back to for loop
         for i in range(batch_size):
             unbatched_dim = dim if dim < 0 else dim - 1
-            #print(idx[i])
-            #print(t.shape, val.shape, unbatched_dim)
-            #exit()
             t[i].index_copy_(unbatched_dim, 
                             idx[i], 
                             val[i])
@@ -620,26 +617,7 @@ class KVCache(nn.Module):
             sequence_length = k.shape[2]
             self.k[:, :, :sequence_length, :] = k[:, :, :sequence_length, :]
             self.v[:, :, :sequence_length, :] = v[:, :, :sequence_length, :]
-            #print(k.shape, self.k.shape)
-            #self.k.narrow(dim=2, start=0, length=sequence_length).copy_(k)
-            #self.v.narrow(dim=2, start=0, length=sequence_length).copy_(v)
-            #print(sequence_length)
-            #for i in range(n):
-            #    self.k[i, :, :sequence_length, :] = k[i]
-            #    self.v[i, :, :sequence_length, :] = v[i]
-            #    index = torch.arange(sequence_length, device="cuda")
-            #    self.k[i].index_copy_(-2, index, k[i])
-            #    self.v[i].index_copy_(-2, index, v[i])
-            #exit()
-
-            #print(input_pos.shape, k.shape, self.k.shape)
-            #exit()
-            #batched_index_copy_(self.k[:n, ...], -2, input_pos, k)
-            #batched_index_copy_(self.v[:n, ...], -2, input_pos, v)
         else:
-            # generate phase
-            #self.k[:n, :, input_pos, :].copy_(k)
-            #self.v[:n, :, input_pos, :].copy_(v)
             batched_index_copy_(self.k[:n, ...], -2, input_pos, k)
             batched_index_copy_(self.v[:n, ...], -2, input_pos, v)
         return self.k[:n], self.v[:n]
