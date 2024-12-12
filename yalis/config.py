@@ -1,10 +1,12 @@
 from typing import Optional, Literal
 import os
 
+
 class ModelConfig:
     """
     Configuration for model initialization and management.
     """
+
     def __init__(
         self,
         model_name: str,
@@ -19,13 +21,13 @@ class ModelConfig:
             model_path (Optional[str]): Path to custom model weights.
             precision (str): Model precision, default is 'fp16'.
         """
-        #Todo: make model_name optional. If only model_path is provided then
+        # Todo: make model_name optional. If only model_path is provided then
         # we should par
         self.model_name = model_name
-        self.model_path = model_path 
+        self.model_path = model_path
         self.precision = precision
         self._validate()
-        self.model_path = self._resolve_model_path(self.model_path) 
+        self.model_path = self._resolve_model_path(self.model_path)
 
     def _resolve_model_path(self, model_path: Optional[str]) -> str:
         """
@@ -43,7 +45,9 @@ class ModelConfig:
         if model_path is None:
             # Default to the YALIS_CACHE environment variable or a fallback directory
             cache_dir = os.getenv("YALIS_CACHE", "~/cache/yalis/")
-            model_path = os.path.join(os.path.expanduser(cache_dir), "checkpoints", self.model_name)
+            model_path = os.path.join(
+                os.path.expanduser(cache_dir), "checkpoints", self.model_name
+            )
 
         # Check if the directory exists
         if not os.path.exists(model_path):
@@ -51,7 +55,6 @@ class ModelConfig:
             raise ValueError(f"Model path does not exist: {model_path}")
 
         return model_path
- 
 
     def _validate(self):
         """
@@ -62,17 +65,22 @@ class ModelConfig:
 
         if self.precision not in {"fp32", "fp16", "bf16"}:
 
-            raise ValueError(f"Invalid precision: {self.precision}. Supported values are 'fp32', 'fp16', 'bf16'.")
+            raise ValueError(
+                f"Invalid precision: {self.precision}. Supported values are 'fp32', 'fp16', 'bf16'."
+            )
 
     def __repr__(self):
-        return (f"ModelConfig(model_name={self.model_name}, model_path={self.model_path}, "
-                f"precision={self.precision}")
+        return (
+            f"ModelConfig(model_name={self.model_name}, model_path={self.model_path}, "
+            f"precision={self.precision}"
+        )
 
 
 class InferenceConfig:
     """
     Configuration for inference parameters.
     """
+
     def __init__(
         self,
         batch_size: int = 1,
@@ -81,7 +89,7 @@ class InferenceConfig:
         temperature: Optional[float] = None,
         top_k: Optional[int] = None,
         top_p: Optional[float] = None,
-        metrics: bool = False
+        metrics: bool = False,
     ):
         """
         Initialize the inference configuration.
@@ -97,11 +105,11 @@ class InferenceConfig:
             metrics (bool): Enable real-time metrics collection.
         """
         self.batch_size = batch_size
-        #ToDo - default max_length should be none. If it is none, we should set it
-        #from the model config
+        # ToDo - default max_length should be none. If it is none, we should set it
+        # from the model config
         self.max_length = max_length
         self.decoding_strategy = decoding_strategy
-        #ToDo: support more decoding strategies - top-k, top-p, beam-search
+        # ToDo: support more decoding strategies - top-k, top-p, beam-search
         self.temperature = temperature
         self.top_k = top_k
         self.top_p = top_p
@@ -120,12 +128,20 @@ class InferenceConfig:
             raise ValueError("max_length must be a positive integer.")
 
         if self.decoding_strategy not in {"greedy"}:
-            raise ValueError(f"Invalid decoding_strategy: {self.decoding_strategy}. Supported values are 'greedy'.")
+            raise ValueError(
+                f"Invalid decoding_strategy: {self.decoding_strategy}. Supported values are 'greedy'."
+            )
 
-        if self.decoding_strategy == "beam_search" and (self.num_beams is None or self.num_beams <= 0):
-            raise ValueError("num_beams must be specified and greater than 0 for beam_search.")
+        if self.decoding_strategy == "beam_search" and (
+            self.num_beams is None or self.num_beams <= 0
+        ):
+            raise ValueError(
+                "num_beams must be specified and greater than 0 for beam_search."
+            )
 
-        if self.temperature is not None and (self.temperature <= 0.0 or self.temperature > 2.0):
+        if self.temperature is not None and (
+            self.temperature <= 0.0 or self.temperature > 2.0
+        ):
             raise ValueError("temperature must be in the range (0.0, 2.0].")
 
         if self.top_k is not None and self.top_k <= 0:
@@ -135,7 +151,8 @@ class InferenceConfig:
             raise ValueError("top_p must be in the range (0.0, 1.0].")
 
     def __repr__(self):
-        return (f"InferenceConfig(batch_size={self.batch_size}, max_length={self.max_length}, "
-                f"decoding_strategy={self.decoding_strategy}, num_beams={self.num_beams}, "
-                f"temperature={self.temperature}, top_k={self.top_k}, top_p={self.top_p}, metrics={self.metrics})")
-
+        return (
+            f"InferenceConfig(batch_size={self.batch_size}, max_length={self.max_length}, "
+            f"decoding_strategy={self.decoding_strategy}, num_beams={self.num_beams}, "
+            f"temperature={self.temperature}, top_k={self.top_k}, top_p={self.top_p}, metrics={self.metrics})"
+        )

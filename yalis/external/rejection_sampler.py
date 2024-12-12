@@ -11,6 +11,7 @@ import torch
 import torch.jit
 import torch.nn as nn
 
+
 class RejectionSampler(nn.Module):
 
     def __init__(self):
@@ -39,14 +40,14 @@ class RejectionSampler(nn.Module):
         return torch.finfo(self.probs_dtype).tiny
 
     def _create_output(
-            self,
-            accepted: torch.Tensor,  # [batch_size, k]
-            substitute_token_ids: torch.Tensor,  # [batch_size, k]
-            draft_token_ids: torch.Tensor,  # [batch_size, k]
-            bonus_token_ids: torch.Tensor,  # [batch_size]
+        self,
+        accepted: torch.Tensor,  # [batch_size, k]
+        substitute_token_ids: torch.Tensor,  # [batch_size, k]
+        draft_token_ids: torch.Tensor,  # [batch_size, k]
+        bonus_token_ids: torch.Tensor,  # [batch_size]
     ) -> torch.Tensor:
         """Format output. Returns a matrix of token ids. When
-        a token is rejected via sampling, all subsequent token ids are 
+        a token is rejected via sampling, all subsequent token ids are
         set to -1 for the sequence.
 
         Args:
@@ -55,12 +56,12 @@ class RejectionSampler(nn.Module):
             substitute_token_ids: A tensor of token_ids that can be used
             as substitutes for the draft token ids if the proposed token
             is rejected.
-            draft_token_ids: A tensor of token ids speculated by the 
+            draft_token_ids: A tensor of token ids speculated by the
             draft model.
             bonus_token_ids: Token ids to use as the bonus token if
             all the draft tokens are accepted.
         Returns:
-            A tensor containing the accepted token ids. The shape of the 
+            A tensor containing the accepted token ids. The shape of the
             tensor is [batch_size, k + num_bonus_tokens]
         """
         batch_size, k = substitute_token_ids.shape
@@ -77,35 +78,36 @@ class RejectionSampler(nn.Module):
         # Create an extended output tensor
         output_with_bonus_tokens = -torch.ones(
             (batch_size, k + 1),
-            #self._num_bonus_tokens),
+            # self._num_bonus_tokens),
             dtype=self.token_id_dtype,
-            device=accepted.device)
+            device=accepted.device,
+        )
         output = output_with_bonus_tokens[:, :k]
 
         # Fill in the first k columns of the output tensor using masks and data
         # tensors.
-        output[:, :k] = torch.where(accepted_mask, draft_token_ids,
-                                    -torch.ones_like(draft_token_ids))
+        output[:, :k] = torch.where(
+            accepted_mask, draft_token_ids, -torch.ones_like(draft_token_ids)
+        )
 
         # Fill the last column.
         # We check output directly as accepted may have True values inconsistent
         # with causal acceptance.
-        output_with_bonus_tokens[:, -1] = torch.where(output[:, -1] != -1,
-                                                      bonus_token_ids, -1)
+        output_with_bonus_tokens[:, -1] = torch.where(
+            output[:, -1] != -1, bonus_token_ids, -1
+        )
 
         # Fill the recovered token ids.
-        output.mul_(~after_false_mask).add_(
-            substitute_token_ids.mul(after_false_mask))
+        output.mul_(~after_false_mask).add_(substitute_token_ids.mul(after_false_mask))
 
         return output_with_bonus_tokens
 
-
     def forward(
-      self,
-      draft_probs: torch.Tensor,
-      target_probs: torch.Tensor,
-      draft_tokens: torch.Tensor,
-      bonus_tokens: torch.Tensor,
+        self,
+        draft_probs: torch.Tensor,
+        target_probs: torch.Tensor,
+        draft_tokens: torch.Tensor,
+        bonus_tokens: torch.Tensor,
     ):
         batch_size, k, _ = draft_probs.shape
 
@@ -114,12 +116,11 @@ class RejectionSampler(nn.Module):
         # Assuming only one bonus token per batch
         bonus_tokens = bonus_tokens.view(batch_size, 1)
 
-        accepted, recovered_token_ids = (
-            self._batch_modified_rejection_sampling(
+        accepted, recovered_token_ids = self._batch_modified_rejection_sampling(
             target_probs[:, :-1],
             draft_probs,
             draft_tokens,
-        ))
+        )
 
         output_token_ids = self._create_output(
             accepted,
@@ -129,7 +130,6 @@ class RejectionSampler(nn.Module):
         )
 
         return output_token_ids
-
 
     def _batch_modified_rejection_sampling(
         self,
@@ -153,8 +153,9 @@ class RejectionSampler(nn.Module):
         # shape [batch_size, k]
         accepted = self._get_accepted(target_probs, draft_probs, draft_token_ids)
 
-        recovered_probs = self._get_recovered_probs(
-            target_probs, draft_probs).reshape(batch_size * k, vocab_size)
+        recovered_probs = self._get_recovered_probs(target_probs, draft_probs).reshape(
+            batch_size * k, vocab_size
+        )
 
         # NOTE: the recovered_probs are overwritten by this method.
         recovered_token_ids = _multinomial(
@@ -165,12 +166,10 @@ class RejectionSampler(nn.Module):
 
         return accepted, recovered_token_ids
 
-
-    def _create_uniform_samples(self,
-                                batch_size: int, k: int,
-                                device: torch.device) -> torch.Tensor:
+    def _create_uniform_samples(
+        self, batch_size: int, k: int, device: torch.device
+    ) -> torch.Tensor:
         return torch.rand(batch_size, k + 1, device=device)
-
 
     def _get_accepted(
         self,
@@ -199,32 +198,35 @@ class RejectionSampler(nn.Module):
         are accepted.
         """
         batch_size, k, _ = draft_probs.shape
-        batch_indices = torch.arange(batch_size,
-                                     device=target_probs.device)[:, None]
+        batch_indices = torch.arange(batch_size, device=target_probs.device)[:, None]
         probs_indicies = torch.arange(k, device=target_probs.device)
 
         # shape [batch_size, k]
-        selected_draft_probs = draft_probs[batch_indices, probs_indicies,
-                                           draft_token_ids]
+        selected_draft_probs = draft_probs[
+            batch_indices, probs_indicies, draft_token_ids
+        ]
 
         # shape [batch_size, k]
-        selected_target_probs = target_probs[batch_indices, probs_indicies,
-                                             draft_token_ids]
+        selected_target_probs = target_probs[
+            batch_indices, probs_indicies, draft_token_ids
+        ]
 
-        uniform_rand = self._create_uniform_samples(batch_size,
-                                                    k - 1, target_probs.device)
+        uniform_rand = self._create_uniform_samples(
+            batch_size, k - 1, target_probs.device
+        )
 
         capped_ratio = torch.minimum(
             selected_target_probs / selected_draft_probs,
-            torch.full((1, ), 1, device=target_probs.device))
+            torch.full((1,), 1, device=target_probs.device),
+        )
         accepted = uniform_rand < capped_ratio
 
         return accepted
 
     def _get_recovered_probs(
-            self,
-            target_probs: torch.Tensor,  # [k, vocab_size]
-            draft_probs: torch.Tensor,  # [k, vocab_size]
+        self,
+        target_probs: torch.Tensor,  # [k, vocab_size]
+        draft_probs: torch.Tensor,  # [k, vocab_size]
     ) -> torch.Tensor:
         r"""Create a probability distribution for each proposed token which can
         be sampled if the proposed token is rejected.
@@ -288,14 +290,13 @@ def _multinomial(
     if num_samples > 1:
         # This is equivalent to torch.repeat_interleaved (which also
         # forces a GPU<->CPU sync).
-        probs = probs[:, None, :].expand(probs.shape[0], num_samples,
-                                         probs.shape[1]).contiguous().view(
-                                             -1, probs.shape[1])
+        probs = (
+            probs[:, None, :]
+            .expand(probs.shape[0], num_samples, probs.shape[1])
+            .contiguous()
+            .view(-1, probs.shape[1])
+        )
     q = torch.empty_like(probs)
     q.exponential_(1.0)
 
     return probs.div_(q).argmax(dim=1).view(-1, num_samples)
-
-
-
-

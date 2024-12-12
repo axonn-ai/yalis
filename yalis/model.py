@@ -7,11 +7,9 @@ from yalis.external.model import GPT
 import torch.distributed as dist
 
 
-def get_model(fabric, 
-            litgpt_checkpoint_directory, 
-            model_dtype, 
-            random_init=False,
-            device="cuda"):
+def get_model(
+    fabric, litgpt_checkpoint_directory, model_dtype, random_init=False, device="cuda"
+):
     tensor_parallel = dist.get_world_size() > 1
     if tensor_parallel and dist.get_rank() == 0:
         print(f"Using Tensor parallelism on {dist.get_world_size()} GPUs")

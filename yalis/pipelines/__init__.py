@@ -1,2 +1,4 @@
 from .basic_inference_pipeline import BasicInferencePipeline as BasicInferencePipeline
-from .speculative_pipeline import SpeculativeDecodingPipeline as SpeculativeDecodingPipeline
+from .speculative_pipeline import (
+    SpeculativeDecodingPipeline as SpeculativeDecodingPipeline,
+)

@@ -83,7 +83,6 @@ def default_init_method(weight):
     return torch.nn.init.kaiming_uniform_(weight, a=math.sqrt(5))
 
 
-
 class TPLinear(torch.nn.Module):
     def __init__(
         self,
@@ -202,9 +201,9 @@ class TPLinear(torch.nn.Module):
         self.state_dict = self._modified_state_dict
 
     def all_reduce(self, x):
-        dist.all_reduce(x, group=self.inner_group)    
+        dist.all_reduce(x, group=self.inner_group)
         return x
-    
+
     def matmul(self, w, x):
         return F.linear(x, w)
 
@@ -234,7 +233,11 @@ class TPLinear(torch.nn.Module):
         )
 
     def _is_sharded_weight_matrix(self, weight):
-        return weight.ndim == 2 and weight.size(0) == self.local_out_features and weight.size(1) == self.local_in_features
+        return (
+            weight.ndim == 2
+            and weight.size(0) == self.local_out_features
+            and weight.size(1) == self.local_in_features
+        )
 
     @torch.no_grad()
     def _modified_load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
@@ -279,7 +282,7 @@ class TPLinear(torch.nn.Module):
     @torch.no_grad()
     def _modified_state_dict(self, *args, **kwargs):
         local_state_dict = self._old_state_dict(*args, **kwargs)
-        weight_key, bias_key = None, None    
+        weight_key, bias_key = None, None
         for key in local_state_dict:
             if "weight" in key:
                 weight_key = key
@@ -287,15 +290,19 @@ class TPLinear(torch.nn.Module):
                 bias_key = key
         local_weight = local_state_dict[weight_key]
         global_weight = gather_full_params_from_local_params(
-            local_weight, self.outer_group, self.inner_group, self.depth_group, (self.local_out_features, self.local_in_features)
+            local_weight,
+            self.outer_group,
+            self.inner_group,
+            self.depth_group,
+            (self.local_out_features, self.local_in_features),
         )
         if bias_key is not None:
             local_bias = local_state_dict[bias_key]
-            global_bias = Gather.apply(local_bias, self.outer_group) 
+            global_bias = Gather.apply(local_bias, self.outer_group)
 
         if torch.distributed.get_rank() == 0:
             local_state_dict[weight_key] = global_weight.cpu()
             if bias_key is not None:
                 local_state_dict[bias_key] = global_bias
-        
+
         return local_state_dict

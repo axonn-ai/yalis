@@ -4,31 +4,33 @@ from yalis import print_rank0
 from typing import Optional
 import time
 
+
 class BasicInferencePipeline(BasePipeline):
-    def __init__(self, 
-                 model, 
-                 tokenizer,
-                 dtype,
-                 device,):
+    def __init__(
+        self,
+        model,
+        tokenizer,
+        dtype,
+        device,
+    ):
         super().__init__(device)
         self.model = model
         self.dtype = dtype
         self.tokenizer = tokenizer
 
+    def setup(self, batch_size: Optional[int] = 1):
+        self.model.set_kv_cache(
+            batch_size=batch_size, device=self.device, dtype=self.dtype
+        )
 
-    def setup(self, 
-              batch_size: Optional[int] = 1):
-        self.model.set_kv_cache(batch_size=batch_size, device=self.device, dtype=self.dtype)
+    def run(self, prompt, tokens_to_gen, profile: Optional[bool] = True):
 
-
-
-    def run(self, 
-            prompt, 
-            tokens_to_gen,
-            profile: Optional[bool] = True):
-        
         # Caching the attributes to local variables improves performance
-        prompt_tokens = self.tokenizer(prompt, return_tensors="pt")["input_ids"].squeeze().to(self.device)
+        prompt_tokens = (
+            self.tokenizer(prompt, return_tensors="pt")["input_ids"]
+            .squeeze()
+            .to(self.device)
+        )
 
         if profile:
             num_trials = 10
@@ -38,21 +40,28 @@ class BasicInferencePipeline(BasePipeline):
 
         # Generation loop
         # Using Cuda events instead of time.time(). Synchronizing was important as adding that gave a slighlty lower performance
-        #print("\nStarting token generation:")
+        # print("\nStarting token generation:")
         for TRIAL in range(10):
             start = torch.cuda.Event(enable_timing=True)
             end = torch.cuda.Event(enable_timing=True)
             start.record()
             output_tokens = []
-            with torch.no_grad(), torch.autocast(self.device, dtype=self.dtype, cache_enabled=False):
+            with torch.no_grad(), torch.autocast(
+                self.device, dtype=self.dtype, cache_enabled=False
+            ):
                 for step in range(tokens_to_gen):
-                    if step == 0: # prefill
+                    if step == 0:  # prefill
                         next_token = prefill(self.model, prompt_tokens)
-                        input_pos = torch.tensor([prompt_tokens.size(0)], device=self.device, dtype=torch.int64)
+                        input_pos = torch.tensor(
+                            [prompt_tokens.size(0)],
+                            device=self.device,
+                            dtype=torch.int64,
+                        )
                         tokens = next_token.clone()
                     else:
                         with torch.nn.attention.sdpa_kernel(
-                                    torch.nn.attention.SDPBackend.MATH):
+                            torch.nn.attention.SDPBackend.MATH
+                        ):
                             next_token = generate(self.model, tokens, input_pos)
                             input_pos.add_(1)
                             tokens.copy_(next_token)
@@ -64,7 +73,7 @@ class BasicInferencePipeline(BasePipeline):
 
             if profile and TRIAL >= num_warumups:
                 tokens_per_second = len(output_tokens) / time_taken
-                print_rank0(f"[Iter:{TRIAL}]Output {tokens_per_second} tok/s") 
+                print_rank0(f"[Iter:{TRIAL}]Output {tokens_per_second} tok/s")
 
         generated_text = self.tokenizer.decode([x.item() for x in output_tokens])
         print_rank0("-" * 40)
