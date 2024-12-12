@@ -14,7 +14,7 @@ if __name__ == "__main__":
     # Input prompt for the model
     prompts = [
         "You are a helpful chatbot. Answer the following question.\nHow to bake a cake?",
-        ] * 8
+        ] * 16
 
     # Tokenizer for encoding the prompt
     tokenizer = AutoTokenizer.from_pretrained(model_id)

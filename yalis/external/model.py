@@ -291,31 +291,16 @@ class CausalSelfAttention(nn.Module):
         q_per_kv = self.config.n_head // self.config.n_query_groups
         total_qkv = q_per_kv + 2  # each group has 1+ queries, 1 key, and 1 value
         qkv = qkv.view(B, T, self.config.n_query_groups, total_qkv, self.config.head_size)
-        #qkv = qkv.permute(0, 2, 3, 1, 4)  # (B, n_query_groups, total_qkv, T, hs)
 
         # split batched computation into three
         q, k, v = qkv.split((q_per_kv, 1, 1), dim=3)
 
-        # maybe repeat k and v if for the non multi-head attention cases
-        # training: flash attention requires it
-        # inference: multi-query would require a full kv cache so avoid it to limit its memory usage
-       
-        #print(q_per_kv, self.config.n_head, self.config.n_query_groups) 
-        #assert self.config.n_query_groups == self.config.n_head, "GQA not tested yet"
-        #if self.config.n_query_groups != self.config.n_head:
-        #    k = k.expand(B, self.config.n_query_groups, q_per_kv, T, self.config.head_size)
-        #    v = v.expand(B, self.config.n_query_groups, q_per_kv, T, self.config.head_size)
 
         q = q.reshape(B, T, -1, self.config.head_size).contiguous()  # (B, T, nh_q, hs)
         k = k.reshape(B, T, -1, self.config.head_size).contiguous()  # (B, T, nh_k, hs)
         v = v.reshape(B, T, -1, self.config.head_size).contiguous()  # (B, T, nh_v, hs)
         
         assert self.config.rope_n_elem == self.config.head_size, "partial rope is not supported yet"
-
-        #q_roped = apply_rope(q[..., : self.config.rope_n_elem], cos, sin)
-        #k_roped = apply_rope(k[..., : self.config.rope_n_elem], cos, sin)
-        #q = torch.cat((q_roped, q[..., self.config.rope_n_elem :]), dim=-1)
-        #k = torch.cat((k_roped, k[..., self.config.rope_n_elem :]), dim=-1)
 
         k_cache, v_cache = self.kv_cache.k, self.kv_cache.v
 
