@@ -23,7 +23,7 @@ precision_to_dtype = {
 
 #@torch._dynamo.disable
 @torch.no_grad()
-@torch.compile(fullgraph=True)
+@torch.compile()
 def prefill(model, tokens):
     """
     Prefill function for generating the first token.
@@ -36,16 +36,14 @@ def prefill(model, tokens):
         token_id: The next predicted token.
     """
 
-    input_pos = torch.arange(0, tokens.size(1), device= "cuda", dtype=torch.int64).unsqueeze(0).repeat(tokens.size(0),1).to("cuda")
-
-    logits = model(tokens, input_pos)["logits"]
+    logits = model(tokens)["logits"]
     token_id = torch.argmax(logits[:, -1, :], dim=1).unsqueeze(1)
     return token_id
 
 #@torch._dynamo.disable
 @torch.no_grad()
-@torch.compile(fullgraph=True, mode="reduce-overhead")
-def generate(model, tokens, input_pos, get_probs=False):
+@torch.compile(mode="reduce-overhead")
+def generate(model, tokens, get_probs=False):
     """
     Generate function for producing the next token(s).
 
@@ -59,7 +57,7 @@ def generate(model, tokens, input_pos, get_probs=False):
         token_id: The next predicted token.
         logits: (Optional) The raw logits from the model.
     """
-    logits = model(tokens, input_pos)["logits"]
+    logits = model(tokens)["logits"]
     token_id = torch.argmax(logits[:, -1, :], dim=1).unsqueeze(1)
     if get_probs:
         return token_id, logits
@@ -109,18 +107,19 @@ class LLMEngine:
         self, 
         input_tokens: torch.Tensor, 
         tokens_to_generate: int = 50,
+        report_throughput: bool = False
     ) -> torch.Tensor:
         """
         Generates tokens from the model, starting with the provided tokenized input.
 
         Args:
-            prompt_tokens (Tensor): The tokenized input to start generation.
+            input__tokens (Tensor): The tokenized input to start generation.
             tokens_to_gen (int): Number of tokens to generate after the prompt.
 
         Returns:
             output_tokens (List[Tensor]): List of generated token IDs.
         """
-        output_tokens = [[] for _ in range(input_tokens.size(0))]
+        output_tokens = []
         # Start timing the operation
         start = torch.cuda.Event(enable_timing=True)
         end = torch.cuda.Event(enable_timing=True)
@@ -131,26 +130,21 @@ class LLMEngine:
             for step in range(tokens_to_generate):
                 if step == 0:  # Prefill step
                     next_token = prefill(self.model, tokens)  # Call prefill function
-                    input_pos = torch.tensor([tokens.size(1)], device=self.device, dtype=torch.int64).repeat(tokens.size(0), 1)
                     tokens = next_token.clone()
                 else:  # Generation step
-                    with torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH):
-                        next_token = generate(self.model, tokens, input_pos)  # Call generate function
-                        input_pos.add_(1)  # Increment position
-                        tokens.copy_(next_token)  # Copy the new token into tokens
+                    next_token = generate(self.model, tokens)  # Call generate function
+                    tokens.copy_(next_token)  # Copy the new token into tokens
 
-                # Append the generated token to output
-                for prompt_no, new_token in enumerate(next_token):
-                    output_tokens[prompt_no].append(new_token.clone())
+                output_tokens.append(next_token.clone())
 
+        output_tensor = torch.cat(output_tokens, dim=1)
         # End timing and calculate elapsed time
         end.record()
         torch.cuda.synchronize()  # Wait for all events to finish
         time_taken = start.elapsed_time(end) / 1000  # Time in seconds
-        tput = sum([len(o) for o in output_tokens]) / time_taken
-        #print(f"Generation took {time_taken:.2f} seconds.")
-        print_rank0(f"Throughput = {tput:.2f} tok/s")
-
-        return torch.tensor(output_tokens)
+        tput = input_tokens.shape[0] * tokens_to_generate / time_taken
+        if report_throughput and dist.get_rank() == 0:
+            print(f"Throughput = {tput:.2f} tok/s")
+        return output_tensor
  
 

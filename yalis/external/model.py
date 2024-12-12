@@ -12,6 +12,7 @@ from typing import Any, Optional, Tuple
 import torch
 import torch.nn as nn
 from typing_extensions import Self
+from flash_attn import flash_attn_with_kvcache
 
 from litgpt.config import Config
 import sys
@@ -37,8 +38,7 @@ class GPT(nn.Module):
                 ln_f=config.norm_class(config.n_embd, eps=config.norm_eps),
             )
         )
-        self.max_seq_length = self.config.block_size
-        self.mask_cache: Optional[torch.Tensor] = None
+        self.max_seq_length = self.config.block_size # rope cache is built here
 
     @property
     def max_seq_length(self) -> int:
@@ -78,41 +78,34 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, input_ids: torch.Tensor, input_pos: Optional[torch.Tensor] = None, attention_mask: Optional[torch.tensor] = None) -> torch.Tensor:
+    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
         #assert attention_mask is None, "litgpt model does not accept an attention mask"
         idx = input_ids
         T = idx.size(1)
         if self.max_seq_length < T:
             raise ValueError(f"Cannot forward sequence of length {T}, max seq length is only {self.max_seq_length}.")
 
-        if input_pos is not None:  # use the kv cache
-            cos = batched_index_select(self.cos, 0, input_pos)
-            sin = batched_index_select(self.sin, 0, input_pos)
-            if self.mask_cache is None:
-                raise TypeError("You need to call `gpt.set_kv_cache()`")
-            mask = batched_index_select(self.mask_cache, 2, input_pos)
-            if mask.dim() > 4:
-                # the mask cache has a batch dim of 1 in addition to the one
-                # we get if input_pos has a batch dimension
-                mask = mask.squeeze(1)
-        else:
-            cos = self.cos[:T]
-            sin = self.sin[:T]
-            mask = None
-
         x = self.transformer.wte(idx)  # token embeddings of shape (b, t, n_embd)
         if self.config.scale_embeddings:
             x = x * torch.tensor(self.config.n_embd**0.5, dtype=x.dtype)
         if self.config.tensor_parallel:
             x = Drop.apply(x, ax.comm_handle.inner_intra_layer_parallel_group)
+        
+        # flash attention wants the rope cache to be
+        # in the same dtype as the query
+        # ToDO: confirm if this is okay, or if we should do rope in fp32?
+        self.cos = self.cos.to(x.dtype)
+        self.sin = self.sin.to(x.dtype)
+        
         for block in self.transformer.h:
-            x = block(x, cos, sin, mask, input_pos)
+            x = block(x, self.cos, self.sin, self.token_counter)
         if self.config.tensor_parallel:
             x = Gather.apply(x, ax.comm_handle.inner_intra_layer_parallel_group)
         x = self.transformer.ln_f(x)
         x = self.lm_head(x)  # (b, t, vocab_size)
         if self.config.final_logit_softcapping is not None:
             x = torch.tanh(x / self.config.final_logit_softcapping) * self.config.final_logit_softcapping
+        self.token_counter.add_(T)
         return {"logits": x}
 
     @classmethod
@@ -165,7 +158,7 @@ class GPT(nn.Module):
         dtype: Optional[torch.dtype] = None,
     ) -> None:
         if rope_cache_length is None:
-            rope_cache_length = self.cos.size(-1)
+            rope_cache_length = self.cos.size(-1) * 2
 
         if max_seq_length is None:
             max_seq_length = self.max_seq_length
@@ -175,14 +168,11 @@ class GPT(nn.Module):
             block.attn.kv_cache = block.attn.build_kv_cache(
                 batch_size, max_seq_length, rope_cache_length, device, dtype,
             )
+        
+        self.token_counter = torch.zeros(batch_size, device=device, dtype=torch.int32)
 
-        if self.mask_cache is None or self.mask_cache.size(3) != max_seq_length:
-            # passing `attn_mask` to SDPA disables the flash implementation. since we only need the mask
-            # for the kv-cache support (only during inference), we only create it in that situation
-            self.mask_cache = build_mask_cache(max_seq_length, device)
 
     def clear_kv_cache(self) -> None:
-        self.mask_cache = None
         for block in self.transformer.h:
             block.attn.kv_cache = None
 
@@ -215,8 +205,7 @@ class Block(nn.Module):
         x: torch.Tensor,
         cos: torch.Tensor,
         sin: torch.Tensor,
-        mask: Optional[torch.Tensor] = None,
-        input_pos: Optional[torch.Tensor] = None,
+        token_counter: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Non-parallel residual       Parallel residual
@@ -240,7 +229,7 @@ class Block(nn.Module):
         """
 
         x_normed = self.norm_1(x)
-        attention_output = self.attn(x_normed, cos, sin, mask, input_pos)
+        attention_output = self.attn(x_normed, cos, sin, token_counter)
         attention_output = self.post_attention_norm(attention_output)
 
         if self.config.parallel_residual:
@@ -274,6 +263,8 @@ class CausalSelfAttention(nn.Module):
             config.sliding_window_size is not None and
             block_idx % config.sliding_window_layer_placing == 0
         )
+        
+        assert not self.apply_sliding_window_attention, "Sliding window attention is not implemented yet"
 
         self.config = config
         if config.tensor_parallel:
@@ -290,8 +281,7 @@ class CausalSelfAttention(nn.Module):
         x: torch.Tensor,
         cos: torch.Tensor,
         sin: torch.Tensor,
-        mask: Optional[torch.Tensor] = None,
-        input_pos: Optional[torch.Tensor] = None,
+        token_counter: torch.Tensor
     ) -> torch.Tensor:
         B, T, C = x.size()  # batch size, sequence length, embedding dimensionality (n_embd)
 
@@ -309,43 +299,39 @@ class CausalSelfAttention(nn.Module):
         # maybe repeat k and v if for the non multi-head attention cases
         # training: flash attention requires it
         # inference: multi-query would require a full kv cache so avoid it to limit its memory usage
-        if self.config.n_query_groups != self.config.n_head and (input_pos is None or self.config.n_query_groups != 1):
+       
+        #print(q_per_kv, self.config.n_head, self.config.n_query_groups) 
+        #assert self.config.n_query_groups == self.config.n_head, "GQA not tested yet"
+        if self.config.n_query_groups != self.config.n_head:
             k = k.expand(B, self.config.n_query_groups, q_per_kv, T, self.config.head_size)
             v = v.expand(B, self.config.n_query_groups, q_per_kv, T, self.config.head_size)
 
-        q = q.reshape(B, -1, T, self.config.head_size)  # (B, nh_q, T, hs)
-        k = k.reshape(B, -1, T, self.config.head_size)  # (B, nh_k, T, hs)
-        v = v.reshape(B, -1, T, self.config.head_size)  # (B, nh_v, T, hs)
+        q = q.reshape(B, -1, T, self.config.head_size).transpose(1, 2).contiguous()  # (B, nh_q, T, hs)
+        k = k.reshape(B, -1, T, self.config.head_size).transpose(1, 2).contiguous()  # (B, nh_k, T, hs)
+        v = v.reshape(B, -1, T, self.config.head_size).transpose(1, 2).contiguous()  # (B, nh_v, T, hs)
+        
+        assert self.config.rope_n_elem == self.config.head_size, "partial rope is not supported yet"
 
-        q_roped = apply_rope(q[..., : self.config.rope_n_elem], cos, sin)
-        k_roped = apply_rope(k[..., : self.config.rope_n_elem], cos, sin)
-        q = torch.cat((q_roped, q[..., self.config.rope_n_elem :]), dim=-1)
-        k = torch.cat((k_roped, k[..., self.config.rope_n_elem :]), dim=-1)
+        #q_roped = apply_rope(q[..., : self.config.rope_n_elem], cos, sin)
+        #k_roped = apply_rope(k[..., : self.config.rope_n_elem], cos, sin)
+        #q = torch.cat((q_roped, q[..., self.config.rope_n_elem :]), dim=-1)
+        #k = torch.cat((k_roped, k[..., self.config.rope_n_elem :]), dim=-1)
 
-        if input_pos is not None:
-            if not isinstance(self.kv_cache, KVCache):
-                raise TypeError("You need to call `gpt.set_kv_cache()`")
-            k, v = self.kv_cache(input_pos, k, v)
+        k_cache, v_cache = self.kv_cache.k, self.kv_cache.v
+        #print(k_cache.shape, v_cache.shape, k.shape, v.shape)
 
         if self.apply_sliding_window_attention:
-            """
-                  Global Window              Sliding window             Sliding window
-                  attention mask      +            bias          =      attention mask
-            ┌────────────────────────┐  ┌───────────────────────┐  ┌─────────────────────────┐
-            │ True False False False │  │ True  True  True True │  │ True  False False False │
-            │ True True  False False │  │ True  True  True True │  │ True  True  False False │
-            │ True True  True  False │  │ False True  True True │  │ False True  True  False │
-            │ True True  True  True  │  │ False False True True │  │ False False True  True  │
-            └────────────────────────┘  └───────────────────────┘  └─────────────────────────┘
-            """
-            if mask is None:
-                mask = torch.ones(T, T, dtype=q.dtype, device=q.device).triu(diagonal=1)
-                mask.masked_fill_(mask.bool(), float("-inf"))
-            sliding_window_bias = torch.ones_like(mask).tril(diagonal=-self.config.sliding_window_size)
-            sliding_window_bias.masked_fill_(sliding_window_bias.bool(), float("-inf"))
-            mask += sliding_window_bias
+            raise NotImplementedError
+        
+        #y = self.scaled_dot_product_attention(q, k, v, mask)
 
-        y = self.scaled_dot_product_attention(q, k, v, mask)
+        y = flash_attn_with_kvcache(q=q, 
+                                    k_cache=k_cache, v_cache=v_cache, 
+                                    k=k, v=v, causal=(T > 1), 
+                                    cache_seqlens=token_counter, 
+                                    rotary_cos=cos, 
+                                    rotary_sin=sin,
+                                    rotary_interleaved=False)
 
         y = y.reshape(B, T, self.config.head_size * self.config.n_head)  # re-assemble all head outputs side by side
 
@@ -385,7 +371,7 @@ class CausalSelfAttention(nn.Module):
         dtype: Optional[torch.dtype] = None,
     ) -> "KVCache":
         heads = 1 if self.config.n_query_groups == 1 else self.config.n_head
-        v_shape = (batch_size, heads, max_seq_length, self.config.head_size)
+        v_shape = (batch_size, max_seq_length, heads, self.config.head_size)
         if rope_cache_length is None:
             if self.config.rotary_percentage != 1.0:
                 raise TypeError("Please pass the `rope_cache_length=gpt.cos.size(-1)` value")
@@ -393,8 +379,8 @@ class CausalSelfAttention(nn.Module):
         else:
             k_shape = (
                 batch_size,
-                heads,
                 max_seq_length,
+                heads,
                 rope_cache_length + self.config.head_size - self.config.rope_n_elem,
             )
         return KVCache(k_shape, v_shape, device=device, dtype=dtype)
@@ -515,7 +501,7 @@ def build_rope_cache(
     seq_idx = torch.arange(seq_len, device=device) / condense_ratio
 
     # Calculate the product of position index and $\theta_i$
-    idx_theta = torch.outer(seq_idx, theta).repeat(1, 2)
+    idx_theta = torch.outer(seq_idx, theta) #.repeat(1, 2) repeat is not needed for flash attention
 
     return torch.cos(idx_theta), torch.sin(idx_theta)
 
@@ -523,6 +509,7 @@ def batched_index_select(t, dim, idx):
     """index_select for batched index and unbatched t"""
     if idx.dim() == 1:
         return torch.index_select(t, dim, idx)
+
 
     *batch_shape, idx_size = idx.shape
     res = torch.index_select(t, dim, idx.reshape(-1))  # flat index
@@ -583,7 +570,12 @@ def batched_index_copy_(t, dim, idx, val):
         # fall back to for loop
         for i in range(batch_size):
             unbatched_dim = dim if dim < 0 else dim - 1
-            t[i].index_copy_(unbatched_dim, idx[i], val[i])
+            #print(idx[i])
+            #print(t.shape, val.shape, unbatched_dim)
+            #exit()
+            t[i].index_copy_(unbatched_dim, 
+                            idx[i], 
+                            val[i])
         return t
 
 
@@ -621,18 +613,41 @@ class KVCache(nn.Module):
         self.v = self.v.to(v.dtype)
         # update the cache
         n = k.size(0)
-        k = batched_index_copy_(self.k[:n, ...], -2, input_pos, k)
-        v = batched_index_copy_(self.v[:n, ...], -2, input_pos, v)
-        return k, v
+        #k = batched_index_copy_(self.k[:n, ...], -2, input_pos, k)
+        #v = batched_index_copy_(self.v[:n, ...], -2, input_pos, v)
+        if input_pos.size(1) > 1:
+            # prefill phase
+            sequence_length = k.shape[2]
+            self.k[:, :, :sequence_length, :] = k[:, :, :sequence_length, :]
+            self.v[:, :, :sequence_length, :] = v[:, :, :sequence_length, :]
+            #print(k.shape, self.k.shape)
+            #self.k.narrow(dim=2, start=0, length=sequence_length).copy_(k)
+            #self.v.narrow(dim=2, start=0, length=sequence_length).copy_(v)
+            #print(sequence_length)
+            #for i in range(n):
+            #    self.k[i, :, :sequence_length, :] = k[i]
+            #    self.v[i, :, :sequence_length, :] = v[i]
+            #    index = torch.arange(sequence_length, device="cuda")
+            #    self.k[i].index_copy_(-2, index, k[i])
+            #    self.v[i].index_copy_(-2, index, v[i])
+            #exit()
+
+            #print(input_pos.shape, k.shape, self.k.shape)
+            #exit()
+            #batched_index_copy_(self.k[:n, ...], -2, input_pos, k)
+            #batched_index_copy_(self.v[:n, ...], -2, input_pos, v)
+        else:
+            # generate phase
+            #self.k[:n, :, input_pos, :].copy_(k)
+            #self.v[:n, :, input_pos, :].copy_(v)
+            batched_index_copy_(self.k[:n, ...], -2, input_pos, k)
+            batched_index_copy_(self.v[:n, ...], -2, input_pos, v)
+        return self.k[:n], self.v[:n]
 
     def reset_parameters(self) -> None:
         torch.nn.init.zeros_(self.k)
         torch.nn.init.zeros_(self.v)
 
-
-def build_mask_cache(max_seq_length: int, device: Optional[torch.device] = None) -> torch.Tensor:
-    ones = torch.ones((max_seq_length, max_seq_length), device=device, dtype=torch.bool)
-    return torch.tril(ones).unsqueeze(0).unsqueeze(0)
 
 
 class RMSNorm(torch.nn.Module):
