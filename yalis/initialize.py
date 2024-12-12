@@ -6,6 +6,7 @@ import torch.distributed as dist
 
 yalis_fabric = None
 
+
 def init_distributed():
     global yalis_fabric
     if yalis_fabric is not None:
@@ -14,12 +15,12 @@ def init_distributed():
     world_size = dist.get_world_size()
     if world_size > 1:
         strategy = AxonnStrategy(
-                G_intra_r=world_size,
-                G_intra_c=1,
-                G_intra_d=1,
-                overlap_communication=True,
-                enable_timers=False,
-            )
+            G_intra_r=world_size,
+            G_intra_c=1,
+            G_intra_d=1,
+            overlap_communication=True,
+            enable_timers=False,
+        )
         fabric = Fabric(
             accelerator="gpu",
             devices=torch.cuda.device_count(),
@@ -31,7 +32,6 @@ def init_distributed():
             accelerator="gpu",
             devices=1,
             num_nodes=1,
-            precision=dtype,
         )
     fabric.launch()
     # this is very important to ensure that the same token is sampled on each TP rank!
@@ -39,4 +39,3 @@ def init_distributed():
     seed_everything(1234)
     yalis_fabric = fabric
     return fabric
-
