@@ -24,7 +24,7 @@ precision_to_dtype = {
 
 @torch.no_grad()
 @torch.compile()
-def prefill(model, tokens):
+def prefill(model, tokens, unpadded_prompt_lengths):
     """
     Prefill function for generating the first token.
 
@@ -36,8 +36,9 @@ def prefill(model, tokens):
         token_id: The next predicted token.
     """
 
-    logits = model(tokens)["logits"]
-    token_id = torch.argmax(logits[:, -1, :], dim=1).unsqueeze(1)
+    logits = model(tokens, unpadded_prompt_lengths)["logits"]
+    logits = logits[torch.arange(logits.size(0)), unpadded_prompt_lengths-1]
+    token_id = torch.argmax(logits, dim=1).unsqueeze(1)
     return token_id
 
 
@@ -107,6 +108,7 @@ class LLMEngine:
     def generate(
         self,
         input_tokens: torch.Tensor,
+        unpadded_prompt_lengths: torch.Tensor,
         tokens_to_generate: int = 50,
         report_throughput: bool = False,
     ) -> torch.Tensor:
@@ -132,9 +134,10 @@ class LLMEngine:
             tokens = input_tokens.clone().to(
                 self.device
             )  # Move prompt tokens to the device
+            unpadded_prompt_lengths = unpadded_prompt_lengths.to(self.device)
             for step in range(tokens_to_generate):
                 if step == 0:  # Prefill step
-                    next_token = prefill(self.model, tokens)  # Call prefill function
+                    next_token = prefill(self.model, tokens, unpadded_prompt_lengths)  # Call prefill function
                     tokens = next_token.clone()
                 else:  # Generation step
                     next_token = generate(self.model, tokens)  # Call generate function

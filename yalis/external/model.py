@@ -84,7 +84,7 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+    def forward(self, input_ids: torch.Tensor, actual_sequence_lengths: torch.Tensor = None) -> torch.Tensor:
         # assert attention_mask is None, "litgpt model does not accept an attention mask"
         idx = input_ids
         T = idx.size(1)
@@ -116,7 +116,7 @@ class GPT(nn.Module):
                 torch.tanh(x / self.config.final_logit_softcapping)
                 * self.config.final_logit_softcapping
             )
-        self.token_counter.add_(T)
+        self.token_counter.add_(T if actual_sequence_lengths is None else actual_sequence_lengths)
         return {"logits": x}
 
     @classmethod
