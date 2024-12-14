@@ -44,7 +44,7 @@ class ModelConfig:
         """
         if model_path is None:
             # Default to the YALIS_CACHE environment variable or a fallback directory
-            cache_dir = os.getenv("YALIS_CACHE", "~/cache/yalis/")
+            cache_dir = os.getenv("YALIS_CACHE", "~/.cache/yalis/")
             model_path = os.path.join(
                 os.path.expanduser(cache_dir), "checkpoints", self.model_name
             )
@@ -107,6 +107,8 @@ class InferenceConfig:
         self.batch_size = batch_size
         # ToDo - default max_length should be none. If it is none, we should set it
         # from the model config
+        # anyway this arg isn't being used right now. KV Cache is defaulting to the model
+        # max sequence length
         self.max_length = max_length
         self.decoding_strategy = decoding_strategy
         # ToDo: support more decoding strategies - top-k, top-p, beam-search
