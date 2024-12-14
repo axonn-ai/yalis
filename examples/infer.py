@@ -23,7 +23,7 @@ if __name__ == "__main__":
     # Input prompt for the model
     user_prompts = [
         "How to bake a cake?",
-        # "How to drive a car on a freeway?",
+        "How to drive a car on a freeway?",
     ] * 8
     system_prompt = "You are a helpful chatbot. Answer the following question.\n"
 
