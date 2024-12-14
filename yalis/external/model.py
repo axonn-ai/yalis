@@ -311,9 +311,9 @@ class CausalSelfAttention(nn.Module):
             and block_idx % config.sliding_window_layer_placing == 0
         )
 
-        assert (
-            not self.apply_sliding_window_attention
-        ), "Sliding window attention is not implemented yet"
+        # assert (
+        #     not self.apply_sliding_window_attention
+        # ), "Sliding window attention is not implemented yet"
 
         self.config = config
         if config.tensor_parallel:
@@ -323,6 +323,7 @@ class CausalSelfAttention(nn.Module):
             self.config.n_head //= attention_world_size
             assert self.config.n_query_groups % attention_world_size == 0
             self.config.n_query_groups //= attention_world_size
+
 
     def forward(
         self,
@@ -357,11 +358,10 @@ class CausalSelfAttention(nn.Module):
 
         k_cache, v_cache = self.kv_cache.k, self.kv_cache.v
 
-        if self.apply_sliding_window_attention:
-            raise NotImplementedError
-
         # y = self.scaled_dot_product_attention(q, k, v, mask)
 
+        # print(cos.shape, sin.shape, k_cache.shape, v_cache.shape, q.shape)
+        # exit()
         y = flash_attn_with_kvcache(
             q=q,
             k_cache=k_cache,
@@ -373,6 +373,7 @@ class CausalSelfAttention(nn.Module):
             rotary_cos=cos,
             rotary_sin=sin,
             rotary_interleaved=False,
+            window_size = (self.config.sliding_window_size, self.config.sliding_window_size) if self.apply_sliding_window_attention else (-1, -1)
         )
 
         y = y.reshape(
@@ -499,8 +500,8 @@ class LLaMAMLP(nn.Module):
 
 class GemmaMLP(LLaMAMLP):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x_fc_1 = self.fc_1(x)
-        x_fc_2 = self.fc_2(x)
+        x = self.gate_up_proj(x)
+        x_fc_1, x_fc_2 = x[..., ::2], x[..., 1::2]
         x = (
             torch.nn.functional.gelu(x_fc_1, approximate=self.config.gelu_approximate)
             * x_fc_2
