@@ -224,7 +224,20 @@ def copy_weights_hf_llama(
             gate_proj, f"layer {i} gate_proj", dtype, verbose=debug_mode
         )
         up_proj = load_param(up_proj, f"layer {i} up_proj", dtype, verbose=debug_mode)
-        # gate_up_proj = torch.cat([gate_proj, up_proj])
+        
+        # shape of gate_proj -> intermediate x hidden
+        # shape of up_proj -> intermediate x hidden
+        # after stacking -> intermediate x 2 x hidden 
+        # we are using stacking to interleave the rows of both tensors
+        # so after stacking it's basically [gate_proj[0], up_proj[0], gate_proj[1], up_proj[1] ...]
+        # and finally reshaping to 2*intermediate x hidden
+        # we interleave so that during TP each GPU has access to the corresponding outputs of their 
+        # local gate and up projs so that they can apply swiglu locally. 
+        # for example let's say gate_up_proj = [gate_proj[0], up_proj[0], gate_proj[1], up_proj[1]]
+        # and you have 2 GPUs
+        # GPU 0 will get get [gate_proj[0], up_proj[0]] and GPU 1 will get [gate_proj[1], up_proj[1]]]
+        # now they do not need to communicate with each other to apply swiglu.
+        
         gate_up_proj = torch.stack((gate_proj, up_proj), dim=1).reshape(
             2 * gate_proj.size(0), -1
         )
@@ -257,6 +270,7 @@ def copy_weights_hf_llama(
 def copy_weights_gemma_2(
     config: Config,
     qkv_weights: Dict[int, List[Optional[NotYetLoadedTensor]]],
+    gate_up_proj_weights: Dict[int, List[Optional[NotYetLoadedTensor]]],
     state_dict: Dict[str, torch.Tensor],
     hf_weights: Dict[str, Union[torch.Tensor, NotYetLoadedTensor]],
     saver: Optional[incremental_save] = None,
@@ -271,8 +285,8 @@ def copy_weights_gemma_2(
         "model.layers.{}.self_attn.k_proj.weight": None,
         "model.layers.{}.self_attn.v_proj.weight": None,
         "model.layers.{}.self_attn.o_proj.weight": "transformer.h.{}.attn.proj.weight",
-        "model.layers.{}.mlp.gate_proj.weight": "transformer.h.{}.mlp.fc_1.weight",
-        "model.layers.{}.mlp.up_proj.weight": "transformer.h.{}.mlp.fc_2.weight",
+        "model.layers.{}.mlp.gate_proj.weight": None,
+        "model.layers.{}.mlp.up_proj.weight": None,
         "model.layers.{}.mlp.down_proj.weight": "transformer.h.{}.mlp.proj.weight",
         "model.layers.{}.input_layernorm.weight": "transformer.h.{}.norm_1.weight",
         "model.layers.{}.post_attention_layernorm.weight": "transformer.h.{}.post_attention_norm.weight",
@@ -291,9 +305,14 @@ def copy_weights_gemma_2(
         if "model.layers" in name:
             from_name, l_idx = layer_template(name, 2)
             qkv = qkv_weights.setdefault(l_idx, defaultdict(dict))
+            gate_up_proj = gate_up_proj_weights.setdefault(l_idx, [None, None])
             if any(w in from_name for w in ("q_proj", "k_proj", "v_proj")):
                 weight_name, weight_type = from_name.split(".")[-2:]
                 qkv[weight_type][weight_name] = param
+            elif "gate_proj" in name:
+                gate_up_proj[0] = param
+            elif "up_proj" in name:
+                gate_up_proj[1] = param
             to_name = weight_map[from_name]
             if to_name is None:
                 continue
@@ -331,6 +350,39 @@ def copy_weights_gemma_2(
             del qkv_weights[i][weight_type]
             if progress_per_file is not None:
                 pbar.update(progress_per_file)
+
+    # convert separate gate proj and up proj into one tensor
+    for i, (gate_proj, up_proj) in list(gate_up_proj_weights.items()):
+        if gate_proj is None or up_proj is None:
+            # split across different .bin files
+            continue
+
+        gate_proj = load_param(
+            gate_proj, f"layer {i} gate_proj", dtype, verbose=debug_mode
+        )
+        up_proj = load_param(up_proj, f"layer {i} up_proj", dtype, verbose=debug_mode)
+        
+        # shape of gate_proj -> intermediate x hidden
+        # shape of up_proj -> intermediate x hidden
+        # after stacking -> intermediate x 2 x hidden 
+        # we are using stacking to interleave the rows of both tensors
+        # so after stacking it's basically [gate_proj[0], up_proj[0], gate_proj[1], up_proj[1] ...]
+        # and finally reshaping to 2*intermediate x hidden
+        # we interleave so that during TP each GPU has access to the corresponding outputs of their 
+        # local gate and up projs so that they can apply swiglu locally. 
+        # for example let's say gate_up_proj = [gate_proj[0], up_proj[0], gate_proj[1], up_proj[1]]
+        # and you have 2 GPUs
+        # GPU 0 will get get [gate_proj[0], up_proj[0]] and GPU 1 will get [gate_proj[1], up_proj[1]]]
+        # now they do not need to communicate with each other to apply swiglu.
+        
+        gate_up_proj = torch.stack((gate_proj, up_proj), dim=1).reshape(
+            2 * gate_proj.size(0), -1
+        )
+        state_dict[f"transformer.h.{i}.mlp.gate_up_proj.weight"] = gate_up_proj
+        del gate_up_proj_weights[i]
+
+        if progress_per_file is not None:
+            pbar.update(progress_per_file)
 
 
 def copy_weights_phi(
@@ -536,7 +588,8 @@ def convert_hf_checkpoint(
         copy_fn = partial(copy_weights_falcon, model_name)
     elif model_name.lower().startswith("gemma-2"):
         qkv_weights = {}
-        copy_fn = partial(copy_weights_gemma_2, config, qkv_weights)
+        gate_up_proj_weights = {}
+        copy_fn = partial(copy_weights_gemma_2, config, qkv_weights, gate_up_proj_weights)
     elif model_name.lower().startswith("phi"):
         # holder to reconstitute the split q, k, v
         qkv_weights = {}
