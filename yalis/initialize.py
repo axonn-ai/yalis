@@ -24,7 +24,7 @@ def init_distributed():
         fabric = Fabric(
             accelerator="gpu",
             devices=torch.cuda.device_count(),
-            num_nodes=world_size // torch.cuda.device_count(),
+            num_nodes=(world_size + torch.cuda.device_count() -1)  // torch.cuda.device_count(),
             strategy=strategy,
         )
     else:
