@@ -23,7 +23,8 @@ def download_from_hub(
     tokenizer_only: bool = False,
     convert_checkpoint: bool = True,
     dtype: Optional[str] = None,
-    checkpoint_dir: Path = Path("checkpoints"),
+    checkpoint_dir: Path = Path(os.getenv("YALIS_CACHE", "~/.cache/yalis"))
+    / "checkpoints",
     model_name: Optional[str] = None,
 ) -> None:
     """Download weights or tokenizer data from the Hugging Face Hub.

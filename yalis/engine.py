@@ -6,7 +6,8 @@ from .initialize import init_distributed
 from .utils import print_rank0
 import logging
 import torch.distributed as dist
-import torch._dynamo
+from transformers import AutoTokenizer
+
 
 # These flags are taken from the following URL -
 # https://github.com/pytorch/pytorch/blob/347f96061f1cff603983b9be19ec92b374329a5b/benchmarks/gpt_fast/generate.py#L19
@@ -24,7 +25,7 @@ precision_to_dtype = {
 
 @torch.no_grad()
 @torch.compile()
-def prefill(model, tokens):
+def prefill(model, tokens, unpadded_prompt_lengths):
     """
     Prefill function for generating the first token.
 
@@ -36,8 +37,9 @@ def prefill(model, tokens):
         token_id: The next predicted token.
     """
 
-    logits = model(tokens)["logits"]
-    token_id = torch.argmax(logits[:, -1, :], dim=1).unsqueeze(1)
+    logits = model(tokens, unpadded_prompt_lengths)["logits"]
+    logits = logits[torch.arange(logits.size(0)), unpadded_prompt_lengths - 1]
+    token_id = torch.argmax(logits, dim=1).unsqueeze(1)
     return token_id
 
 
@@ -90,6 +92,7 @@ class LLMEngine:
         self.device = device
         self.dtype = precision_to_dtype[self.model_config.precision]
         self._initialize_model()
+        torch.cuda.empty_cache()  # return extra memory to CUDA. Can prevent NCCL init OOMs
 
     def _initialize_model(self):
         """
@@ -98,56 +101,107 @@ class LLMEngine:
         print_rank0(f"Initializing model: {self.model_config.model_name}")
         print_rank0(f"Using precision: {self.model_config.precision}")
         self.model = get_model(self.fabric, self.model_config.model_path, self.dtype)
+        # max_sequence_length=self.inference_config.max_length)
         self.model.set_kv_cache(
             batch_size=self.inference_config.batch_size,
             device=self.device,
             dtype=self.dtype,
         )
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_config.model_name)
+        # Check if the tokenizer has a pad token, otherwise use eos_token
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+            print_rank0(
+                "Pad token not found in the tokenizer. Using eos_token as pad token."
+            )
 
     def generate(
         self,
-        input_tokens: torch.Tensor,
+        prompts: Union[list[str], list[list[int]]],
         tokens_to_generate: int = 50,
         report_throughput: bool = False,
     ) -> torch.Tensor:
         """
-        Generates tokens from the model, starting with the provided tokenized input.
+        Generate tokens based on input prompts, which can either be a list of strings or a list of token ID lists.
+
+        This method processes the provided prompts, either by tokenizing input strings or directly using tokenized inputs,
+        and generates additional tokens based on the model's current state.
 
         Args:
-            input__tokens (Tensor): The tokenized input to start generation.
-            tokens_to_gen (int): Number of tokens to generate after the prompt.
+            prompts (Union[list[str], list[list[int]]]): A list of prompts to generate from.
+                - If `list[str]`, each string will be tokenized into input IDs for the model.
+                - If `list[list[int]]`, each sublist contains token IDs for the model to process directly.
+            tokens_to_generate (int, optional): The number of tokens to generate beyond the input prompts. Defaults to 50.
+            report_throughput (bool, optional): A flag indicating whether to report throughput during the generation process. Defaults to False.
 
         Returns:
-            output_tokens (List[Tensor]): List of generated token IDs.
+            torch.Tensor: A tensor containing the generated tokens, with shape `(batch_size, tokens_to_generate)`.
+
         """
+        if isinstance(prompts, list) and all(isinstance(p, str) for p in prompts):
+            prompt_tokens_and_mask = self.tokenizer(
+                prompts, return_tensors="pt", padding=True
+            )
+            prompt_tokens = prompt_tokens_and_mask.input_ids
+            # prompt tokens contain padding tokens. Summing the attention mask
+            # gives us the actual sequence lengths of each prompt sans padding
+            prompt_sequence_lengths = prompt_tokens_and_mask.attention_mask.sum(dim=1)
+        elif isinstance(prompts, list) and all(
+            isinstance(p, list) and all(isinstance(x, int) for x in p) for p in prompts
+        ):
+            # Get the maximum length of the sequences
+            max_length = max(len(p) for p in prompts)
+            prompt_tokens = torch.tensor(
+                [
+                    (
+                        p + [self.tokenizer.pad_token] * (max_length - len(p))
+                        if len(p) < max_length
+                        else p
+                    )
+                    for p in prompts
+                ]
+            )
+            prompt_sequence_lengths = torch.tensor([len(p) for p in prompts])
+        else:
+            raise TypeError(
+                "prompts must be either a list of strings or a list of lists of integers"
+            )
+
         output_tokens = []
-        # Start timing the operation
+        # Start timing the operations
         start = torch.cuda.Event(enable_timing=True)
         end = torch.cuda.Event(enable_timing=True)
         start.record()
-
         with torch.no_grad(), torch.autocast(
             self.device, dtype=self.dtype, cache_enabled=False
         ):
-            tokens = input_tokens.clone().to(
+            current_input_to_model = prompt_tokens.clone().to(
                 self.device
             )  # Move prompt tokens to the device
+            prompt_sequence_lengths = prompt_sequence_lengths.to(self.device)
             for step in range(tokens_to_generate):
                 if step == 0:  # Prefill step
-                    next_token = prefill(self.model, tokens)  # Call prefill function
-                    tokens = next_token.clone()
+                    # print_rank0(f"mem before prefill = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
+                    next_token = prefill(
+                        self.model, current_input_to_model, prompt_sequence_lengths
+                    )  # Call prefill function
+                    # print_rank0(f"mem after prefill = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
+                    current_input_to_model = next_token.clone()
                 else:  # Generation step
-                    next_token = generate(self.model, tokens)  # Call generate function
-                    tokens.copy_(next_token)  # Copy the new token into tokens
-
+                    next_token = generate(
+                        self.model, current_input_to_model
+                    )  # Call generate function
+                    # print_rank0(f"mem after generate {step} = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
+                    current_input_to_model.copy_(
+                        next_token
+                    )  # Copy the new token into tokens
                 output_tokens.append(next_token.clone())
-
         output_tensor = torch.cat(output_tokens, dim=1)
         # End timing and calculate elapsed time
         end.record()
         torch.cuda.synchronize()  # Wait for all events to finish
         time_taken = start.elapsed_time(end) / 1000  # Time in seconds
-        tput = input_tokens.shape[0] * tokens_to_generate / time_taken
+        tput = prompt_tokens.shape[0] * tokens_to_generate / time_taken
         if report_throughput and dist.get_rank() == 0:
             print(f"Throughput = {tput:.2f} tok/s")
         return output_tensor
