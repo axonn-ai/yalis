@@ -224,20 +224,20 @@ def copy_weights_hf_llama(
             gate_proj, f"layer {i} gate_proj", dtype, verbose=debug_mode
         )
         up_proj = load_param(up_proj, f"layer {i} up_proj", dtype, verbose=debug_mode)
-        
+
         # shape of gate_proj -> intermediate x hidden
         # shape of up_proj -> intermediate x hidden
-        # after stacking -> intermediate x 2 x hidden 
+        # after stacking -> intermediate x 2 x hidden
         # we are using stacking to interleave the rows of both tensors
         # so after stacking it's basically [gate_proj[0], up_proj[0], gate_proj[1], up_proj[1] ...]
         # and finally reshaping to 2*intermediate x hidden
-        # we interleave so that during TP each GPU has access to the corresponding outputs of their 
-        # local gate and up projs so that they can apply swiglu locally. 
+        # we interleave so that during TP each GPU has access to the corresponding outputs of their
+        # local gate and up projs so that they can apply swiglu locally.
         # for example let's say gate_up_proj = [gate_proj[0], up_proj[0], gate_proj[1], up_proj[1]]
         # and you have 2 GPUs
         # GPU 0 will get get [gate_proj[0], up_proj[0]] and GPU 1 will get [gate_proj[1], up_proj[1]]]
         # now they do not need to communicate with each other to apply swiglu.
-        
+
         gate_up_proj = torch.stack((gate_proj, up_proj), dim=1).reshape(
             2 * gate_proj.size(0), -1
         )
@@ -361,20 +361,20 @@ def copy_weights_gemma_2(
             gate_proj, f"layer {i} gate_proj", dtype, verbose=debug_mode
         )
         up_proj = load_param(up_proj, f"layer {i} up_proj", dtype, verbose=debug_mode)
-        
+
         # shape of gate_proj -> intermediate x hidden
         # shape of up_proj -> intermediate x hidden
-        # after stacking -> intermediate x 2 x hidden 
+        # after stacking -> intermediate x 2 x hidden
         # we are using stacking to interleave the rows of both tensors
         # so after stacking it's basically [gate_proj[0], up_proj[0], gate_proj[1], up_proj[1] ...]
         # and finally reshaping to 2*intermediate x hidden
-        # we interleave so that during TP each GPU has access to the corresponding outputs of their 
-        # local gate and up projs so that they can apply swiglu locally. 
+        # we interleave so that during TP each GPU has access to the corresponding outputs of their
+        # local gate and up projs so that they can apply swiglu locally.
         # for example let's say gate_up_proj = [gate_proj[0], up_proj[0], gate_proj[1], up_proj[1]]
         # and you have 2 GPUs
         # GPU 0 will get get [gate_proj[0], up_proj[0]] and GPU 1 will get [gate_proj[1], up_proj[1]]]
         # now they do not need to communicate with each other to apply swiglu.
-        
+
         gate_up_proj = torch.stack((gate_proj, up_proj), dim=1).reshape(
             2 * gate_proj.size(0), -1
         )
@@ -589,7 +589,9 @@ def convert_hf_checkpoint(
     elif model_name.lower().startswith("gemma-2"):
         qkv_weights = {}
         gate_up_proj_weights = {}
-        copy_fn = partial(copy_weights_gemma_2, config, qkv_weights, gate_up_proj_weights)
+        copy_fn = partial(
+            copy_weights_gemma_2, config, qkv_weights, gate_up_proj_weights
+        )
     elif model_name.lower().startswith("phi"):
         # holder to reconstitute the split q, k, v
         qkv_weights = {}

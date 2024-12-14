@@ -84,7 +84,9 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, input_ids: torch.Tensor, actual_sequence_lengths: torch.Tensor = None) -> torch.Tensor:
+    def forward(
+        self, input_ids: torch.Tensor, actual_sequence_lengths: torch.Tensor = None
+    ) -> torch.Tensor:
         # assert attention_mask is None, "litgpt model does not accept an attention mask"
         idx = input_ids
         T = idx.size(1)
@@ -116,7 +118,9 @@ class GPT(nn.Module):
                 torch.tanh(x / self.config.final_logit_softcapping)
                 * self.config.final_logit_softcapping
             )
-        self.token_counter.add_(T if actual_sequence_lengths is None else actual_sequence_lengths)
+        self.token_counter.add_(
+            T if actual_sequence_lengths is None else actual_sequence_lengths
+        )
         return {"logits": x}
 
     @classmethod
@@ -324,7 +328,6 @@ class CausalSelfAttention(nn.Module):
             assert self.config.n_query_groups % attention_world_size == 0
             self.config.n_query_groups //= attention_world_size
 
-
     def forward(
         self,
         x: torch.Tensor,
@@ -373,7 +376,11 @@ class CausalSelfAttention(nn.Module):
             rotary_cos=cos,
             rotary_sin=sin,
             rotary_interleaved=False,
-            window_size = (self.config.sliding_window_size, self.config.sliding_window_size) if self.apply_sliding_window_attention else (-1, -1)
+            window_size=(
+                (self.config.sliding_window_size, self.config.sliding_window_size)
+                if self.apply_sliding_window_attention
+                else (-1, -1)
+            ),
         )
 
         y = y.reshape(

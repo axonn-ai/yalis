@@ -38,7 +38,7 @@ def prefill(model, tokens, unpadded_prompt_lengths):
     """
 
     logits = model(tokens, unpadded_prompt_lengths)["logits"]
-    logits = logits[torch.arange(logits.size(0)), unpadded_prompt_lengths-1]
+    logits = logits[torch.arange(logits.size(0)), unpadded_prompt_lengths - 1]
     token_id = torch.argmax(logits, dim=1).unsqueeze(1)
     return token_id
 
@@ -92,7 +92,7 @@ class LLMEngine:
         self.device = device
         self.dtype = precision_to_dtype[self.model_config.precision]
         self._initialize_model()
-        torch.cuda.empty_cache() #return extra memory to CUDA. Can prevent NCCL init OOMs
+        torch.cuda.empty_cache()  # return extra memory to CUDA. Can prevent NCCL init OOMs
 
     def _initialize_model(self):
         """
@@ -100,10 +100,8 @@ class LLMEngine:
         """
         print_rank0(f"Initializing model: {self.model_config.model_name}")
         print_rank0(f"Using precision: {self.model_config.precision}")
-        self.model = get_model(self.fabric, 
-                                self.model_config.model_path, 
-                                self.dtype)
-                                #max_sequence_length=self.inference_config.max_length)
+        self.model = get_model(self.fabric, self.model_config.model_path, self.dtype)
+        # max_sequence_length=self.inference_config.max_length)
         self.model.set_kv_cache(
             batch_size=self.inference_config.batch_size,
             device=self.device,
@@ -113,9 +111,9 @@ class LLMEngine:
         # Check if the tokenizer has a pad token, otherwise use eos_token
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
-            print_rank0("Pad token not found in the tokenizer. Using eos_token as pad token.")
-
-
+            print_rank0(
+                "Pad token not found in the tokenizer. Using eos_token as pad token."
+            )
 
     def generate(
         self,
@@ -141,22 +139,33 @@ class LLMEngine:
 
         """
         if isinstance(prompts, list) and all(isinstance(p, str) for p in prompts):
-            prompt_tokens_and_mask = self.tokenizer(prompts, return_tensors="pt", padding=True)
+            prompt_tokens_and_mask = self.tokenizer(
+                prompts, return_tensors="pt", padding=True
+            )
             prompt_tokens = prompt_tokens_and_mask.input_ids
             # prompt tokens contain padding tokens. Summing the attention mask
-            # gives us the actual sequence lengths of each prompt sans padding    
+            # gives us the actual sequence lengths of each prompt sans padding
             prompt_sequence_lengths = prompt_tokens_and_mask.attention_mask.sum(dim=1)
-        elif isinstance(prompts, list) and all(isinstance(p, list) and all(isinstance(x, int) for x in p) for p in prompts):
+        elif isinstance(prompts, list) and all(
+            isinstance(p, list) and all(isinstance(x, int) for x in p) for p in prompts
+        ):
             # Get the maximum length of the sequences
             max_length = max(len(p) for p in prompts)
-            prompt_tokens = torch.tensor([
-                    p + [self.tokenizer.pad_token] * (max_length - len(p)) if len(p) < max_length else p
+            prompt_tokens = torch.tensor(
+                [
+                    (
+                        p + [self.tokenizer.pad_token] * (max_length - len(p))
+                        if len(p) < max_length
+                        else p
+                    )
                     for p in prompts
-                ])
+                ]
+            )
             prompt_sequence_lengths = torch.tensor([len(p) for p in prompts])
         else:
-            raise TypeError("prompts must be either a list of strings or a list of lists of integers")
-
+            raise TypeError(
+                "prompts must be either a list of strings or a list of lists of integers"
+            )
 
         output_tokens = []
         # Start timing the operations
@@ -172,16 +181,20 @@ class LLMEngine:
             prompt_sequence_lengths = prompt_sequence_lengths.to(self.device)
             for step in range(tokens_to_generate):
                 if step == 0:  # Prefill step
-                    #print_rank0(f"mem before prefill = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
-                    next_token = prefill(self.model, 
-                                         current_input_to_model, 
-                                         prompt_sequence_lengths)  # Call prefill function
-                    #print_rank0(f"mem after prefill = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
+                    # print_rank0(f"mem before prefill = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
+                    next_token = prefill(
+                        self.model, current_input_to_model, prompt_sequence_lengths
+                    )  # Call prefill function
+                    # print_rank0(f"mem after prefill = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
                     current_input_to_model = next_token.clone()
                 else:  # Generation step
-                    next_token = generate(self.model, current_input_to_model)  # Call generate function
-                    #print_rank0(f"mem after generate {step} = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
-                    current_input_to_model.copy_(next_token)  # Copy the new token into tokens
+                    next_token = generate(
+                        self.model, current_input_to_model
+                    )  # Call generate function
+                    # print_rank0(f"mem after generate {step} = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
+                    current_input_to_model.copy_(
+                        next_token
+                    )  # Copy the new token into tokens
                 output_tokens.append(next_token.clone())
         output_tensor = torch.cat(output_tokens, dim=1)
         # End timing and calculate elapsed time
