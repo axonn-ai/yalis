@@ -102,6 +102,13 @@ class GPT(nn.Module):
     def reset_parameters(self) -> None:
         # Trigger resetting the rope-cache
         self.cos, self.sin = self.rope_cache(device=self.cos.device)
+      
+    def rewind_kv_cache(self, rewind_length) -> None:
+        # Rewind the kv cache by `rewind_length` tokens
+        self.token_counter = self.token_counter - rewind_length
+    
+    def get_token_count(self):
+        return self.token_counter
 
     def _init_weights(self, module: nn.Module) -> None:
         """Meant to be used with `gpt.apply(gpt._init_weights)`."""
