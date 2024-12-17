@@ -7,6 +7,7 @@ from .utils import print_rank0
 import logging
 import torch.distributed as dist
 from transformers import AutoTokenizer
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
 
 # These flags are taken from the following URL -
@@ -172,6 +173,7 @@ class LLMEngine:
         start = torch.cuda.Event(enable_timing=True)
         end = torch.cuda.Event(enable_timing=True)
         start.record()
+        self.model.token_counter.zero_()
         with torch.no_grad(), torch.autocast(
             self.device, dtype=self.dtype, cache_enabled=False
         ):
@@ -188,9 +190,10 @@ class LLMEngine:
                     # print_rank0(f"mem after prefill = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
                     current_input_to_model = next_token.clone()
                 else:  # Generation step
-                    next_token = generate(
-                        self.model, current_input_to_model
-                    )  # Call generate function
+                    with sdpa_kernel(SDPBackend.MATH):
+                        next_token = generate(
+                            self.model, current_input_to_model
+                        )  # Call generate function
                     # print_rank0(f"mem after generate {step} = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
                     current_input_to_model.copy_(
                         next_token

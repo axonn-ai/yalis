@@ -18,12 +18,13 @@ from contextlib import nullcontext
 if __name__ == "__main__":
     # Model ID from Hugging Face
     # model_id = "google/gemma-2-27b-it"
-    model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
+    # model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
+    model_id = "meta-llama/Llama-2-7b-chat-hf"
 
     # Input prompt for the model
     user_prompts = [
         "How to bake a cake?",
-        "How to drive a car on a freeway?",
+        # "How to drive a car on a freeway?",
     ] * 8
     system_prompt = "You are a helpful chatbot. Answer the following question.\n"
 
@@ -45,7 +46,7 @@ if __name__ == "__main__":
         input_prompts.append(formatted_prompt)
 
     # Number of tokens to generate
-    tokens_to_gen = 500
+    tokens_to_gen = 256
 
     # configs
     model_config = ModelConfig(model_name=model_id, precision="bf16")
@@ -53,7 +54,7 @@ if __name__ == "__main__":
 
     engine = LLMEngine(model_config=model_config, inference_config=inference_config)
 
-    print_rank0(torch.cuda.memory_allocated() / 1e9)
+    # print_rank0(torch.cuda.memory_allocated() / 1e9)
 
     if enable_profiling:
         profiler_context = torch.profiler.profile(
@@ -64,7 +65,7 @@ if __name__ == "__main__":
         profiler_context = nullcontext()
 
     with profiler_context as prof:
-        for iter in range(8):
+        for iter in range(4):
             output_tokens = engine.generate(
                 input_prompts, report_throughput=True, tokens_to_generate=tokens_to_gen
             )
@@ -82,6 +83,7 @@ if __name__ == "__main__":
         print_rank0(f"prompt = {prompt}")
         print_rank0(f"output = {output}")
         print_rank0("==========================\n\n")
+        break
 
     if enable_profiling:
         print_rank0(
