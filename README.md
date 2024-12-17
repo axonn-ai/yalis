@@ -6,7 +6,7 @@ YALIS stands for Yet Another LLM Inference System. It is what it is.
 ## Installing Dependencies
 If you are on Perlmutter, very cool. Go to `scripts` and do:
 ```bash
-    bash create_python_env_perlmutter.sh
+bash create_python_env_perlmutter.sh
 ```
 This should create a python environment for you with all dependencies. 
 
