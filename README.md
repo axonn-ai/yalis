@@ -21,8 +21,8 @@ export YALIS_CACHE=... # some location with large disk space.
 
 ```
 All env variables prefixed by HF are used by huggingface to store it's model checkpoints. `YALIS_CACHE` is where 
-YALIS stores it's checkpoints. If you do not set YALIS_CACHE, then models will be downloaded to your home directory, which
-can we undesirable.
+YALIS stores it's checkpoints. If you do not set YALIS_CACHE, models will be downloaded to your home directory.
+This can be undesirable if you have limited storage in your home directory, which is often the case on HPC clusters.
 
 If you are on Perlmutter, just use
 ```bash
