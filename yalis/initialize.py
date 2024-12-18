@@ -1,42 +1,14 @@
-from typing import Optional
-from lightning.fabric import Fabric, seed_everything
-from axonn.lightning import AxonnStrategy
+from lightning.fabric import seed_everything
 import torch
 import torch.distributed as dist
-
-yalis_fabric = None
+from axonn import axonn as ax
 
 
 def init_distributed():
-    global yalis_fabric
-    if yalis_fabric is not None:
-        return yalis_fabric
     dist.init_process_group(backend="nccl")
-    world_size = dist.get_world_size()
-    if world_size > 1:
-        strategy = AxonnStrategy(
-            G_intra_r=world_size,
-            G_intra_c=1,
-            G_intra_d=1,
-            overlap_communication=True,
-            enable_timers=False,
-        )
-        fabric = Fabric(
-            accelerator="gpu",
-            devices=torch.cuda.device_count(),
-            num_nodes=(world_size + torch.cuda.device_count() - 1)
-            // torch.cuda.device_count(),
-            strategy=strategy,
-        )
-    else:
-        fabric = Fabric(
-            accelerator="gpu",
-            devices=1,
-            num_nodes=1,
-        )
-    fabric.launch()
+    torch.cuda.set_device(dist.get_rank() % torch.cuda.device_count())
+    ax.init(G_intra_r=dist.get_world_size(), G_intra_c=1, G_intra_d=1)
     # this is very important to ensure that the same token is sampled on each TP rank!
     # todo: seed should be set from InferenceConfig
     seed_everything(1234)
-    yalis_fabric = fabric
-    return fabric
+    

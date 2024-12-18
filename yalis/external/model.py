@@ -12,7 +12,13 @@ from typing import Any, Optional, Tuple
 import torch
 import torch.nn as nn
 from typing_extensions import Self
-from flash_attn import flash_attn_with_kvcache
+
+try:
+    from flash_attn import flash_attn_with_kvcache
+    has_flash_attn = True
+except ImportError:
+    flash_attn_with_kvcache = None
+    has_flash_attn = False
 
 from litgpt.config import Config
 import sys
@@ -32,6 +38,7 @@ class GPT(nn.Module):
         assert config.padded_vocab_size is not None
         self.config = config
         self.config.explicitly_use_flash_kernel = True
+        self.config.explicitly_use_flash_kernel = self.config.explicitly_use_flash_kernel and has_flash_attn
         print_rank0(
             f"Explicit Flash Kernel Usage = {self.config.explicitly_use_flash_kernel}"
         )
@@ -388,10 +395,10 @@ class CausalSelfAttention(nn.Module):
         mask = self.build_mask_from_index(token_counter, t_max=k_cache.size(-2))[
             :, None, None, :
         ]
-        # print(mask.shape, q.shape)
-        # exit()
+        
+        enable_gqa = q.size(1) != k.size(1)
         out = torch.nn.functional.scaled_dot_product_attention(
-            q, k_cache, v_cache, attn_mask=mask
+            q, k_cache, v_cache, attn_mask=mask, enable_gqa=enable_gqa
         )
 
         return out
@@ -427,7 +434,8 @@ class CausalSelfAttention(nn.Module):
         k_cache[:, :, :T, :] = k[:, :, :T, :]
         v_cache[:, :, :T, :] = v[:, :, :T, :]
 
-        out = torch.nn.functional.scaled_dot_product_attention(q, k, v, is_causal=True)
+        enable_gqa = q.size(1) != k.size(1)
+        out = torch.nn.functional.scaled_dot_product_attention(q, k, v, is_causal=True, enable_gqa=enable_gqa)
 
         return out
 

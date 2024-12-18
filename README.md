@@ -6,7 +6,7 @@ YALIS stands for Yet Another LLM Inference System. It is what it is.
 ## Installing Dependencies
 If you are on Perlmutter, very cool. Go to `scripts` and do:
 ```bash
-bash create_python_env_perlmutter.sh
+bash create_python_env_perlmutter_v2.sh
 ```
 This should create a python environment for you with all dependencies. 
 
@@ -40,11 +40,24 @@ Then, go to `yalis/external`. Run the following to get a list of supported model
 
 ```bash
 python download.py list
-
 ```
 
-Now say you want to download Llama 2 7B chat. Run:
+Now say you want to download Meta Llama-3 8B Instruct. Run:
 
 ```bash
-python download.py meta-llama/Llama-2-7b-chat-hf
+python download.py meta-llama/Meta-Llama-3-8B-Instruct
 ```
+
+## Running 
+Let's say we want to run Llama-3 8B Instruct on a single node of Perlmutter. First request an interactive session - 
+
+```bash
+salloc --nodes 1 --qos interactive --time 01:00:00 --constraint gpu --gpus 4 --account=m4641_g
+```
+
+Once a node has been granted to you, run the following command
+```bash
+bash scripts/run_pm.sh
+```
+
+On other clusters, modify the workflow and scripts accordingly.

@@ -41,6 +41,9 @@ def prefill(model, tokens, unpadded_prompt_lengths):
     logits = model(tokens, unpadded_prompt_lengths)["logits"]
     logits = logits[torch.arange(logits.size(0)), unpadded_prompt_lengths - 1]
     token_id = torch.argmax(logits, dim=1).unsqueeze(1)
+    #token_id = greedy_sampler(logits)
+    #print(token_id.shape)
+    #exit()
     return token_id
 
 
@@ -62,6 +65,7 @@ def generate(model, tokens, get_probs=False):
     """
     logits = model(tokens)["logits"]
     token_id = torch.argmax(logits[:, -1, :], dim=1).unsqueeze(1)
+    #token_id = greedy_sampler(logits[:, -1])
     if get_probs:
         return token_id, logits
     else:
@@ -89,9 +93,9 @@ class LLMEngine:
         self.model_config = model_config
         self.inference_config = inference_config
         self.model = None  # Placeholder for the loaded model
-        self.fabric = init_distributed()
         self.device = device
         self.dtype = precision_to_dtype[self.model_config.precision]
+        init_distributed()
         self._initialize_model()
         torch.cuda.empty_cache()  # return extra memory to CUDA. Can prevent NCCL init OOMs
 
@@ -101,8 +105,7 @@ class LLMEngine:
         """
         print_rank0(f"Initializing model: {self.model_config.model_name}")
         print_rank0(f"Using precision: {self.model_config.precision}")
-        self.model = get_model(self.fabric, self.model_config.model_path, self.dtype)
-        # max_sequence_length=self.inference_config.max_length)
+        self.model = get_model(self.model_config.model_path, self.dtype, max_sequence_length=self.inference_config.max_length)
         self.model.set_kv_cache(
             batch_size=self.inference_config.batch_size,
             device=self.device,

@@ -84,7 +84,7 @@ class InferenceConfig:
     def __init__(
         self,
         batch_size: int = 1,
-        max_length: int = 1024,
+        max_length_of_generated_sequences: int = 1024,
         decoding_strategy: Literal["greedy"] = "greedy",
         temperature: Optional[float] = None,
         top_k: Optional[int] = None,
@@ -96,7 +96,7 @@ class InferenceConfig:
 
         Args:
             batch_size (int): Number of inputs processed in parallel.
-            max_length (int): Maximum length of the generated sequences.
+            max_length_of_generated_sequences (int): Maximum length of the generated sequences.
             decoding_strategy (str): Decoding strategy, default is 'greedy'.
             num_beams (Optional[int]): Number of beams for beam search.
             temperature (Optional[float]): Sampling temperature.
@@ -109,7 +109,7 @@ class InferenceConfig:
         # from the model config
         # anyway this arg isn't being used right now. KV Cache is defaulting to the model
         # max sequence length
-        self.max_length = max_length
+        self.max_length = max_length_of_generated_sequences
         self.decoding_strategy = decoding_strategy
         # ToDo: support more decoding strategies - top-k, top-p, beam-search
         self.temperature = temperature
