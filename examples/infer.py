@@ -44,7 +44,7 @@ if __name__ == "__main__":
     system_prompt = "You are a helpful chatbot. Answer the following question.\n"
 
     # profile the run or not
-    enable_profiling = False
+    enable_profiling = True
 
     # Tokenizer for encoding the prompt
     tokenizer = AutoTokenizer.from_pretrained(model_id)
@@ -66,7 +66,9 @@ if __name__ == "__main__":
     # configs
     model_config = ModelConfig(model_name=model_id, precision="bf16")
     inference_config = InferenceConfig(batch_size=len(input_prompts), 
-                                       max_length_of_generated_sequences=1024)
+                                       max_length_of_generated_sequences=1024,
+                                       top_p=0.80,
+                                       temperature=1.0)
 
     engine = LLMEngine(model_config=model_config, inference_config=inference_config)
 

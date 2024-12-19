@@ -4,6 +4,7 @@ from .config import ModelConfig, InferenceConfig
 from .model import get_model
 from .initialize import init_distributed
 from .utils import print_rank0
+from .external.sampling import sample
 import logging
 import torch.distributed as dist
 from transformers import AutoTokenizer
@@ -26,7 +27,7 @@ precision_to_dtype = {
 
 @torch.no_grad()
 @torch.compile()
-def prefill(model, tokens, unpadded_prompt_lengths):
+def prefill(model, tokens, unpadded_prompt_lengths, temperature=1.0, top_k=None, top_p=1.0):
     """
     Prefill function for generating the first token.
 
@@ -40,16 +41,13 @@ def prefill(model, tokens, unpadded_prompt_lengths):
 
     logits = model(tokens, unpadded_prompt_lengths)["logits"]
     logits = logits[torch.arange(logits.size(0)), unpadded_prompt_lengths - 1]
-    token_id = torch.argmax(logits, dim=1).unsqueeze(1)
-    #token_id = greedy_sampler(logits)
-    #print(token_id.shape)
-    #exit()
+    token_id = sample(logits=logits, temperature=temperature, top_k=top_k, top_p=top_p)
     return token_id
 
 
 @torch.no_grad()
 @torch.compile(mode="reduce-overhead")
-def generate(model, tokens, get_probs=False):
+def generate(model, tokens, get_probs=False, temperature=1.0, top_k=None, top_p=1.0):
     """
     Generate function for producing the next token(s).
 
@@ -64,8 +62,7 @@ def generate(model, tokens, get_probs=False):
         logits: (Optional) The raw logits from the model.
     """
     logits = model(tokens)["logits"]
-    token_id = torch.argmax(logits[:, -1, :], dim=1).unsqueeze(1)
-    #token_id = greedy_sampler(logits[:, -1])
+    token_id = sample(logits=logits[:, -1], temperature=temperature, top_k=top_k, top_p=top_p)
     if get_probs:
         return token_id, logits
     else:
@@ -188,14 +185,20 @@ class LLMEngine:
                 if step == 0:  # Prefill step
                     # print_rank0(f"mem before prefill = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
                     next_token = prefill(
-                        self.model, current_input_to_model, prompt_sequence_lengths
+                        self.model, current_input_to_model, prompt_sequence_lengths, 
+                        temperature=self.inference_config.temperature, 
+                        top_k=self.inference_config.top_k, 
+                        top_p=self.inference_config.top_p
                     )  # Call prefill function
                     # print_rank0(f"mem after prefill = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
                     current_input_to_model = next_token.clone()
                 else:  # Generation step
                     with sdpa_kernel(SDPBackend.MATH):
                         next_token = generate(
-                            self.model, current_input_to_model
+                            self.model, current_input_to_model, 
+                            temperature=self.inference_config.temperature, 
+                            top_k=self.inference_config.top_k, 
+                            top_p=self.inference_config.top_p
                         )  # Call generate function
                     # print_rank0(f"mem after generate {step} = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
                     current_input_to_model.copy_(
