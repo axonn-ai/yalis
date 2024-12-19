@@ -12,7 +12,13 @@ from typing import Any, Optional, Tuple
 import torch
 import torch.nn as nn
 from typing_extensions import Self
-from flash_attn import flash_attn_with_kvcache
+
+try:
+    from flash_attn import flash_attn_with_kvcache
+    has_flash_attn = True
+except ImportError:
+    flash_attn_with_kvcache = None
+    has_flash_attn = False
 
 from litgpt.config import Config
 import sys
@@ -23,12 +29,19 @@ from copy import deepcopy
 from axonn import axonn as ax
 from axonn.intra_layer.communication import Drop, Gather
 
+from yalis import print_rank0
+
 
 class GPT(nn.Module):
     def __init__(self, config: Config) -> None:
         super().__init__()
         assert config.padded_vocab_size is not None
         self.config = config
+        self.config.explicitly_use_flash_kernel = True
+        self.config.explicitly_use_flash_kernel = self.config.explicitly_use_flash_kernel and has_flash_attn
+        print_rank0(
+            f"Explicit Flash Kernel Usage = {self.config.explicitly_use_flash_kernel}"
+        )
 
         self.lm_head = nn.Linear(
             config.n_embd, config.padded_vocab_size, bias=config.lm_head_bias
@@ -104,8 +117,9 @@ class GPT(nn.Module):
         # flash attention wants the rope cache to be
         # in the same dtype as the query
         # ToDO: confirm if this is okay, or if we should do rope in fp32?
-        self.cos = self.cos.to(x.dtype)
-        self.sin = self.sin.to(x.dtype)
+        if self.config.explicitly_use_flash_kernel:
+            self.cos = self.cos.to(x.dtype)
+            self.sin = self.sin.to(x.dtype)
 
         for block in self.transformer.h:
             x = block(x, self.cos, self.sin, self.token_counter)
@@ -180,6 +194,7 @@ class GPT(nn.Module):
             condense_ratio=self.config.rope_condense_ratio,
             base=self.config.rope_base,
             extra_config=extra_config,
+            explicitly_use_flash_kernel=self.config.explicitly_use_flash_kernel,
         )
 
     def set_kv_cache(
@@ -191,7 +206,9 @@ class GPT(nn.Module):
         dtype: Optional[torch.dtype] = None,
     ) -> None:
         if rope_cache_length is None:
-            rope_cache_length = self.cos.size(-1) * 2
+            rope_cache_length = self.cos.size(-1)
+            if self.config.explicitly_use_flash_kernel:
+                rope_cache_length *= 2
 
         if max_seq_length is None:
             max_seq_length = self.max_seq_length
@@ -315,10 +332,6 @@ class CausalSelfAttention(nn.Module):
             and block_idx % config.sliding_window_layer_placing == 0
         )
 
-        # assert (
-        #     not self.apply_sliding_window_attention
-        # ), "Sliding window attention is not implemented yet"
-
         self.config = config
         if config.tensor_parallel:
             self.config = deepcopy(self.config)
@@ -327,6 +340,104 @@ class CausalSelfAttention(nn.Module):
             self.config.n_head //= attention_world_size
             assert self.config.n_query_groups % attention_world_size == 0
             self.config.n_query_groups //= attention_world_size
+
+    def build_mask_from_index(self, index, t_max):
+        B = index.size(0)
+        # Create a range [0, 1, 2, ..., t_max-1] and reshape to [1, t_max] so it can broadcast.
+        arange_t = torch.arange(t_max, device=index.device).unsqueeze(0)
+        # Compare to index[:, None]: [B, 1] which will broadcast to [B, t_max]
+        return arange_t <= index.unsqueeze(1)
+
+    def index_into_rope_cache_gen(self, cache, index):
+        # index - [B, T]
+        assert index.dim() == 1, "this method is only for the generation phase"
+        return torch.index_select(cache, 0, index.view(-1)).reshape(
+            index.size(0), 1, -1
+        )
+
+    def lit_rotary_kv_update_gen(
+        self,
+        q: torch.Tensor,  # B,nh,1,hs
+        k: torch.Tensor,  # B,nh,1,hs
+        v: torch.Tensor,  # B,nh,1,hs
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        token_counter: torch.Tensor,  # B,1
+        k_cache: torch.Tensor,  # B,nh,t_max,hs
+        v_cache: torch.Tensor,  # B,nh,t_max,hs,
+    ) -> torch.Tensor:
+        cos = self.index_into_rope_cache_gen(cos, token_counter)
+        sin = self.index_into_rope_cache_gen(sin, token_counter)
+
+        if cos.dim() > 1:
+            # batch dimensions must align
+            # sin/cos are (B, T, hs) so we unsqeeze -3 for nh
+            # we count from back because all of apply_rope does
+            cos = cos.unsqueeze(-3)
+            sin = sin.unsqueeze(-3)
+        roped_tensors = []
+        for x in [q, k]:
+            head_size = x.size(-1)
+            x1 = x[..., : head_size // 2]  # (B, nh, T, hs/2)
+            x2 = x[..., head_size // 2 :]  # (B, nh, T, hs/2)
+            rotated = torch.cat((-x2, x1), dim=-1)  # (B, nh, T, hs)
+            roped = (x * cos) + (rotated * sin)
+            roped = roped.to(dtype=x.dtype)
+            roped_tensors.append(roped)
+
+        q, k = roped_tensors
+
+        B = k_cache.size(0)
+        b_indices = torch.arange(B, device=k_cache.device)
+
+        k_cache[b_indices, :, token_counter.view(-1), :] = k[:, :, 0, :]
+        v_cache[b_indices, :, token_counter.view(-1), :] = v[:, :, 0, :]
+        mask = self.build_mask_from_index(token_counter, t_max=k_cache.size(-2))[
+            :, None, None, :
+        ]
+        
+        enable_gqa = q.size(1) != k.size(1)
+        out = torch.nn.functional.scaled_dot_product_attention(
+            q, k_cache, v_cache, attn_mask=mask, enable_gqa=enable_gqa
+        )
+
+        return out
+
+    def lit_rotary_kv_update_prefill(
+        self,
+        q: torch.Tensor,  # B,nh,T,hs
+        k: torch.Tensor,  # B,nh,T,hs
+        v: torch.Tensor,  # B,nh,T,hs
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        k_cache: torch.Tensor,  # B,nh,t_max,hs
+        v_cache: torch.Tensor,  # B,nh,t_max,hs,
+    ) -> torch.Tensor:
+        B, T = q.shape[0], q.shape[-2]
+        cos, sin = cos[:T], sin[:T]
+        # cos and sin are of shape (T, hs)
+        # we want to add singleton dimensions - (1, 1, T, hs)
+        cos = cos[None, None, :, :]
+        sin = sin[None, None, :, :]
+
+        roped_tensors = []
+        for x in [q, k]:
+            head_size = x.size(-1)
+            x1 = x[..., : head_size // 2]  # (B, nh, T, hs/2)
+            x2 = x[..., head_size // 2 :]  # (B, nh, T, hs/2)
+            rotated = torch.cat((-x2, x1), dim=-1)  # (B, nh, T, hs)
+            roped = (x * cos) + (rotated * sin)
+            roped = roped.to(dtype=x.dtype)
+            roped_tensors.append(roped)
+
+        q, k = roped_tensors
+        k_cache[:, :, :T, :] = k[:, :, :T, :]
+        v_cache[:, :, :T, :] = v[:, :, :T, :]
+
+        enable_gqa = q.size(1) != k.size(1)
+        out = torch.nn.functional.scaled_dot_product_attention(q, k, v, is_causal=True, enable_gqa=enable_gqa)
+
+        return out
 
     def forward(
         self,
@@ -351,9 +462,9 @@ class CausalSelfAttention(nn.Module):
         # split batched computation into three
         q, k, v = qkv.split((q_per_kv, 1, 1), dim=3)
 
-        q = q.reshape(B, T, -1, self.config.head_size).contiguous()  # (B, T, nh_q, hs)
-        k = k.reshape(B, T, -1, self.config.head_size).contiguous()  # (B, T, nh_k, hs)
-        v = v.reshape(B, T, -1, self.config.head_size).contiguous()  # (B, T, nh_v, hs)
+        q = q.reshape(B, T, -1, self.config.head_size)  # (B, T, nh_q, hs)
+        k = k.reshape(B, T, -1, self.config.head_size)  # (B, T, nh_k, hs)
+        v = v.reshape(B, T, -1, self.config.head_size)  # (B, T, nh_v, hs)
 
         assert (
             self.config.rope_n_elem == self.config.head_size
@@ -361,27 +472,57 @@ class CausalSelfAttention(nn.Module):
 
         k_cache, v_cache = self.kv_cache.k, self.kv_cache.v
 
-        # y = self.scaled_dot_product_attention(q, k, v, mask)
+        if self.config.explicitly_use_flash_kernel:
+            q = q.contiguous()
+            k = k.contiguous()
+            v = v.contiguous()
 
-        # print(cos.shape, sin.shape, k_cache.shape, v_cache.shape, q.shape)
-        # exit()
-        y = flash_attn_with_kvcache(
-            q=q,
-            k_cache=k_cache,
-            v_cache=v_cache,
-            k=k,
-            v=v,
-            causal=(T > 1),
-            cache_seqlens=token_counter,
-            rotary_cos=cos,
-            rotary_sin=sin,
-            rotary_interleaved=False,
-            window_size=(
-                (self.config.sliding_window_size, self.config.sliding_window_size)
-                if self.apply_sliding_window_attention
-                else (-1, -1)
-            ),
-        )
+            y = flash_attn_with_kvcache(
+                q=q,
+                k_cache=k_cache,
+                v_cache=v_cache,
+                k=k,
+                v=v,
+                causal=(T > 1),
+                cache_seqlens=token_counter,
+                rotary_cos=cos,
+                rotary_sin=sin,
+                rotary_interleaved=False,
+                window_size=(
+                    (self.config.sliding_window_size, self.config.sliding_window_size)
+                    if self.apply_sliding_window_attention
+                    else (-1, -1)
+                ),
+            )
+        else:
+            q = q.transpose(1, 2).contiguous()
+            k = k.transpose(1, 2).contiguous()
+            v = v.transpose(1, 2).contiguous()
+
+            if T == 1:
+                # generative phase
+                y = self.lit_rotary_kv_update_gen(
+                    q,
+                    k,
+                    v,
+                    cos,
+                    sin,
+                    token_counter,  # B,1
+                    k_cache,  # B,nh,t_max,hs
+                    v_cache,  # B,nh,t_max,hs
+                )
+            else:
+                # prefill
+                y = self.lit_rotary_kv_update_prefill(
+                    q,
+                    k,
+                    v,
+                    cos,
+                    sin,
+                    k_cache,  # B,nh,t_max,hs
+                    v_cache,  # B,nh,t_max,hs
+                )
+            y = y.transpose(1, 2).contiguous()
 
         y = y.reshape(
             B, T, self.config.head_size * self.config.n_head
@@ -443,7 +584,11 @@ class CausalSelfAttention(nn.Module):
     ) -> "KVCache":
 
         heads = self.config.n_query_groups
-        v_shape = (batch_size, max_seq_length, heads, self.config.head_size)
+        if self.config.explicitly_use_flash_kernel:
+            v_shape = (batch_size, max_seq_length, heads, self.config.head_size)
+        else:
+            v_shape = (batch_size, heads, max_seq_length, self.config.head_size)
+
         if rope_cache_length is None:
             if self.config.rotary_percentage != 1.0:
                 raise TypeError(
@@ -451,12 +596,21 @@ class CausalSelfAttention(nn.Module):
                 )
             k_shape = v_shape
         else:
-            k_shape = (
-                batch_size,
-                max_seq_length,
-                heads,
-                rope_cache_length + self.config.head_size - self.config.rope_n_elem,
-            )
+            if self.config.explicitly_use_flash_kernel:
+                k_shape = (
+                    batch_size,
+                    max_seq_length,
+                    heads,
+                    rope_cache_length + self.config.head_size - self.config.rope_n_elem,
+                )
+            else:
+                k_shape = (
+                    batch_size,
+                    heads,
+                    max_seq_length,
+                    rope_cache_length + self.config.head_size - self.config.rope_n_elem,
+                )
+
         return KVCache(k_shape, v_shape, device=device, dtype=dtype)
 
 
@@ -557,6 +711,7 @@ def build_rope_cache(
     base: int = 10000,
     condense_ratio: int = 1,
     extra_config: Optional[dict] = None,
+    explicitly_use_flash_kernel: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Enhanced Transformer with Rotary Position Embedding.
@@ -568,7 +723,7 @@ def build_rope_cache(
         base (int, optional): Base for computing inverse frequencies.
         condense_ratio (int, optional): Ratio to condense the position indices.
         extra_config (dict, optional): Configuration parameters for frequency adjustments (used by Llama 3.1 and 3.2)
-
+        explicitly_use_flash_kernel (bool, optional): Use the flash attention kernel for rope, kv-cache update and attention compute
     Returns:
         Tuple[torch.Tensor, torch.Tensor]: Cosine and sine caches for RoPE.
     """
@@ -598,6 +753,9 @@ def build_rope_cache(
     idx_theta = torch.outer(
         seq_idx, theta
     )  # .repeat(1, 2) repeat is not needed for flash attention
+
+    if not explicitly_use_flash_kernel:
+        idx_theta = idx_theta.repeat(1, 2)
 
     return torch.cos(idx_theta), torch.sin(idx_theta)
 

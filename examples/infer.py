@@ -10,29 +10,45 @@ import torch.distributed as dist
 
 # needed to work with pytorch 2.3
 from torch.profiler import _KinetoProfile
-
 _KinetoProfile._get_distributed_info = lambda self: None
 
 from contextlib import nullcontext
 
 if __name__ == "__main__":
     # Model ID from Hugging Face
-    # model_id = "google/gemma-2-27b-it"
     model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
-
-    # Input prompt for the model
+    
     user_prompts = [
         "How to bake a cake?",
         "How to drive a car on a freeway?",
-    ] * 8
+        "What are the best practices for time management?",
+        "Explain quantum mechanics in simple terms.",
+        "How do I write a great resume for a software engineer role?",
+        "What are the steps to start a successful business?",
+        "How can I improve my public speaking skills?",
+        "What are the benefits of a balanced diet?",
+        "How to train a dog to follow basic commands?",
+        "What is the process for applying to graduate school in the US?",
+        "How do I troubleshoot a slow internet connection?",
+        "What is the meaning of life according to philosophy?",
+        "How can I learn to play the guitar?",
+        "What are the key elements of a good story?",
+        "How do I stay motivated while working from home?",
+        "What is the easiest way to learn a new language?",
+    ]
+
+    # take num_prompts prompts from this dataset
+    num_prompts = 8
+    user_prompts = user_prompts[:num_prompts]
+
     system_prompt = "You are a helpful chatbot. Answer the following question.\n"
 
     # profile the run or not
-    enable_profiling = False
+    enable_profiling = True
 
     # Tokenizer for encoding the prompt
     tokenizer = AutoTokenizer.from_pretrained(model_id)
-
+    
     input_prompts = []
     for user_prompt in user_prompts:
         conversation = [
@@ -45,15 +61,16 @@ if __name__ == "__main__":
         input_prompts.append(formatted_prompt)
 
     # Number of tokens to generate
-    tokens_to_gen = 500
+    tokens_to_gen = 512
 
     # configs
     model_config = ModelConfig(model_name=model_id, precision="bf16")
-    inference_config = InferenceConfig(batch_size=len(input_prompts))
+    inference_config = InferenceConfig(batch_size=len(input_prompts), 
+                                       max_length_of_generated_sequences=1024,
+                                       top_p=0.80,
+                                       temperature=1.0)
 
     engine = LLMEngine(model_config=model_config, inference_config=inference_config)
-
-    print_rank0(torch.cuda.memory_allocated() / 1e9)
 
     if enable_profiling:
         profiler_context = torch.profiler.profile(
@@ -82,6 +99,7 @@ if __name__ == "__main__":
         print_rank0(f"prompt = {prompt}")
         print_rank0(f"output = {output}")
         print_rank0("==========================\n\n")
+        
 
     if enable_profiling:
         print_rank0(

@@ -84,11 +84,10 @@ class InferenceConfig:
     def __init__(
         self,
         batch_size: int = 1,
-        max_length: int = 1024,
-        decoding_strategy: Literal["greedy"] = "greedy",
-        temperature: Optional[float] = None,
+        max_length_of_generated_sequences: int = 1024,
         top_k: Optional[int] = None,
-        top_p: Optional[float] = None,
+        top_p: Optional[float] = 1.0,
+        temperature: Optional[float] = 1.0,
         metrics: bool = False,
     ):
         """
@@ -96,7 +95,7 @@ class InferenceConfig:
 
         Args:
             batch_size (int): Number of inputs processed in parallel.
-            max_length (int): Maximum length of the generated sequences.
+            max_length_of_generated_sequences (int): Maximum length of the generated sequences.
             decoding_strategy (str): Decoding strategy, default is 'greedy'.
             num_beams (Optional[int]): Number of beams for beam search.
             temperature (Optional[float]): Sampling temperature.
@@ -109,9 +108,7 @@ class InferenceConfig:
         # from the model config
         # anyway this arg isn't being used right now. KV Cache is defaulting to the model
         # max sequence length
-        self.max_length = max_length
-        self.decoding_strategy = decoding_strategy
-        # ToDo: support more decoding strategies - top-k, top-p, beam-search
+        self.max_length = max_length_of_generated_sequences
         self.temperature = temperature
         self.top_k = top_k
         self.top_p = top_p
@@ -129,22 +126,9 @@ class InferenceConfig:
         if self.max_length <= 0:
             raise ValueError("max_length must be a positive integer.")
 
-        if self.decoding_strategy not in {"greedy"}:
-            raise ValueError(
-                f"Invalid decoding_strategy: {self.decoding_strategy}. Supported values are 'greedy'."
-            )
 
-        if self.decoding_strategy == "beam_search" and (
-            self.num_beams is None or self.num_beams <= 0
-        ):
-            raise ValueError(
-                "num_beams must be specified and greater than 0 for beam_search."
-            )
-
-        if self.temperature is not None and (
-            self.temperature <= 0.0 or self.temperature > 2.0
-        ):
-            raise ValueError("temperature must be in the range (0.0, 2.0].")
+        if self.temperature is not None and (self.temperature < 0.0):
+            raise ValueError("temperature must be >=0.0.")
 
         if self.top_k is not None and self.top_k <= 0:
             raise ValueError("top_k must be a positive integer.")

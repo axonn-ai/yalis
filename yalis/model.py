@@ -2,13 +2,12 @@ import torch
 from litgpt.model import Config
 from pathlib import Path
 import sys
-from litgpt.utils import load_checkpoint
+from yalis.external.litgpt_utils import load_checkpoint
 from yalis.external.model import GPT
 import torch.distributed as dist
 
 
 def get_model(
-    fabric,
     litgpt_checkpoint_directory,
     model_dtype,
     max_sequence_length=None,
@@ -29,6 +28,6 @@ def get_model(
     model = GPT(config).to(device).to(model_dtype)
     if not random_init:
         checkpoint_path = checkpoint_dir / "lit_model.pth"
-        load_checkpoint(fabric, model, checkpoint_path)
+        load_checkpoint(model, checkpoint_path)
     model.eval()
     return model
