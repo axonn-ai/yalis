@@ -27,7 +27,7 @@ precision_to_dtype = {
 
 @torch.no_grad()
 @torch.compile()
-def prefill(model, tokens, unpadded_prompt_lengths, temperature=1.0, top_k=None, top_p=1.0):
+def prefill(model, tokens, unpadded_prompt_lengths, temperature=1.0, top_k=None, top_p=1.0, nested_prefill = False):
     """
     Prefill function for generating the first token.
 
@@ -38,10 +38,11 @@ def prefill(model, tokens, unpadded_prompt_lengths, temperature=1.0, top_k=None,
     Returns:
         token_id: The next predicted token.
     """
-
+         
     logits = model(tokens, unpadded_prompt_lengths)["logits"]
     logits = logits[torch.arange(logits.size(0)), unpadded_prompt_lengths - 1]
     token_id = sample(logits=logits, temperature=temperature, top_k=top_k, top_p=top_p)
+    
     return token_id
 
 
@@ -152,17 +153,12 @@ class LLMEngine:
         ):
             # Get the maximum length of the sequences
             max_length = max(len(p) for p in prompts)
-            prompt_tokens = torch.tensor(
-                [
-                    (
-                        p + [self.tokenizer.pad_token] * (max_length - len(p))
-                        if len(p) < max_length
-                        else p
-                    )
-                    for p in prompts
-                ]
-            )
+            
+
             prompt_sequence_lengths = torch.tensor([len(p) for p in prompts])
+
+            prompt_tokens  = torch.nested.nested_tensor(prompts)
+            
         else:
             raise TypeError(
                 "prompts must be either a list of strings or a list of lists of integers"
@@ -188,7 +184,8 @@ class LLMEngine:
                         self.model, current_input_to_model, prompt_sequence_lengths, 
                         temperature=self.inference_config.temperature, 
                         top_k=self.inference_config.top_k, 
-                        top_p=self.inference_config.top_p
+                        top_p=self.inference_config.top_p,
+                        # nested_prefill = nested_prefill
                     )  # Call prefill function
                     # print_rank0(f"mem after prefill = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
                     current_input_to_model = next_token.clone()
