@@ -13,7 +13,7 @@ export YALIS_CACHE="${SCRATCH}/yalis/yalis/external"
 
 module load cudatoolkit/12.4
 module load nccl
-. $SCRATCH/yalis_venv_v2/bin/activate
+. $SCRATCH/yalis_venv/bin/activate
 
 NNODES=$SLURM_JOB_NUM_NODES
 GPUS=$(( NNODES * 4 ))
