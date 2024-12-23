@@ -142,12 +142,11 @@ class LLMEngine:
         """
         if isinstance(prompts, list) and all(isinstance(p, str) for p in prompts):
             prompt_tokens_and_mask = self.tokenizer(
-                prompts, return_tensors="pt", padding=True
+                prompts, padding=False
             )
-            prompt_tokens = prompt_tokens_and_mask.input_ids
-            # prompt tokens contain padding tokens. Summing the attention mask
-            # gives us the actual sequence lengths of each prompt sans padding
-            prompt_sequence_lengths = prompt_tokens_and_mask.attention_mask.sum(dim=1)
+            prompt_tokens = torch.nested.nested_tensor(prompt_tokens_and_mask.input_ids, dtype=torch.long)
+            prompt_sequence_lengths = torch.tensor([t.size(0) for t in prompt_tokens.unbind()])
+            
         elif isinstance(prompts, list) and all(
             isinstance(p, list) and all(isinstance(x, int) for x in p) for p in prompts
         ):
@@ -158,6 +157,7 @@ class LLMEngine:
             prompt_sequence_lengths = torch.tensor([len(p) for p in prompts])
 
             prompt_tokens  = torch.nested.nested_tensor(prompts)
+            
             
         else:
             raise TypeError(
