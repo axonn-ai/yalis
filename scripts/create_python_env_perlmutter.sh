@@ -13,6 +13,7 @@ ENV_NAME="yalis_venv"
 cd $WRKSPC
 echo -e "${RED}Creating Python Environment in $WRKSPC:${GREEN}"
 module load python
+<<<<<<< HEAD
 # # note: there are several pytorch modules on perlmutter
 # # this command loads pytorch/2.3.1 (default)
 # # if you want to checkout other versions of the pytorch module:
@@ -32,6 +33,16 @@ source $WRKSPC/$ENV_NAME/bin/activate
 # echo -e "${RED}Installing PyTorch:${GREEN}"
 pip3 install torch torchvision torchaudio
 
+=======
+
+python -m venv $WRKSPC/$ENV_NAME 
+module unload python
+
+echo -e "${RED}Installing Dependencies:${GREEN}"
+module load cudatoolkit/12.4
+source $WRKSPC/$ENV_NAME/bin/activate
+pip3 install torch torchvision torchaudio
+>>>>>>> 561a8bb (move tensor parallel to a folder)
 
 
 #Step 2 - install axonn from source
@@ -40,7 +51,10 @@ cd axonn
 pip install -e .
 
 #Step 3 - install other packages
+<<<<<<< HEAD
 # pip install torch
+=======
+>>>>>>> 561a8bb (move tensor parallel to a folder)
 pip install litgpt --no-deps
 pip install lightning
 pip install transformers
@@ -48,8 +62,6 @@ pip install datasets
 
 python -c "import torch; print(torch.__version__)"
 echo -e "${RED}Your Python Environment is ready. To activate it run the following commands in the SAME order:${NC}"
-echo -e "${GREEN}module load pytorch/2.3.1${NC}"
-#echo -e "${GREEN}module load cray-python${NC}"
 echo -e "${GREEN}source $WRKSPC/$ENV_NAME/bin/activate${NC}"
 echo ""
 echo -e "${NC}"

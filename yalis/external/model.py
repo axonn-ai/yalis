@@ -24,7 +24,7 @@ from litgpt.config import Config
 import sys
 
 from torch.utils import checkpoint
-from .tensor_parallel import TPLinear
+from yalis.tensor_parallel import TPLinear
 from copy import deepcopy
 from axonn import axonn as ax
 from axonn.intra_layer.communication import Drop, Gather
