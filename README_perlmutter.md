@@ -5,7 +5,7 @@ On Perlmutter, please clone this repo in `${SCRATCH}`
 ## Installing Dependencies
 Go to `scripts` and run:
 ```bash
-bash create_python_env_perlmutter_v2.sh
+bash create_python_env_perlmutter.sh
 ```
 This should create a python environment for you with all dependencies. 
 
