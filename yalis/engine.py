@@ -94,7 +94,35 @@ class LLMEngine:
         self.dtype = precision_to_dtype[self.model_config.precision]
         init_distributed()
         self._initialize_model()
+        self._make_params_contiguous()
         torch.cuda.empty_cache()  # return extra memory to CUDA. Can prevent NCCL init OOMs
+
+    def _make_params_contiguous(self):
+        if not self.model:
+            print_rank0("Model must be initialized before contiguous parameter buffer can be allocated")
+            return
+        
+        total_bytes = 0
+        param_info = []
+        
+        for name, param in self.model.named_parameters():
+            num_bytes = param.numel() * param.element_size()
+            param_info.append({
+                "name": name,
+                "shape": param.shape,
+                "dtype": param.dtype,
+                "num_bytes": num_bytes,
+                "offset": total_bytes,
+                "param": param,
+            })
+            total_bytes += num_bytes
+
+        storage = torch.empty(total_bytes, dtype=torch.uint8, device='cuda')
+
+        for info in param_info:
+            param_view = storage[info["offset"]: info["offset"] + info["num_bytes"]].view(info["dtype"]).reshape(info["shape"])
+            param_view.copy_(info["param"], non_blocking=True)
+            info["param"].data = param_view
 
     def _initialize_model(self):
         """
