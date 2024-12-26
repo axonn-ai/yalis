@@ -96,6 +96,53 @@ class LLMEngine:
         self._initialize_model()
         torch.cuda.empty_cache()  # return extra memory to CUDA. Can prevent NCCL init OOMs
 
+    def _make_params_contiguous(self):
+        if not self.model:
+            print_rank0("Model must be initialized before contiguous parameter buffer can be allocated")
+            return
+        
+        total_bytes = 0
+        param_info, buf_info = [], []
+        
+        for name, param in self.model.named_parameters():
+            num_bytes = param.numel() * param.element_size()
+            param_info.append({
+                "name": name,
+                "shape": param.shape,
+                "dtype": param.dtype,
+                "num_bytes": num_bytes,
+                "offset": total_bytes,
+                "param": param,
+            })
+            total_bytes += num_bytes
+        
+        for name, buf in self.model.named_buffers():
+            num_bytes = buf.numel() * buf.element_size()
+            buf_info.append({
+                "name": name,
+                "shape": buf.shape,
+                "dtype": buf.dtype,
+                "num_bytes": num_bytes,
+                "offset": total_bytes,
+                "buf": buf,
+            })
+            total_bytes += num_bytes
+
+        # make buffer 128-byte aligned
+        total_bytes = total_bytes - (total_bytes % 128) + 128
+
+        gpu_buffer = torch.empty(total_bytes, dtype=torch.uint8, device="cuda")
+
+        for info in param_info:
+            param_view = gpu_buffer[info["offset"]: info["offset"] + info["num_bytes"]].view(info["dtype"]).reshape(info["shape"])
+            param_view.copy_(info["param"], non_blocking=True)
+            info["param"].data = param_view
+
+        for info in buf_info:
+            buf_view = gpu_buffer[info["offset"]: info["offset"] + info["num_bytes"]].view(info["dtype"]).reshape(info["shape"])
+            buf_view.copy_(info["buf"], non_blocking=True)
+            info["buf"].data = buf_view
+
     def _initialize_model(self):
         """
         Internal method to load and set up the model based on ModelConfig.
@@ -103,6 +150,7 @@ class LLMEngine:
         print_rank0(f"Initializing model: {self.model_config.model_name}")
         print_rank0(f"Using precision: {self.model_config.precision}")
         self.model = get_model(self.model_config.model_path, self.dtype, max_sequence_length=self.inference_config.max_length)
+        self._make_params_contiguous()
         self.model.set_kv_cache(
             batch_size=self.inference_config.batch_size,
             device=self.device,
