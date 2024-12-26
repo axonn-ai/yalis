@@ -68,7 +68,7 @@ def initialize_params(
     out_features_group,
     in_features_group,
     init_method,
-    init_device="cuda",
+    init_device="cpu",
 ):
     params = torch.empty((out_features, in_features), device=init_device)
     init_method(params)
