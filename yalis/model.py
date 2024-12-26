@@ -25,7 +25,7 @@ def get_model(
         ), f"Maximum sequence length for this model is {config.block_size}"
         config.block_size = max_sequence_length
     config.tensor_parallel = tensor_parallel
-    model = GPT(config).to(device).to(model_dtype)
+    model = GPT(config).to(model_dtype)
     if not random_init:
         checkpoint_path = checkpoint_dir / "lit_model.pth"
         load_checkpoint(model, checkpoint_path)
