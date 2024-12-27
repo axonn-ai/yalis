@@ -64,7 +64,7 @@ if __name__ == "__main__":
     tokens_to_gen = 512
 
     # configs
-    model_config = ModelConfig(model_name=model_id, precision="bf16")
+    model_config = ModelConfig(model_name=model_id, explicitly_use_flash_kernel=False, precision="bf16")
     inference_config = InferenceConfig(batch_size=len(input_prompts), 
                                        max_length_of_generated_sequences=1024,
                                        top_p=0.80,

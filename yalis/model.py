@@ -11,6 +11,7 @@ def get_model(
     litgpt_checkpoint_directory,
     model_dtype,
     max_sequence_length=None,
+    explicitly_use_flash_kernel=False,
     random_init=False,
     device="cuda",
 ):
@@ -25,6 +26,7 @@ def get_model(
         ), f"Maximum sequence length for this model is {config.block_size}"
         config.block_size = max_sequence_length
     config.tensor_parallel = tensor_parallel
+    config.explicitly_use_flash_kernel = explicitly_use_flash_kernel
     model = GPT(config).to(model_dtype)
     if not random_init:
         checkpoint_path = checkpoint_dir / "lit_model.pth"

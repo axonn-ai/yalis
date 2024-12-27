@@ -45,6 +45,7 @@ pip install litgpt --no-deps
 pip install lightning
 pip install transformers
 pip install datasets
+pip install flash-attn==2.6.3 --no-build-isolation
 
 python -c "import torch; print(torch.__version__)"
 echo -e "${RED}Your Python Environment is ready. To activate it run the following commands in the SAME order:${NC}"

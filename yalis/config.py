@@ -11,6 +11,7 @@ class ModelConfig:
         self,
         model_name: str,
         model_path: Optional[str] = None,
+        explicitly_use_flash_kernel: Optional[bool] = False,
         precision: Literal["fp32", "fp16", "bf16"] = "fp16",
     ):
         """
@@ -25,6 +26,7 @@ class ModelConfig:
         # we should par
         self.model_name = model_name
         self.model_path = model_path
+        self.explicitly_use_flash_kernel = explicitly_use_flash_kernel
         self.precision = precision
         self._validate()
         self.model_path = self._resolve_model_path(self.model_path)
@@ -72,6 +74,7 @@ class ModelConfig:
     def __repr__(self):
         return (
             f"ModelConfig(model_name={self.model_name}, model_path={self.model_path}, "
+            f"explicitly_use_flash_kernel={self.explicitly_use_flash_kernel}"
             f"precision={self.precision}"
         )
 
