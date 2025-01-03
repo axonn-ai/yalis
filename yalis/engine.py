@@ -27,7 +27,10 @@ precision_to_dtype = {
 }
 
 
+<<<<<<< HEAD
 # @torch.compile()
+=======
+>>>>>>> ea7b467 (Rebased and fixed issues)
 @torch.no_grad()
 @torch.compile()
 def prefill(
@@ -69,7 +72,10 @@ def prefill(
         return token_id
 
 
+<<<<<<< HEAD
 # @torch.compile(mode="reduce-overhead")
+=======
+>>>>>>> ea7b467 (Rebased and fixed issues)
 @torch.no_grad()
 @torch.compile(mode="reduce-overhead")
 def generate(
@@ -369,6 +375,12 @@ class SpecDecLLMEngine(LLMEngine):
         end = torch.cuda.Event(enable_timing=True)
         start.record()
 
+        self.model.token_counter.zero_()
+        self.draft_model.token_counter.zero_()
+
+        global_accepted_tokens = 0
+        generated_draft_tokens = 0
+
         with torch.no_grad(), torch.autocast(
             self.device, dtype=self.dtype, cache_enabled=False
         ):
@@ -379,10 +391,8 @@ class SpecDecLLMEngine(LLMEngine):
             while generated_tokens < tokens_to_gen:
                 if generated_tokens == 0:  # Prefill step
                     # Only the target model is used for prefilling
-                    # print_rank0(f"tokens: {tokens.size()}")
-                    next_token = prefill(self.model, tokens)
-                    # print (f"Next token: {next_token.shape}")
-                    _ = prefill(self.draft_model, tokens)
+                    _ = prefill(self.draft_model, tokens, top_p=0.0, temperature=0.0)
+                    next_token = prefill(self.model, tokens, top_p=0.0, temperature=0.0)
 
                     tokens = next_token.clone()
                     generated_tokens += 1
@@ -397,34 +407,36 @@ class SpecDecLLMEngine(LLMEngine):
                     draft_output_tokens.append(draft_tokens.clone())
 
                     draft_probs = []
-                    for draft_step in range(gamma):
-                        # Get next draft token and its probabilities
-                        next_token, probs = generate(
-                            self.draft_model,
-                            draft_tokens,
-                            get_logits=True,
-                        )
-                        draft_tokens.copy_(next_token)
-                        draft_probs.append(probs.clone())
+                    with sdpa_kernel(SDPBackend.MATH):
+                        for draft_step in range(gamma):
+                            # Get next draft token and its probabilities
+                            next_token, probs = generate(
+                                self.draft_model,
+                                draft_tokens,
+                                top_p=0.0,
+                                temperature=0.0,
+                                get_logits=True,
+                            )
+                            draft_tokens.copy_(next_token)
+                            draft_probs.append(probs.clone())
+                            generated_draft_tokens += 1
 
-                        draft_output_tokens.append(next_token.clone())
+                            draft_output_tokens.append(next_token.clone())
+                    
+                        _ = generate(self.draft_model, draft_tokens, top_p=0.0, temperature=0.0)
 
-                    # Need this in case all tokens are accepted and we get a bonus token
-                    _ = generate(self.draft_model, draft_tokens)
-
-                    # print_rank0(f"Decode step: {self.model.get_token_count()}, {self.draft_model.get_token_count()}")
-                    # +5
+                    #print_rank0(f"Decode step: {self.model.get_token_count()}, {self.draft_model.get_token_count()}")
                     draft_probs = torch.cat(draft_probs, dim=1)
                     draft_probs = self.logits_to_probs(draft_probs)
-                    # print_rank0(f"Draft Output Tokens: {draft_output_tokens[0].size()}")
                     draft_output_tokens = torch.cat(draft_output_tokens, dim=1)
-                    # print_rank0(f"Draft Probs: {draft_probs.size()}, Draft Output Tokens: {draft_output_tokens.size()}")
+                    #print_rank0(f"[Decode] Draft Output Tokens: {draft_output_tokens}")
+                    #print_rank0(f"Draft Probs: {draft_probs.size()}, Draft Output Tokens: {draft_output_tokens.size()}")
 
                     # print_rank0(f"Draft Probs: {draft_probs.size()}, Draft Output Tokens: {draft_output_tokens.size()}")
 
                     # Verify the output of the draft model
                     next_token, target_probs = prefill(
-                        self.model, draft_output_tokens, get_logits=True
+                        self.model, draft_output_tokens, top_p=0.0, temperature=0.0, get_logits=True
                     )
                     target_probs = self.logits_to_probs(target_probs)
 
@@ -452,7 +464,10 @@ class SpecDecLLMEngine(LLMEngine):
                         )[1][0]
                     else:
                         num_accepted_tokens = output_with_bonus_tokens.size(1)
-                    # print (f"Num accepted tokens: {num_accepted_tokens}")
+
+                    global_accepted_tokens += num_accepted_tokens - 1
+
+                    #print (f"Num accepted tokens: {num_accepted_tokens}")
 
                     output_with_bonus_tokens = output_with_bonus_tokens[
                         :, :num_accepted_tokens
@@ -483,5 +498,5 @@ class SpecDecLLMEngine(LLMEngine):
         time_taken = start.elapsed_time(end) / 1000  # Time in seconds
         tput = input_tokens.shape[0] * tokens_to_gen / time_taken
         if report_throughput and dist.get_rank() == 0:
-            print(f"Throughput = {tput:.2f} tok/s")
-        return output_tensor
+            print(f"Throughput = {tput:.2f} tok/s, Acceptance Rate = {global_accepted_tokens / generated_draft_tokens:.2f}")
+        return output_tensor, tput, float(global_accepted_tokens) / float(generated_draft_tokens)
