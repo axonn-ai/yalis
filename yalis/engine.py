@@ -10,7 +10,7 @@ import logging
 import torch.distributed as dist
 from transformers import AutoTokenizer
 from torch.nn.attention import SDPBackend, sdpa_kernel
-import time
+from .timers import Timers
 import gc
 
 # These flags are taken from the following URL -
@@ -27,10 +27,6 @@ precision_to_dtype = {
 }
 
 
-<<<<<<< HEAD
-# @torch.compile()
-=======
->>>>>>> ea7b467 (Rebased and fixed issues)
 @torch.no_grad()
 @torch.compile()
 def prefill(
@@ -72,10 +68,6 @@ def prefill(
         return token_id
 
 
-<<<<<<< HEAD
-# @torch.compile(mode="reduce-overhead")
-=======
->>>>>>> ea7b467 (Rebased and fixed issues)
 @torch.no_grad()
 @torch.compile(mode="reduce-overhead")
 def generate(
@@ -212,12 +204,9 @@ class LLMEngine:
         t0 = time.time()
         print_rank0(f"Initializing model: {model_config.model_name}")
         print_rank0(f"Using precision: {model_config.precision}")
-        model = get_model(
-            model_config.model_path,
-            self.dtype,
-            max_sequence_length=self.inference_config.max_length,
-        )
-        model = self._make_params_contiguous()
+        model = get_model(model_config.model_path, self.dtype, max_sequence_length=self.inference_config.max_length)
+        print_rank0(f"Making model parameters contiguous")
+        model = self._make_params_contiguous(model)
         model.set_kv_cache(
             batch_size=self.inference_config.batch_size,
             device=self.device,
@@ -295,6 +284,7 @@ class LLMEngine:
         # Start timing the operations
         start = torch.cuda.Event(enable_timing=True)
         end = torch.cuda.Event(enable_timing=True)
+        timers = Timers()
         start.record()
         self.model.token_counter.zero_()
         with torch.no_grad(), torch.autocast(
@@ -307,6 +297,7 @@ class LLMEngine:
             for step in range(tokens_to_generate):
                 if step == 0:  # Prefill step
                     # print_rank0(f"mem before prefill = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
+                    timers.start("prefill")
                     next_token = prefill(
                         self.model,
                         current_input_to_model,
@@ -315,9 +306,11 @@ class LLMEngine:
                         top_k=self.inference_config.top_k,
                         top_p=self.inference_config.top_p,
                     )  # Call prefill function
+                    timers.stop("prefill")
                     # print_rank0(f"mem after prefill = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
                     current_input_to_model = next_token.clone()
                 else:  # Generation step
+                    timers.start("decode")
                     with sdpa_kernel(SDPBackend.MATH):
                         next_token = generate(
                             self.model,
@@ -326,6 +319,7 @@ class LLMEngine:
                             top_k=self.inference_config.top_k,
                             top_p=self.inference_config.top_p,
                         )  # Call generate function
+                    timers.stop("decode")
                     # print_rank0(f"mem after generate {step} = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
                     current_input_to_model.copy_(
                         next_token
@@ -337,8 +331,10 @@ class LLMEngine:
         torch.cuda.synchronize()  # Wait for all events to finish
         time_taken = start.elapsed_time(end) / 1000  # Time in seconds
         tput = prompt_tokens.shape[0] * tokens_to_generate / time_taken
+        timers,_ = timers.get_times()
         if report_throughput and dist.get_rank() == 0:
-            print(f"Throughput = {tput:.2f} tok/s")
+            print(f"Throughput = {tput:.2f} tok/s, Time = {time_taken:.2f} s")
+            print (f"Timers: {timers}")
         return output_tensor
 
 
@@ -373,6 +369,7 @@ class SpecDecLLMEngine(LLMEngine):
         # Start timing the operation
         start = torch.cuda.Event(enable_timing=True)
         end = torch.cuda.Event(enable_timing=True)
+        timers = Timers()
         start.record()
 
         self.model.token_counter.zero_()
@@ -391,8 +388,11 @@ class SpecDecLLMEngine(LLMEngine):
             while generated_tokens < tokens_to_gen:
                 if generated_tokens == 0:  # Prefill step
                     # Only the target model is used for prefilling
+
+                    timers.start("prefill")
                     _ = prefill(self.draft_model, tokens, top_p=0.0, temperature=0.0)
                     next_token = prefill(self.model, tokens, top_p=0.0, temperature=0.0)
+                    timers.stop("prefill")
 
                     tokens = next_token.clone()
                     generated_tokens += 1
@@ -407,6 +407,7 @@ class SpecDecLLMEngine(LLMEngine):
                     draft_output_tokens.append(draft_tokens.clone())
 
                     draft_probs = []
+                    timers.start("draft")
                     with sdpa_kernel(SDPBackend.MATH):
                         for draft_step in range(gamma):
                             # Get next draft token and its probabilities
@@ -424,6 +425,7 @@ class SpecDecLLMEngine(LLMEngine):
                             draft_output_tokens.append(next_token.clone())
                     
                         _ = generate(self.draft_model, draft_tokens, top_p=0.0, temperature=0.0)
+                    timers.stop("draft")
 
                     #print_rank0(f"Decode step: {self.model.get_token_count()}, {self.draft_model.get_token_count()}")
                     draft_probs = torch.cat(draft_probs, dim=1)
@@ -435,22 +437,26 @@ class SpecDecLLMEngine(LLMEngine):
                     # print_rank0(f"Draft Probs: {draft_probs.size()}, Draft Output Tokens: {draft_output_tokens.size()}")
 
                     # Verify the output of the draft model
+                    timers.start("verify")
                     next_token, target_probs = prefill(
                         self.model, draft_output_tokens, top_p=0.0, temperature=0.0, get_logits=True
                     )
                     target_probs = self.logits_to_probs(target_probs)
+                    timers.stop("verify")
 
                     # print_rank0(f"Verify step: {self.model.get_token_count()}, {self.draft_model.get_token_count()}")
                     # print_rank0(f"Verify step: {target_probs.size()}")
 
                     ## Rejection Sampling
+                    timers.start("rejection_sampling")
                     output_with_bonus_tokens = self.sampler(
                         draft_probs,
                         target_probs,
                         draft_output_tokens[:, 1:],
                         next_token,
                     )
-                    # print (f"Output with bonus tokens: {output_with_bonus_tokens.size()}")
+                    timers.stop("rejection_sampling")
+                    #print (f"Output with bonus tokens: {output_with_bonus_tokens.size()}")
                     assert (
                         output_with_bonus_tokens.size(0) == 1
                     )  # Only batch size 1 is supported
@@ -496,7 +502,9 @@ class SpecDecLLMEngine(LLMEngine):
         end.record()
         torch.cuda.synchronize()  # Wait for all events to finish
         time_taken = start.elapsed_time(end) / 1000  # Time in seconds
+        timers,_ = timers.get_times()
         tput = input_tokens.shape[0] * tokens_to_gen / time_taken
         if report_throughput and dist.get_rank() == 0:
-            print(f"Throughput = {tput:.2f} tok/s, Acceptance Rate = {global_accepted_tokens / generated_draft_tokens:.2f}")
+            print(f"Throughput = {tput:.2f} tok/s, Acceptance Rate = {global_accepted_tokens / generated_draft_tokens:.2f}, Time = {time_taken:.2f} s")
+            print (f"Timers: {timers}")
         return output_tensor, tput, float(global_accepted_tokens) / float(generated_draft_tokens)

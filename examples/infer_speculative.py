@@ -39,21 +39,21 @@ if __name__ == "__main__":
     tokenizer = AutoTokenizer.from_pretrained(target_model_id)
     user_prompts = [
         "How to bake a cake?",
-        "How to drive a car on a freeway?",
-        "What are the best practices for time management?",
-        "Explain quantum mechanics in simple terms.",
-        "How do I write a great resume for a software engineer role?",
-        "What are the steps to start a successful business?",
-        "How can I improve my public speaking skills?",
-        "What are the benefits of a balanced diet?",
-        "How to train a dog to follow basic commands?",
-        "What is the process for applying to graduate school in the US?",
-        "How do I troubleshoot a slow internet connection?",
-        "What is the meaning of life according to philosophy?",
-        "How can I learn to play the guitar?",
-        "What are the key elements of a good story?",
-        "How do I stay motivated while working from home?",
-        "What is the easiest way to learn a new language?",
+        #"How to drive a car on a freeway?",
+        #"What are the best practices for time management?",
+        #"Explain quantum mechanics in simple terms.",
+        #"How do I write a great resume for a software engineer role?",
+        #"What are the steps to start a successful business?",
+        #"How can I improve my public speaking skills?",
+        #"What are the benefits of a balanced diet?",
+        #"How to train a dog to follow basic commands?",
+        #"What is the process for applying to graduate school in the US?",
+        #"How do I troubleshoot a slow internet connection?",
+        #"What is the meaning of life according to philosophy?",
+        #"How can I learn to play the guitar?",
+        #"What are the key elements of a good story?",
+        #"How do I stay motivated while working from home?",
+        #"What is the easiest way to learn a new language?",
     ]
 
     system_prompt = "You are a helpful chatbot. Answer the following question.\n"
@@ -119,15 +119,15 @@ if __name__ == "__main__":
             if dist.get_rank() == 0:
                 print(f"Average_Throughput:{avg_tput:.2f}| Average_Acceptance_Rate:{avg_acceptance_rate:.2f}")
 
-    # output_tokens = output_tokens.cpu()
+    output_tokens = output_tokens.cpu()
 
     # Decode the token IDs into text
-    # detokenized_text = tokenizer.batch_decode(output_tokens, skip_special_tokens=True)
+    detokenized_text = tokenizer.batch_decode(output_tokens, skip_special_tokens=True)
 
-    # for prompt, output in zip(input_prompts, detokenized_text):
-    #     print_rank0(f"prompt = {prompt}")
-    #     print_rank0(f"output = {output}")
-    #     print_rank0("==========================\n\n")
+    for prompt, output in zip(input_prompts, detokenized_text):
+        print_rank0(f"prompt = {prompt}")
+        print_rank0(f"output = {output}")
+        print_rank0("==========================\n\n")
 
     # if enable_profiling:
     #     print_rank0(
