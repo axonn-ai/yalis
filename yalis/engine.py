@@ -260,18 +260,19 @@ class LLMEngine:
                         next_token
                     )  # Copy the new token into tokens
                 output_tokens.append(next_token.clone())
-
+                
                 # Check ignore_eos tag
                 if not ignore_eos:
+                    # Using the view function to faltten the array because next_token is a 2D tensor.
+                    next_token_flatten = next_token.view(-1)
                     # Single-batch stop
                     if batch_size == 1:
-                        if next_token.item() == self.tokenizer.eos_token:
+                        if next_token_flatten.item() == self.tokenizer.eos_token_id:
                             print_rank0("Single sample reached EOS, stopping.")
                             break
                     # Multiple-batch stop
                     else:
-                        # Using the view function to flatten the array, in the case next_token is a 2D tensor.
-                        temp_mask = (next_token.view(-1) == self.tokenizer.eos_token)
+                        temp_mask = (next_token_flatten == self.tokenizer.eos_token_id)
                         done_mask |= temp_mask
                         if done_mask.all():
                             print_rank0("All samples reached EOS, stopping.")
