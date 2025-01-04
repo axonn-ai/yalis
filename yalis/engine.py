@@ -216,10 +216,11 @@ class LLMEngine:
                 "prompts must be either a list of strings or a list of lists of integers"
             )
 
-        # Initialize batch size and done mask for multiple batches
-        batch_size = prompt_tokens.size(0)
-        if batch_size > 1:
-            done_mask = torch.zeros(batch_size, dtype=torch.bool, device="cuda")
+        # Initialize done mask for multiple batches
+        if self.inference_config.batch_size > 1 and not self.inference_config.ignore_eos:
+            print_rank0("BATCH SIZE TEST:")
+            print_rank0(self.inference_config.batch_size)
+            done_mask = torch.zeros(self.inference_config.batch_size, dtype=torch.bool, device="cuda")
         output_tokens = []
         # Start timing the operations
         start = torch.cuda.Event(enable_timing=True)
@@ -258,19 +259,22 @@ class LLMEngine:
                     )  # Copy the new token into tokens
                 output_tokens.append(next_token.clone())
 
-                # Single-batch stop
-                if batch_size == 1:
-                    if next_token.item() == self.tokenizer.eos_token:
-                        print_rank0("Single sample reached EOS, stopping.")
-                        break
-                # Multiple-batch stop
-                else:
-                    # Using the view function to flatten the array, in the case next_token is a 2D tensor.
-                    temp_mask = (next_token.view(-1) == self.tokenizer.eos_token)
-                    done_mask |= temp_mask
-                    if done_mask.all():
-                        print_rank0("All samples reached EOS, stopping.")
-                        break
+                # Check ignore_eos tag
+                if not self.inference_config.ignore_eos:
+                    # Single-batch stop
+                    if self.inference_config.batch_size == 1:
+                        if next_token.item() == self.tokenizer.eos_token:
+                            print_rank0("Single sample reached EOS, stopping.")
+                            break
+                    # Multiple-batch stop
+                    else:
+                        print_rank0("MULTIPLE BATCH TEST")
+                        # Using the view function to flatten the array, in the case next_token is a 2D tensor.
+                        temp_mask = (next_token.view(-1) == self.tokenizer.eos_token)
+                        done_mask |= temp_mask
+                        if done_mask.all():
+                            print_rank0("All samples reached EOS, stopping.")
+                            break
 
         output_tensor = torch.cat(output_tokens, dim=1)
         # End timing and calculate elapsed time

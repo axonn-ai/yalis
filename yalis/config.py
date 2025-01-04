@@ -89,6 +89,7 @@ class InferenceConfig:
         top_p: Optional[float] = 1.0,
         temperature: Optional[float] = 1.0,
         metrics: bool = False,
+        ignore_eos: Optional[bool] = False
     ):
         """
         Initialize the inference configuration.
@@ -102,6 +103,7 @@ class InferenceConfig:
             top_k (Optional[int]): Top-k sampling limit.
             top_p (Optional[float]): Nucleus sampling probability.
             metrics (bool): Enable real-time metrics collection.
+            ignore_eos (Optional[bool]): Ignore EOS stopping, default is False.
         """
         self.batch_size = batch_size
         # ToDo - default max_length should be none. If it is none, we should set it
@@ -113,6 +115,7 @@ class InferenceConfig:
         self.top_k = top_k
         self.top_p = top_p
         self.metrics = metrics
+        self.ignore_eos = ignore_eos
 
         self._validate()
 
