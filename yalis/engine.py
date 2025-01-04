@@ -216,11 +216,13 @@ class LLMEngine:
                 "prompts must be either a list of strings or a list of lists of integers"
             )
 
+        # Using tensor size instead of inference config object to allow users to choose batch sizes < max batch size
+        # (later defined in inference config).
+        batch_size = prompt_tokens.size(0)
+        ignore_eos = self.inference_config.ignore_eos
         # Initialize done mask for multiple batches
-        if self.inference_config.batch_size > 1 and not self.inference_config.ignore_eos:
-            print_rank0("BATCH SIZE TEST:")
-            print_rank0(self.inference_config.batch_size)
-            done_mask = torch.zeros(self.inference_config.batch_size, dtype=torch.bool, device="cuda")
+        if batch_size > 1 and not ignore_eos:
+            done_mask = torch.zeros(batch_size, dtype=torch.bool, device="cuda")
         output_tokens = []
         # Start timing the operations
         start = torch.cuda.Event(enable_timing=True)
@@ -260,15 +262,14 @@ class LLMEngine:
                 output_tokens.append(next_token.clone())
 
                 # Check ignore_eos tag
-                if not self.inference_config.ignore_eos:
+                if not ignore_eos:
                     # Single-batch stop
-                    if self.inference_config.batch_size == 1:
+                    if batch_size == 1:
                         if next_token.item() == self.tokenizer.eos_token:
                             print_rank0("Single sample reached EOS, stopping.")
                             break
                     # Multiple-batch stop
                     else:
-                        print_rank0("MULTIPLE BATCH TEST")
                         # Using the view function to flatten the array, in the case next_token is a 2D tensor.
                         temp_mask = (next_token.view(-1) == self.tokenizer.eos_token)
                         done_mask |= temp_mask

@@ -66,7 +66,7 @@ if __name__ == "__main__":
     # configs
     model_config = ModelConfig(model_name=model_id, precision="bf16")
     inference_config = InferenceConfig(batch_size=len(input_prompts), 
-                                       max_length_of_generated_sequences=1024,
+                                       max_length_of_generated_sequences=8192,
                                        top_p=0.80,
                                        temperature=1.0)
 
