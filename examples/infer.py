@@ -39,8 +39,7 @@ if __name__ == "__main__":
 
     # take num_prompts prompts from this dataset
     num_prompts = 1
-    user_prompts = user_prompts[1:2]
-    # user_prompts = user_prompts[:num_prompts]
+    user_prompts = user_prompts[:num_prompts]
 
     system_prompt = "You are a helpful chatbot. Answer the following question.\n"
 
@@ -67,10 +66,9 @@ if __name__ == "__main__":
     # configs
     model_config = ModelConfig(model_name=model_id, precision="bf16")
     inference_config = InferenceConfig(batch_size=len(input_prompts), 
-                                       max_length_of_generated_sequences=8192,
+                                       max_length_of_generated_sequences=1024,
                                        top_p=0.80,
-                                       temperature=1.0,
-                                       ignore_eos=False)
+                                       temperature=1.0)
     generation_config = GenerationConfig.from_pretrained(model_id)
 
     engine = LLMEngine(model_config=model_config, inference_config=inference_config, generation_config=generation_config)

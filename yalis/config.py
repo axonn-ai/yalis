@@ -84,7 +84,7 @@ class InferenceConfig:
     def __init__(
         self,
         batch_size: int = 1,
-        max_length_of_generated_sequences: int = 8192,
+        max_length_of_generated_sequences: int = 1024,
         top_k: Optional[int] = None,
         top_p: Optional[float] = 1.0,
         temperature: Optional[float] = 1.0,
