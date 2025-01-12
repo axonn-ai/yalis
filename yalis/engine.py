@@ -78,6 +78,7 @@ class LLMEngine:
         self,
         model_config: ModelConfig,
         inference_config: InferenceConfig,
+        generation_config,
         device="cuda",
     ):
         """
@@ -89,6 +90,7 @@ class LLMEngine:
         """
         self.model_config = model_config
         self.inference_config = inference_config
+        self.generation_config = generation_config
         self.model = None  # Placeholder for the loaded model
         self.device = device
         self.dtype = precision_to_dtype[self.model_config.precision]
@@ -260,19 +262,20 @@ class LLMEngine:
                         next_token
                     )  # Copy the new token into tokens
                 output_tokens.append(next_token.clone())
-                
+
+                eos_tokens_tensor = torch.tensor(self.generation_config.eos_token_id, device="cuda")
                 # Check ignore_eos tag
                 if not ignore_eos:
                     # Using the view function to faltten the array because next_token is a 2D tensor.
                     next_token_flatten = next_token.view(-1)
+                    temp_mask = torch.isin(next_token_flatten, eos_tokens_tensor)
                     # Single-batch stop
                     if batch_size == 1:
-                        if next_token_flatten.item() == self.tokenizer.eos_token_id:
+                        if temp_mask[0].item():
                             print_rank0("Single sample reached EOS, stopping.")
                             break
                     # Multiple-batch stop
                     else:
-                        temp_mask = (next_token_flatten == self.tokenizer.eos_token_id)
                         done_mask |= temp_mask
                         if done_mask.all():
                             print_rank0("All samples reached EOS, stopping.")

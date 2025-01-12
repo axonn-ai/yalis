@@ -4,7 +4,7 @@ except ImportError:
     pass
 
 from yalis import ModelConfig, InferenceConfig, print_rank0, LLMEngine
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, GenerationConfig
 import torch
 import torch.distributed as dist
 
@@ -38,8 +38,9 @@ if __name__ == "__main__":
     ]
 
     # take num_prompts prompts from this dataset
-    num_prompts = 8
-    user_prompts = user_prompts[:num_prompts]
+    num_prompts = 1
+    user_prompts = user_prompts[1:2]
+    # user_prompts = user_prompts[:num_prompts]
 
     system_prompt = "You are a helpful chatbot. Answer the following question.\n"
 
@@ -68,9 +69,11 @@ if __name__ == "__main__":
     inference_config = InferenceConfig(batch_size=len(input_prompts), 
                                        max_length_of_generated_sequences=8192,
                                        top_p=0.80,
-                                       temperature=1.0)
+                                       temperature=1.0,
+                                       ignore_eos=False)
+    generation_config = GenerationConfig.from_pretrained(model_id)
 
-    engine = LLMEngine(model_config=model_config, inference_config=inference_config)
+    engine = LLMEngine(model_config=model_config, inference_config=inference_config, generation_config=generation_config)
 
     if enable_profiling:
         profiler_context = torch.profiler.profile(
