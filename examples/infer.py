@@ -38,7 +38,7 @@ if __name__ == "__main__":
     ]
 
     # take num_prompts prompts from this dataset
-    num_prompts = 1
+    num_prompts = 8
     user_prompts = user_prompts[:num_prompts]
 
     system_prompt = "You are a helpful chatbot. Answer the following question.\n"
