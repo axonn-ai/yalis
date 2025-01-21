@@ -120,7 +120,7 @@ class GPT(nn.Module):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def forward(
-        self, input_ids: torch.Tensor, actual_sequence_lengths: torch.Tensor = None
+        self, input_ids: torch.Tensor, actual_sequence_lengths: torch.Tensor = None, is_verify: bool = False
     ) -> torch.Tensor:
         # assert attention_mask is None, "litgpt model does not accept an attention mask"
         idx = input_ids
@@ -144,7 +144,7 @@ class GPT(nn.Module):
             self.sin = self.sin.to(x.dtype)
 
         for block in self.transformer.h:
-            x = block(x, self.cos, self.sin, self.token_counter)
+            x = block(x, self.cos, self.sin, self.token_counter, is_verify)
         if self.config.tensor_parallel:
             x = Gather.apply(x, ax.comm_handle.inner_intra_layer_parallel_group)
         x = self.transformer.ln_f(x)
@@ -289,6 +289,7 @@ class Block(nn.Module):
         cos: torch.Tensor,
         sin: torch.Tensor,
         token_counter: Optional[torch.Tensor] = None,
+        is_verify: bool = False,
     ) -> torch.Tensor:
         """
         Non-parallel residual       Parallel residual
@@ -312,7 +313,7 @@ class Block(nn.Module):
         """
 
         x_normed = self.norm_1(x)
-        attention_output = self.attn(x_normed, cos, sin, token_counter)
+        attention_output = self.attn(x_normed, cos, sin, token_counter, is_verify)
         attention_output = self.post_attention_norm(attention_output)
 
         if self.config.parallel_residual:
@@ -427,6 +428,73 @@ class CausalSelfAttention(nn.Module):
 
         return out
 
+    def lit_rotary_kv_update_verify(
+        self,
+        q: torch.Tensor,  # B,nh,T,hs
+        k: torch.Tensor,  # B,nh,T,hs
+        v: torch.Tensor,  # B,nh,T,hs
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        token_counter_tensor: torch.Tensor,  # 1,1
+        k_cache: torch.Tensor,  # B,nh,t_max,hs
+        v_cache: torch.Tensor,  # B,nh,t_max,hs,
+    ) -> torch.Tensor:
+        # cos = self.index_into_rope_cache_gen(cos, token_counter)
+        # sin = self.index_into_rope_cache_gen(sin, token_counter)
+        B, T = q.shape[0], q.shape[-2]
+        assert B == 1, "Speculative decoding only supports batch size of 1"
+        token_counter = token_counter_tensor.squeeze(0)
+        # print (f"{token_counter=}, {T=}")
+        index_range = torch.arange(T, device=token_counter.device)
+        index = token_counter + index_range
+        
+        cos = torch.index_select(cos, 0, index.view(-1))
+        sin = torch.index_select(sin, 0, index.view(-1))
+        #cos, sin = cos[token_counter: token_counter + T], sin[token_counter: token_counter + T]
+
+        #reshape(
+        #    index.size(0), 1, -1
+        #)
+        # print (f"{cos.shape=}, {sin.shape=}")
+        # cos and sin are of shape (T, hs)
+        cos = cos[None, None, :, :]
+        sin = sin[None, None, :, :]
+
+        roped_tensors = []
+        for x in [q, k]:
+            head_size = x.size(-1)
+            x1 = x[..., : head_size // 2]  # (B, nh, T, hs/2)
+            x2 = x[..., head_size // 2 :]  # (B, nh, T, hs/2)
+            rotated = torch.cat((-x2, x1), dim=-1)  # (B, nh, T, hs)
+            roped = (x * cos) + (rotated * sin)
+            roped = roped.to(dtype=x.dtype)
+            roped_tensors.append(roped)
+
+        q, k = roped_tensors
+
+        # Cache update
+        # print (f"{k_cache.shape=}, {v_cache.shape=}, {k.shape=}, {v.shape=}")
+        k_cache[:, :, index.view(-1), :] = k[:, :, :T, :]
+        v_cache[:, :, index.view(-1), :] = v[:, :, :T, :]
+
+        # Create the mask
+        #arange_t = torch.arange(k_cache.size(-2), device=k_cache.device).unsqueeze(0)
+        #arange_l = token_counter_tensor + torch.arange(T, device=k_cache.device).unsqueeze(1)
+        #mask = arange_t <= arange_l
+        mask = torch.ones(T, k_cache.size(-2), dtype=torch.bool, device=k_cache.device)
+
+        #mask = self.build_mask_from_index(token_counter, t_max=k_cache.size(-2))[
+        #    :, None, None, :
+        #]
+
+        enable_gqa = q.size(1) != k.size(1)
+        out = torch.nn.functional.scaled_dot_product_attention(
+            q, k_cache, v_cache, attn_mask=mask, enable_gqa=enable_gqa
+        )
+        # exit()
+
+        return out
+
     def lit_rotary_kv_update_prefill(
         self,
         q: torch.Tensor,  # B,nh,T,hs
@@ -469,6 +537,7 @@ class CausalSelfAttention(nn.Module):
         cos: torch.Tensor,
         sin: torch.Tensor,
         token_counter: torch.Tensor,
+        is_verify: bool = False,
     ) -> torch.Tensor:
         B, T, C = (
             x.size()
@@ -523,20 +592,8 @@ class CausalSelfAttention(nn.Module):
             k = k.transpose(1, 2).contiguous()
             v = v.transpose(1, 2).contiguous()
 
-            if T == 1:
-                # generative phase
-                y = self.lit_rotary_kv_update_gen(
-                    q,
-                    k,
-                    v,
-                    cos,
-                    sin,
-                    token_counter,  # B,1
-                    k_cache,  # B,nh,t_max,hs
-                    v_cache,  # B,nh,t_max,hs
-                )
-            else:
-                # prefill
+            if is_verify:
+                # Verification phase - used for speculative decoding
                 y = self.lit_rotary_kv_update_prefill(
                     q,
                     k,
@@ -546,6 +603,40 @@ class CausalSelfAttention(nn.Module):
                     k_cache,  # B,nh,t_max,hs
                     v_cache,  # B,nh,t_max,hs
                 )
+                #y = self.lit_rotary_kv_update_verify(
+                #    q,
+                #    k,
+                #    v,
+                #    cos,
+                #    sin,
+                #    token_counter,
+                #    k_cache,
+                #    v_cache,
+                #)
+            else:
+                if T == 1:
+                    # generative phase
+                    y = self.lit_rotary_kv_update_gen(
+                        q,
+                        k,
+                        v,
+                        cos,
+                        sin,
+                        token_counter,  # B,1
+                        k_cache,  # B,nh,t_max,hs
+                        v_cache,  # B,nh,t_max,hs
+                    )
+                else:
+                    # prefill
+                    y = self.lit_rotary_kv_update_prefill(
+                        q,
+                        k,
+                        v,
+                        cos,
+                        sin,
+                        k_cache,  # B,nh,t_max,hs
+                        v_cache,  # B,nh,t_max,hs
+                    )
             y = y.transpose(1, 2).contiguous()
 
         y = y.reshape(
