@@ -4,7 +4,7 @@ except ImportError:
     pass
 
 from yalis import ModelConfig, InferenceConfig, print_rank0, LLMEngine
-from transformers import AutoTokenizer, GenerationConfig
+from transformers import AutoTokenizer
 import torch
 import torch.distributed as dist
 
@@ -69,9 +69,8 @@ if __name__ == "__main__":
                                        max_length_of_generated_sequences=1024,
                                        top_p=0.80,
                                        temperature=1.0)
-    generation_config = GenerationConfig.from_pretrained(model_id)
 
-    engine = LLMEngine(model_config=model_config, inference_config=inference_config, generation_config=generation_config)
+    engine = LLMEngine(model_config=model_config, inference_config=inference_config)
 
     if enable_profiling:
         profiler_context = torch.profiler.profile(
