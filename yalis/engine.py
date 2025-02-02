@@ -72,12 +72,8 @@ def prefill(model, tokens, unpadded_prompt_lengths=None, temperature=1.0, top_k=
         return token_id, logits
     else:
         return token_id
-
-#@torch.compile(mode="reduce-overhead")
-#@torch.compile(mode="reduce-overhead")
-@torch.no_grad()
-#@torch.compile(mode="reduce-overhead")
-@torch.no_grad()
+torch.no_grad()
+@torch.compile(mode="reduce-overhead")
 def verify(model, tokens, unpadded_prompt_lengths=None, temperature=1.0, top_k=None, top_p=1.0, get_logits=False):
     """
     Prefill function for generating the first token.

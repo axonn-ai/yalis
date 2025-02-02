@@ -478,10 +478,10 @@ class CausalSelfAttention(nn.Module):
         v_cache[:, :, index.view(-1), :] = v[:, :, :T, :]
 
         # Create the mask
-        #arange_t = torch.arange(k_cache.size(-2), device=k_cache.device).unsqueeze(0)
-        #arange_l = token_counter_tensor + torch.arange(T, device=k_cache.device).unsqueeze(1)
-        #mask = arange_t <= arange_l
-        mask = torch.ones(T, k_cache.size(-2), dtype=torch.bool, device=k_cache.device)
+        arange_t = torch.arange(k_cache.size(-2), device=k_cache.device).unsqueeze(0)
+        arange_l = token_counter_tensor + torch.arange(T, device=k_cache.device).unsqueeze(1)
+        mask = arange_t <= arange_l
+        #mask = torch.ones(T, k_cache.size(-2), dtype=torch.bool, device=k_cache.device)
 
         #mask = self.build_mask_from_index(token_counter, t_max=k_cache.size(-2))[
         #    :, None, None, :
@@ -594,25 +594,16 @@ class CausalSelfAttention(nn.Module):
 
             if is_verify:
                 # Verification phase - used for speculative decoding
-                y = self.lit_rotary_kv_update_prefill(
+                y = self.lit_rotary_kv_update_verify(
                     q,
                     k,
                     v,
                     cos,
                     sin,
-                    k_cache,  # B,nh,t_max,hs
-                    v_cache,  # B,nh,t_max,hs
+                    token_counter,
+                    k_cache,
+                    v_cache,
                 )
-                #y = self.lit_rotary_kv_update_verify(
-                #    q,
-                #    k,
-                #    v,
-                #    cos,
-                #    sin,
-                #    token_counter,
-                #    k_cache,
-                #    v_cache,
-                #)
             else:
                 if T == 1:
                     # generative phase
