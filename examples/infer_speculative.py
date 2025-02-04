@@ -29,13 +29,17 @@ enable_profiling = False
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 
+torch.manual_seed(0)
+random.seed(0)
+np.random.seed(0)
 
 if __name__ == "__main__":
     # Assuming model and fabric setup functions exist as init_everything() and get_model()
     # target_model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
     # target_model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
     # target_model_id = "meta-llama/Llama-2-70b-chat-hf"
-    target_model_id = "meta-llama/Llama-3.1-70B-Instruct"
+    # target_model_id = "meta-llama/Llama-3.1-70B-Instruct"
+    target_model_id = "meta-llama/Llama-3.1-405B-Instruct"
     # target_model_id = "meta-llama/Llama-3.1-8B-Instruct"
     # draft_model_id = "meta-llama/Llama-2-7b-chat-hf"
     # draft_model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
@@ -125,10 +129,6 @@ if __name__ == "__main__":
             tputs = []
             acceptance_rates = []
             for _ in range(30):
-                torch.manual_seed(0)
-                random.seed(0)
-                np.random.seed(0)
-
                 output_tokens, tput, acceptance_rate = engine.generate(
                     prompt_tokens,
                     tokens_to_gen,
@@ -155,13 +155,13 @@ if __name__ == "__main__":
 
     # Decode the token IDs into text
     # detokenized_text = tokenizer.batch_decode(
-    #     output_tokens, skip_special_tokens=True
+    #    output_tokens, skip_special_tokens=True
     # )
 
     # for prompt, output in zip(input_prompts, detokenized_text):
-    #     print_rank0(f"prompt = {prompt}")
-    #     print_rank0(f"output = {output}")
-    #     print_rank0("==========================\n\n")
+    #    print_rank0(f"prompt = {prompt}")
+    #    print_rank0(f"output = {output}")
+    #    print_rank0("==========================\n\n")
 
     if enable_profiling:
         print_rank0(

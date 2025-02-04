@@ -10,8 +10,9 @@ import logging
 import torch.distributed as dist
 from transformers import AutoTokenizer
 from torch.nn.attention import SDPBackend, sdpa_kernel
-from .timers import Timers
 import gc
+import time
+from .timers import Timers
 
 # These flags are taken from the following URL -
 # https://github.com/pytorch/pytorch/blob/347f96061f1cff603983b9be19ec92b374329a5b/benchmarks/gpt_fast/generate.py#L19
@@ -19,6 +20,7 @@ torch._inductor.config.coordinate_descent_tuning = True
 torch._inductor.config.triton.unique_kernel_names = True
 torch._inductor.config.fx_graph_cache = True  # Experimental feature to reduce compilation times, will be on by default in future
 torch._inductor.config.assert_indirect_indexing = False
+torch._inductor.config.combo_kernel_foreach_dynamic_shapes = True
 
 BYTE_TO_GB = 1 / float(1024 * 1024 * 1024)
 
@@ -31,19 +33,7 @@ precision_to_dtype = {
 
 @torch.no_grad()
 @torch.compile()
-<<<<<<< HEAD
-def prefill(
-    model,
-    tokens,
-    unpadded_prompt_lengths=None,
-    temperature=1.0,
-    top_k=None,
-    top_p=1.0,
-    get_logits=False,
-):
-=======
 def prefill(model, tokens, unpadded_prompt_lengths=None, temperature=1.0, top_k=None, top_p=1.0, get_logits=False, is_verify=False):
->>>>>>> d39c945 (Rabsed and testing memory leak)
     """
     Prefill function for generating the first token.
 
@@ -72,7 +62,9 @@ def prefill(model, tokens, unpadded_prompt_lengths=None, temperature=1.0, top_k=
         return token_id, logits
     else:
         return token_id
-torch.no_grad()
+
+
+@torch.no_grad()
 @torch.compile(mode="reduce-overhead")
 def verify(model, tokens, unpadded_prompt_lengths=None, temperature=1.0, top_k=None, top_p=1.0, get_logits=False):
     """
