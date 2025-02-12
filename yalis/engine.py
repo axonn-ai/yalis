@@ -9,7 +9,7 @@ import logging
 import torch.distributed as dist
 from transformers import AutoTokenizer
 from torch.nn.attention import SDPBackend, sdpa_kernel
-
+import time
 
 # These flags are taken from the following URL -
 # https://github.com/pytorch/pytorch/blob/347f96061f1cff603983b9be19ec92b374329a5b/benchmarks/gpt_fast/generate.py#L19
@@ -147,6 +147,7 @@ class LLMEngine:
         """
         Internal method to load and set up the model based on ModelConfig.
         """
+        t0 = time.time()
         print_rank0(f"Initializing model: {self.model_config.model_name}")
         print_rank0(f"Using precision: {self.model_config.precision}")
         self.model = get_model(self.model_config.model_path, self.dtype, max_sequence_length=self.inference_config.max_length)
@@ -163,6 +164,7 @@ class LLMEngine:
             print_rank0(
                 "Pad token not found in the tokenizer. Using eos_token as pad token."
             )
+        print_rank0(f"Initializing Model took {time.time() - t0} seconds")
 
     def generate(
         self,
