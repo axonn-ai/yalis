@@ -2,10 +2,9 @@ import torch
 from litgpt.model import Config
 from pathlib import Path
 import sys
-from yalis.external.litgpt_utils import load_checkpoint
+from yalis.external.litgpt_utils import load_checkpoint, _EmptyInit
 from yalis.external.model import GPT
 import torch.distributed as dist
-from lightning.fabric.utilities.init import _EmptyInit
 import time
 
 
