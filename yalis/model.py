@@ -2,9 +2,10 @@ import torch
 from litgpt.model import Config
 from pathlib import Path
 import sys
-from yalis.external.litgpt_utils import load_checkpoint
+from yalis.external.litgpt_utils import load_checkpoint, _EmptyInit
 from yalis.external.model import GPT
 import torch.distributed as dist
+import time
 
 
 def get_model(
@@ -25,7 +26,13 @@ def get_model(
         ), f"Maximum sequence length for this model is {config.block_size}"
         config.block_size = max_sequence_length
     config.tensor_parallel = tensor_parallel
-    model = GPT(config).to(model_dtype)
+
+    # Axonn backend requires an argument to specify the device to initialize parameters on
+    config.init_device = "meta"
+
+    with _EmptyInit():
+        model = GPT(config).to(model_dtype)
+
     if not random_init:
         checkpoint_path = checkpoint_dir / "lit_model.pth"
         load_checkpoint(model, checkpoint_path)
