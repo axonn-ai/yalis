@@ -1,5 +1,10 @@
 from litgpt.utils import lazy_load
+from collections.abc import Sequence
+from typing import Any, Callable, Optional
+import torch
 import torch.nn as nn
+from torch.overrides import TorchFunctionMode
+from typing_extensions import override
 from pathlib import Path
 
 # From https://lernapparat.de/faster-model-init by Thomas Viehmann
