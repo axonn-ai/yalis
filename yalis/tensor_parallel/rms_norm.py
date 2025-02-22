@@ -20,32 +20,6 @@ from axonn.intra_layer.communication import (
 from typing import Optional, Sequence
 
 
-# Wrapper for custom_fwd to handle different versions of PyTorch
-def version_aware_custom_fwd(*args, **kwargs):
-    version = torch.__version__.split(".")
-    major_version = int(version[0])
-    minor_version = int(version[1])
-    if major_version > 2 or (major_version == 2 and minor_version >= 4):
-        # For PyTorch version >= 2.4, pass device_type="cuda"
-        return torch.amp.custom_fwd(device_type="cuda")(*args, **kwargs)
-    else:
-        # For PyTorch version < 2.4, no arguments are required
-        return torch.cuda.amp.custom_fwd(*args, **kwargs)
-
-
-# Wrapper for custom_bwd to handle different versions of PyTorch
-def version_aware_custom_bwd(*args, **kwargs):
-    version = torch.__version__.split(".")
-    major_version = int(version[0])
-    minor_version = int(version[1])
-    if major_version > 2 or (major_version == 2 and minor_version >= 4):
-        # For PyTorch version >= 2.4, pass device_type="cuda"
-        return torch.amp.custom_bwd(device_type="cuda")(*args, **kwargs)
-    else:
-        # For PyTorch version < 2.4, no arguments are required
-        return torch.cuda.amp.custom_bwd(*args, **kwargs)
-
-
 def divide(a, b):
     assert a % b == 0
     return a // b
@@ -75,10 +49,6 @@ def initialize_params(
     )
     return params
 
-
-@torch.no_grad()
-def default_init_method(weight):
-    return torch.nn.init.kaiming_uniform_(weight, a=math.sqrt(5))
 
 
 class TPRMSNorm(torch.nn.Module):
@@ -122,6 +92,10 @@ class TPRMSNorm(torch.nn.Module):
         self.local_size = local_size 
         self.global_size = size
 
+        self._old_load_from_state_dict = self._load_from_state_dict
+        self._load_from_state_dict = self._modified_load_from_state_dict
+        
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         dtype = x.dtype
         x = x.float()
@@ -140,7 +114,7 @@ class TPRMSNorm(torch.nn.Module):
             and weight.size(0) == self.global_size
         )
 
-    def _is_sharded_weight_matrix(self, weight):
+    def _is_sharded_weight(self, weight):
         return (
             weight.ndim == 1
             and weight.size(0) == self.local_size

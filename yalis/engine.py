@@ -101,6 +101,9 @@ class LLMEngine:
             print_rank0("Model must be initialized before contiguous parameter buffer can be allocated")
             return
         
+        self.model = self.model.to(self.device) 
+        return
+
         total_bytes = 0
         param_info, buf_info = [], []
         

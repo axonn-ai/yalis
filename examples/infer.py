@@ -17,6 +17,8 @@ from contextlib import nullcontext
 if __name__ == "__main__":
     # Model ID from Hugging Face
     model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
+    # model_id = "meta-llama/Llama-2-13b-chat-hf"
+    # model_id = "meta-llama/Meta-Llama-3-70B-Instruct"
     
     user_prompts = [
         "How to bake a cake?",
@@ -38,13 +40,19 @@ if __name__ == "__main__":
     ]
 
     # take num_prompts prompts from this dataset
-    num_prompts = 8
-    user_prompts = user_prompts[:num_prompts]
+    #num_prompts = 8
+    #user_prompts = user_prompts[:num_prompts]
+    # user_prompts has 16 prompts 
+    # mul by 8 to make batch size 128 
+    user_prompts = user_prompts * 8 
+    print(f"Number of prompts = {len(user_prompts)}")
+
+
 
     system_prompt = "You are a helpful chatbot. Answer the following question.\n"
 
     # profile the run or not
-    enable_profiling = True
+    enable_profiling = False
 
     # Tokenizer for encoding the prompt
     tokenizer = AutoTokenizer.from_pretrained(model_id)
@@ -81,7 +89,7 @@ if __name__ == "__main__":
         profiler_context = nullcontext()
 
     with profiler_context as prof:
-        for iter in range(8):
+        for iter in range(2):
             output_tokens = engine.generate(
                 input_prompts, report_throughput=True, tokens_to_generate=tokens_to_gen
             )
@@ -94,11 +102,11 @@ if __name__ == "__main__":
     # Decode the token IDs into text
     detokenized_text = tokenizer.batch_decode(output_tokens, skip_special_tokens=True)
 
-    for prompt, output in zip(user_prompts, detokenized_text):
-        print_rank0("==========================\n\n")
-        print_rank0(f"prompt = {prompt}")
-        print_rank0(f"output = {output}")
-        print_rank0("==========================\n\n")
+    # for prompt, output in zip(user_prompts, detokenized_text):
+    #     print_rank0("==========================\n\n")
+    #     print_rank0(f"prompt = {prompt}")
+    #     print_rank0(f"output = {output}")
+    #     print_rank0("==========================\n\n")
         
 
     if enable_profiling:

@@ -197,7 +197,6 @@ class TPLinear(torch.nn.Module):
         self.skip_bias_add = skip_bias_add
         self._old_load_from_state_dict = self._load_from_state_dict
         self._load_from_state_dict = self._modified_load_from_state_dict
-        self._old_state_dict = self.state_dictg
 
     def all_reduce(self, x):
         dist.all_reduce(x, group=self.inner_group)
