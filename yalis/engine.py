@@ -66,9 +66,9 @@ def prefill(model, tokens, unpadded_prompt_lengths=None, temperature=1.0, top_k=
 
 @torch.no_grad()
 @torch.compile(mode="reduce-overhead")
-def verify(model, tokens, unpadded_prompt_lengths=None, temperature=1.0, top_k=None, top_p=1.0, get_logits=False):
+def verify(model, tokens, unpadded_prompt_lengths=None, temperature=1.0, top_k=None, top_p=1.0):
     """
-    Prefill function for generating the first token.
+    Verify function used in Speculative Decoding
 
     Args:
         model: The model to generate from.
@@ -83,25 +83,27 @@ def verify(model, tokens, unpadded_prompt_lengths=None, temperature=1.0, top_k=N
     if unpadded_prompt_lengths is None:
         unpadded_prompt_lengths = 0 # If not provided, assume no padding
 
-    token_id = sample(logits=logits[torch.arange(logits.size(0)), unpadded_prompt_lengths - 1], 
+    # Currently supports only batch size = 1 
+    token_ids, probs = sample(logits=logits,
+                      #[torch.arange(logits.size(0)), unpadded_prompt_lengths - 1], 
                       temperature=temperature, 
                       top_k=top_k,
-                      top_p=top_p)
-    if get_logits:
-        return token_id, logits
-    else:
-        return token_id
+                      top_p=top_p, 
+                      get_probs=True,
+                      should_modify_probs=True)
+    #print (f"TokenIds - {token_ids.shape}")
+    return token_ids[torch.arange(logits.size(0)), unpadded_prompt_lengths - 1], probs
 
 @torch.no_grad()
 @torch.compile(mode="reduce-overhead")
 def generate(
     model,
     tokens,
-    get_probs=False,
     temperature=1.0,
     top_k=None,
     top_p=1.0,
-    get_logits=False,
+    get_probs=False,
+    should_modify_probs=False
 ):
     """
     Generate function for producing the next token(s).
@@ -117,13 +119,10 @@ def generate(
         logits: (Optional) The raw logits from the model.
     """
     logits = model(tokens)["logits"]
-    token_id = sample(
-        logits=logits[:, -1], temperature=temperature, top_k=top_k, top_p=top_p
+    #print_rank0(f"Get probs- {get_probs}")
+    return sample(
+        logits=logits[:, -1], temperature=temperature, top_k=top_k, top_p=top_p, get_probs=get_probs, should_modify_probs=should_modify_probs
     )
-    if get_logits:
-        return token_id, logits
-    else:
-        return token_id
 
 
 class LLMEngine:
@@ -448,10 +447,11 @@ class SpecDecLLMEngine(LLMEngine):
                                 draft_tokens,
                                 top_p=0.0,
                                 temperature=0.0,
-                                get_logits=True,
+                                get_probs=True,
+                                should_modify_probs=True
                             )
                             draft_tokens.copy_(next_token)
-                            draft_probs.append(probs.clone())
+                            draft_probs.append(probs.unsqueeze(1).clone())
                             generated_draft_tokens += 1
 
                             draft_output_tokens.append(next_token.clone())
@@ -459,10 +459,11 @@ class SpecDecLLMEngine(LLMEngine):
 
                         _ = generate(self.draft_model, draft_tokens, top_p=0.0, temperature=0.0)
                         #timers.stop("draft")
+                        #print_rank0(f"Draft Probs: {len(draft_probs)}, Draft Probs Size: {draft_probs[0].size()}")
 
                         #print_rank0(f"Decode step: {self.model.get_token_count()}, {self.draft_model.get_token_count()}")
                         draft_probs = torch.cat(draft_probs, dim=1)
-                        draft_probs = self.logits_to_probs(draft_probs)
+                        #draft_probs = self.logits_to_probs(draft_probs)
                         draft_output_tokens = torch.cat(draft_output_tokens, dim=1)
                         #print_rank0(f"[Decode] Draft Output Tokens: {draft_output_tokens}")
                         #print_rank0(f"Draft Probs: {draft_probs.size()}, Draft Output Tokens: {draft_output_tokens.size()}")
@@ -472,13 +473,15 @@ class SpecDecLLMEngine(LLMEngine):
                         # Verify the output of the draft model
                         #timers.start("verify")
                         next_token, target_probs = verify(
-                            self.model, draft_output_tokens, top_p=0.0, temperature=0.0, get_logits=True
+                            self.model, draft_output_tokens, top_p=0.0, temperature=0.0
                         )
-                        target_probs = self.logits_to_probs(target_probs)
+                        #target_probs = target_probs.unsqueeze(1)
+                        #print_rank0(f"Verify step: {target_probs}")
+
+                        #target_probs = self.logits_to_probs(target_probs)
                         #timers.stop("verify")
 
                     # print_rank0(f"Verify step: {self.model.get_token_count()}, {self.draft_model.get_token_count()}")
-                    # print_rank0(f"Verify step: {target_probs.size()}")
 
                     ## Rejection Sampling
                     #timers.start("rejection_sampling")

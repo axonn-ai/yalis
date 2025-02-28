@@ -20,40 +20,73 @@ def sample_top_p(logits: torch.Tensor, top_p: float) -> torch.Tensor:
     sorted_indices_to_remove = cumulative_probs > top_p
 
     # Always keep at least one token per batch
-    sorted_indices_to_remove[..., 0] = False  # Ensure the most probable token is not removed
-    
+    sorted_indices_to_remove[..., 0] = (
+        False  # Ensure the most probable token is not removed
+    )
+
     # Scatter the removal mask back to the original indices
-    indices_to_remove = sorted_indices_to_remove.scatter(dim=-1, index=sorted_indices, src=sorted_indices_to_remove)
-    
+    indices_to_remove = sorted_indices_to_remove.scatter(
+        dim=-1, index=sorted_indices, src=sorted_indices_to_remove
+    )
+
     # Mask out the logits to remove
     logits = logits.masked_fill(indices_to_remove, float("-inf"))
     return logits
 
 
 def sample(
-    logits: torch.Tensor, temperature: float = 1.0, top_k: Optional[int] = None, top_p: float = 1.0
+    logits: torch.Tensor,
+    temperature: float = 1.0,
+    top_k: Optional[int] = None,
+    top_p: float = 1.0,
+    get_probs: bool = False,
+    should_modify_probs: bool = False,
 ) -> torch.Tensor:
     if top_p < 0.0 or top_p > 1.0:
         raise ValueError(f"top_p must be in [0, 1], got {top_p}")
-    
-    # optionally crop the logits to only the top k options
-    if top_k is not None:
-        # Step 1: Compute the top-k values and indices along the last dimension
-        v, i = torch.topk(logits, min(top_k, logits.size(-1)), dim=-1)
 
-        # Step 2: Create a tensor of -inf values with the same shape as logits
-        logits_masked = torch.full_like(logits, float("-inf"))
+    #print(f"Sampling got logits shape - {logits.shape}")
 
-        # Step 3: Scatter the top-k values back into their original positions
-        logits_masked.scatter_(-1, i, v)
-    # optionally scale the logits and sample from a probability distribution
-    if temperature > 0.0 or top_p > 0.0:
-        if temperature > 0.0:
-            logits = logits / temperature
-        # optionally crop the logits to smallest set of logits with a cumulative probability above top_p
-        if top_p < 1.0:
+    if get_probs and not should_modify_probs:
+        probs_returned = torch.nn.functional.softmax(logits, dim=-1)
+
+    do_multinomial_sample = False
+    if temperature > 0.0:
+        logits = logits / temperature
+        do_multinomial_sample = True
+
+    if do_multinomial_sample:  # Multi-nomial Sampling
+        # optionally crop the logits to only the top k options
+        if top_k is not None:
+            # Step 1: Compute the top-k values and indices along the last dimension
+            v, i = torch.topk(logits, min(top_k, logits.size(-1)), dim=-1)
+            # Step 2: Create a tensor of -inf values with the same shape as logits
+            logits.fill_(float("-inf"))
+            # Step 3: Scatter the top-k values back into their original positions
+            logits.scatter_(-1, i, v)
+
+        # optionally scale the logits and sample from a probability distribution
+        if top_p > 0.0 and top_p < 1.0:
+            # Crop the logits to smallest set of logits with a cumulative probability above top_p
             logits = sample_top_p(logits, top_p)
-        probs = torch.nn.functional.softmax(logits, dim=-1)
-        return multinomial_num_samples_1(probs)
-    return torch.argmax(logits, dim=-1, keepdim=True)
 
+        probs = torch.nn.functional.softmax(logits, dim=-1)
+        token_ids = multinomial_num_samples_1(probs)
+    else:  # Greedy Sampling
+        #print(f"I am greedy sampling")
+
+        token_ids = torch.argmax(logits, dim=-1, keepdim=True)
+        #print (f"token_ids: {token_ids}")
+        #print (f"token_ids: {token_ids.shape}")
+
+        # This is required for SpecDec which expects the probabilities to encode the sampling method
+        if get_probs and should_modify_probs:
+            probs = torch.zeros_like(logits)
+            probs.scatter_(-1, token_ids, 1.0)
+
+    if not get_probs:
+        return token_ids
+    else:
+        if should_modify_probs:
+            probs_returned = probs
+        return token_ids, probs_returned
