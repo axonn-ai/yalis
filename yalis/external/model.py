@@ -11,6 +11,7 @@ from typing import Any, Optional, Tuple
 
 import torch
 import torch.nn as nn
+import torch.distributed as dist
 from typing_extensions import Self
 
 try:
@@ -31,6 +32,18 @@ from axonn.intra_layer.communication import Drop, Gather
 
 from yalis import print_rank0
 
+
+def get_norm_class(config):
+    if not config.tensor_parallel or ax.config.G_intra_c == 1:
+        # if not tensor parallel then no need to use tensor parallel norms
+        # if tensor parallel and not using column TP then again 
+        # no need to use TP norms
+        return config.norm_class 
+    from yalis.tensor_parallel import TPRMSNorm
+    if config.norm_class_name == "RMSNorm":
+        return TPRMSNorm 
+    else:
+        raise NotImplementedError(f"TP version of {config.norm_class_name} not implemented")
 
 class GPT(nn.Module):
     def __init__(self, config: Config) -> None:
@@ -239,22 +252,24 @@ class Block(nn.Module):
                 " (non-parallel residual and shared attention norm)."
             )
 
-        self.norm_1 = config.norm_class(config.n_embd, eps=config.norm_eps)
+        self.norm_1 = get_norm_class(config)(config.n_embd, eps=config.norm_eps)#config.norm_class(config.n_embd, eps=config.norm_eps)
         self.attn = CausalSelfAttention(config, block_idx)
         self.post_attention_norm = (
-            config.norm_class(config.n_embd, eps=config.norm_eps)
+            get_norm_class(config)(config.n_embd, eps=config.norm_eps)
+            #config.norm_class(config.n_embd, eps=config.norm_eps)
             if config.post_attention_norm
             else nn.Identity()
         )
         self.norm_2 = (
             None
             if config.shared_attention_norm
-            else config.norm_class(config.n_embd, eps=config.norm_eps)
+            else get_norm_class(config)(config.n_embd, eps=config.norm_eps)#config.norm_class(config.n_embd, eps=config.norm_eps)
         )
         mlp_class = getattr(sys.modules[__name__], config.mlp_class_name)
         self.mlp = mlp_class(config)
         self.post_mlp_norm = (
-            config.norm_class(config.n_embd, eps=config.norm_eps)
+            get_norm_class(config)(config.n_embd, eps=config.norm_eps)
+            #config.norm_class(config.n_embd, eps=config.norm_eps)
             if config.post_mlp_norm
             else nn.Identity()
         )
@@ -310,7 +325,7 @@ class CausalSelfAttention(nn.Module):
         if not config.tensor_parallel:
             self.attn = nn.Linear(config.n_embd, shape, bias=config.bias)
         else:
-            self.attn = TPLinear(config.n_embd, shape, bias=config.bias)
+            self.attn = TPLinear(config.n_embd, shape, bias=config.bias) #attn proj, qkv creator
 
         # output projection
         # if `head_size` is explicitly specified in the config, `n_emd` might not be equal to `head_size * n_head`
@@ -319,7 +334,7 @@ class CausalSelfAttention(nn.Module):
                 config.head_size * config.n_head, config.n_embd, bias=config.bias
             )
         else:
-            self.proj = TPLinear(
+            self.proj = TPLinear( # ll at end
                 config.head_size * config.n_head,
                 config.n_embd,
                 bias=config.bias,
@@ -333,9 +348,11 @@ class CausalSelfAttention(nn.Module):
         )
 
         self.config = config
-        if config.tensor_parallel:
+        if config.tensor_parallel: # output of qkv creator across R TP dimension
+            print("IS using tensor parallel")
             self.config = deepcopy(self.config)
             attention_world_size = ax.config.G_intra_r
+            print("attention world size (ax.config.G_intra_r): ", attention_world_size)
             assert self.config.n_head % attention_world_size == 0
             self.config.n_head //= attention_world_size
             assert self.config.n_query_groups % attention_world_size == 0
@@ -397,9 +414,19 @@ class CausalSelfAttention(nn.Module):
         ]
         
         enable_gqa = q.size(1) != k.size(1)
-        out = torch.nn.functional.scaled_dot_product_attention(
-            q, k_cache, v_cache, attn_mask=mask, enable_gqa=enable_gqa
-        )
+        # SPLIT HERE
+        out = None
+        if False:#True:
+            out = self.intra_head_sdpa(
+                q, k_cache, v_cache, mask,
+                self.config, ax.comm_handle.inner_intra_layer_parallel_group,
+                enable_gqa
+            )
+        else:
+            out = torch.nn.functional.scaled_dot_product_attention(
+                q, k_cache, v_cache, attn_mask=mask, enable_gqa=enable_gqa
+            )
+        # GATHER, then work backwards to before KV-cache split
 
         return out
 
@@ -413,6 +440,7 @@ class CausalSelfAttention(nn.Module):
         k_cache: torch.Tensor,  # B,nh,t_max,hs
         v_cache: torch.Tensor,  # B,nh,t_max,hs,
     ) -> torch.Tensor:
+        print("Calling lit_rotary_kv_update_prefill")
         B, T = q.shape[0], q.shape[-2]
         cos, sin = cos[:T], sin[:T]
         # cos and sin are of shape (T, hs)
@@ -433,11 +461,25 @@ class CausalSelfAttention(nn.Module):
         q, k = roped_tensors
         k_cache[:, :, :T, :] = k[:, :, :T, :]
         v_cache[:, :, :T, :] = v[:, :, :T, :]
+        print("q shape: ", q.shape)
+        print("k shape: ", k.shape)
+        print("v shape: ", v.shape)
+        print("head size: ", self.config.head_size)
+        print("num head: ", self.config.n_head)
 
         enable_gqa = q.size(1) != k.size(1)
-        out = torch.nn.functional.scaled_dot_product_attention(q, k, v, is_causal=True, enable_gqa=enable_gqa)
-
-        return out
+        print("gqa?: ", "true" if enable_gqa else "false")
+        #print(
+        if True: # using intra-head parallelism
+            out = self.intra_head_sdpa(
+                q, k, v, None,
+                self.config,
+                ax.comm_handle                enable_gqa
+            )
+            return out
+        else:
+            out = torch.nn.functional.scaled_dot_product_attention(q, k, v, is_causal=True, enable_gqa=enable_gqa)
+            return out
 
     def forward(
         self,
@@ -573,6 +615,51 @@ class CausalSelfAttention(nn.Module):
                 is_causal=mask is None,
             )
         return y.transpose(1, 2)
+
+    def intra_head_sdpa(self, q, k, v, attn_mask, config, process_group, enable_gqa):
+        print("Before drop, q dim: ", q.shape)
+        print("Before drop, k dim: ", k.shape)
+        #q = Drop.apply(q, process_group)
+        #k = Drop.apply(k, process_group)
+        #v = Drop.apply(v, process_group)
+        #mask = torch.ones(
+        #            q.size(2), q.size(2), dtype=q.dtype, device=q.device
+        #).triu(diagonal=1)
+        print("dropped q dims: ", q.shape)
+        print("dropped k dims: ", k.shape)
+        print("head size: ", config.head_size)
+        scale = 1.0 / math.sqrt(config.head_size)
+        print("k.mT dims: ", k.mT.shape)
+        print("attention score scalar is: ", self.config.attention_scores_scalar)
+        if enable_gqa:
+            q = q.view(q.size(0), k.size(1), k.size(1), k.size(2), k.size(3))
+            k = k.view(k.size(0), k.size(1), 1, k.size(2), k.size(3))
+            v = v.view(v.size(0), v.size(1), 1, v.size(2), v.size(3))
+            S = torch.einsum("b h g n d, b h o d m -> b h g n m", q, k.mT).contiguous()
+        else:
+            S = q @ k.mT
+        print("S shape: ", S.shape)
+        print("S stride: ", S.stride())
+        ###S = q @ k.mT
+        ###assert S.is_contiguous(), "S is not contiguous!"
+        ###S = S.contiguous()
+        ###dist.all_reduce(S, op=dist.ReduceOp.SUM, group=process_group)
+        #output_list = [torch.empty_like(S) for _ in range(dist.get_world_size(group=process_group))]
+        #dist.all_gather(output_list, S)
+        #S_combined = torch.stack(output_list, dim=0)
+        #S = S_combined.sum(dim=0)  
+        S = S * scale
+        #mask.masked_fill_(mask.bool(), torch.finfo(q.dtype).min)
+        #S = S + mask
+        #if attn_mask:
+        #    S = S + mask
+        A = torch.nn.functional.softmax(S, dim=-1, dtype=torch.float).to(dtype=q.dtype)
+        print("A dim: ", A.shape)
+        #A = Drop.apply(A, process_group)
+        print("Dropped A dim: ", A.shape)
+        print("Dropped v dim: ", v.shape)
+        O = A @ v
+        return O
 
     def build_kv_cache(
         self,
