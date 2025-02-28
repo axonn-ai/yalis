@@ -1,4 +1,4 @@
-from typing import Optional, Literal
+from typing import Optional, Literal, Tuple
 import os
 
 
@@ -89,6 +89,7 @@ class InferenceConfig:
         top_p: Optional[float] = 1.0,
         temperature: Optional[float] = 1.0,
         metrics: bool = False,
+        tp_dims: Optional[Tuple(int, int, int)] = None
     ):
         """
         Initialize the inference configuration.
@@ -113,7 +114,7 @@ class InferenceConfig:
         self.top_k = top_k
         self.top_p = top_p
         self.metrics = metrics
-        self.tp_dims = None
+        self.tp_dims = tp_dims
 
         self._validate()
 
