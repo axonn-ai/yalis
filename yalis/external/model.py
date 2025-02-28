@@ -474,7 +474,8 @@ class CausalSelfAttention(nn.Module):
             out = self.intra_head_sdpa(
                 q, k, v, None,
                 self.config,
-                ax.comm_handle                enable_gqa
+                ax.comm_handle.inner_intra_layer_parallel_group,
+                enable_gqa
             )
             return out
         else:
@@ -619,12 +620,13 @@ class CausalSelfAttention(nn.Module):
     def intra_head_sdpa(self, q, k, v, attn_mask, config, process_group, enable_gqa):
         print("Before drop, q dim: ", q.shape)
         print("Before drop, k dim: ", k.shape)
-        #q = Drop.apply(q, process_group)
-        #k = Drop.apply(k, process_group)
+        q = Drop.apply(q, process_group)
+        k = Drop.apply(k, process_group)
         #v = Drop.apply(v, process_group)
-        #mask = torch.ones(
-        #            q.size(2), q.size(2), dtype=q.dtype, device=q.device
-        #).triu(diagonal=1)
+        mask = torch.ones(
+            q.size(2), q.size(2), dtype=q.dtype, device=q.device
+        ).triu(diagonal=1)
+        mask.masked_fill_(mask.bool(), torch.finfo(q.dtype).min)
         print("dropped q dims: ", q.shape)
         print("dropped k dims: ", k.shape)
         print("head size: ", config.head_size)
@@ -643,14 +645,13 @@ class CausalSelfAttention(nn.Module):
         ###S = q @ k.mT
         ###assert S.is_contiguous(), "S is not contiguous!"
         ###S = S.contiguous()
-        ###dist.all_reduce(S, op=dist.ReduceOp.SUM, group=process_group)
-        #output_list = [torch.empty_like(S) for _ in range(dist.get_world_size(group=process_group))]
-        #dist.all_gather(output_list, S)
-        #S_combined = torch.stack(output_list, dim=0)
-        #S = S_combined.sum(dim=0)  
+        #dist.all_reduce(S, op=dist.ReduceOp.SUM, group=process_group)
+        output_list = [torch.empty_like(S) for _ in range(dist.get_world_size(group=process_group))]
+        dist.all_gather(output_list, S)
+        S_combined = torch.stack(output_list, dim=0)
+        S = S_combined.sum(dim=0)  
         S = S * scale
-        #mask.masked_fill_(mask.bool(), torch.finfo(q.dtype).min)
-        #S = S + mask
+        S = S + mask
         #if attn_mask:
         #    S = S + mask
         A = torch.nn.functional.softmax(S, dim=-1, dtype=torch.float).to(dtype=q.dtype)
