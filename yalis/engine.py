@@ -3,7 +3,7 @@ from typing import Union, List, Optional
 from .config import ModelConfig, InferenceConfig
 from .model import get_model
 from .initialize import init_distributed
-from .utils import print_rank0
+from .utils import print_rank0, get_gpu_memory_info
 from .external.sampling import sample
 import logging
 import torch.distributed as dist
@@ -97,6 +97,7 @@ class LLMEngine:
         self._initialize_model()
         torch.cuda.empty_cache()  # return extra memory to CUDA. Can prevent NCCL init OOMs
         gc.collect()
+        print_rank0(f"Memory Stats After Initializing Model - {get_gpu_memory_info()} ")
 
     def _make_params_contiguous(self):
         if not self.model:
