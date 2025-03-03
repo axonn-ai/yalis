@@ -18,6 +18,7 @@ from axonn.intra_layer.communication import (
 )
 
 from typing import Optional, Sequence
+import gc
 
 
 # Wrapper for custom_fwd to handle different versions of PyTorch

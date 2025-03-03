@@ -15,8 +15,8 @@ def init_distributed(
     world_size = int(os.environ.get("WORLD_SIZE", 1))
     local_device = torch.device(f"cuda:{local_rank}")
     torch.cuda.set_device(local_device)
-    print (f"[{rank}] Device - {local_device}, World Size - {world_size}, Device Count - {torch.cuda.device_count()}")
     dist.init_process_group(backend="nccl", rank=rank, world_size=world_size, device_id=local_device) 
+    print (f"[{rank}] Device - {local_device}, World Size - {world_size}, Device Count - {torch.cuda.device_count()}")
     #dist.init_process_group(backend="nccl") 
     #torch.cuda.set_device(dist.get_rank() % torch.cuda.device_count())
     assert torch.cuda.current_device() == local_rank
