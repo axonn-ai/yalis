@@ -10,6 +10,7 @@ import torch.distributed as dist
 from transformers import AutoTokenizer
 from torch.nn.attention import SDPBackend, sdpa_kernel
 import time
+import gc
 
 # These flags are taken from the following URL -
 # https://github.com/pytorch/pytorch/blob/347f96061f1cff603983b9be19ec92b374329a5b/benchmarks/gpt_fast/generate.py#L19
@@ -95,6 +96,7 @@ class LLMEngine:
         init_distributed(tp_dims=self.inference_config.tp_dims)
         self._initialize_model()
         torch.cuda.empty_cache()  # return extra memory to CUDA. Can prevent NCCL init OOMs
+        gc.collect()
 
     def _make_params_contiguous(self):
         if not self.model:

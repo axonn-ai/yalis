@@ -89,7 +89,7 @@ class InferenceConfig:
         top_p: Optional[float] = 1.0,
         temperature: Optional[float] = 1.0,
         metrics: bool = False,
-        tp_dims: Optional[Tuple(int, int, int)] = None
+        tp_dims: Optional[Tuple[int, int, int]] = None
     ):
         """
         Initialize the inference configuration.
