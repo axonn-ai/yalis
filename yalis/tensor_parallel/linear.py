@@ -55,10 +55,16 @@ def divide(a, b):
 def extract_local_params_from_full_params(
     params, out_features_group, in_features_group
 ):
-    params = Drop.apply(params, in_features_group)
-    params = Drop.apply(torch.t(params).contiguous(), out_features_group)
-    params = torch.t(params).contiguous()
-    return params
+    in_params = Drop.apply(params, in_features_group)
+    in_params_contig = torch.t(in_params).contiguous()
+    del in_params
+
+    out_params = Drop.apply(in_params_contig, out_features_group)
+    local_params = torch.t(out_params).contiguous()
+
+    del in_params_contig
+    del out_params
+    return local_params
 
 
 @torch.no_grad()
@@ -72,10 +78,11 @@ def initialize_params(
 ):
     params = torch.empty((out_features, in_features), device=init_device)
     init_method(params)
-    params = extract_local_params_from_full_params(
+    local_params = extract_local_params_from_full_params(
         params, out_features_group, in_features_group
     )
-    return params
+    del params
+    return local_params
 
 
 @torch.no_grad()
