@@ -9,13 +9,16 @@ import time
 
 
 def get_model(
-    litgpt_checkpoint_directory,
+    model_config,
     model_dtype,
     max_sequence_length=None,
     random_init=False,
     device="cuda",
 ):
+    litgpt_checkpoint_directory = model_config.model_path
     tensor_parallel = dist.get_world_size() > 1
+    if model_config.disable_tp:
+        tensor_parallel = False
     if tensor_parallel and dist.get_rank() == 0:
         print(f"Using Tensor parallelism on {dist.get_world_size()} GPUs")
     checkpoint_dir = Path(litgpt_checkpoint_directory)

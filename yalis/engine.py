@@ -161,8 +161,7 @@ class LLMEngine:
             )
             return
         
-        self.model = self.model.to(self.device) 
-        return
+        return model.to(self.device) 
 
         total_bytes = 0
         param_info, buf_info = [], []
@@ -227,14 +226,13 @@ class LLMEngine:
         t0 = time.time()
         print_rank0(f"Initializing model: {model_config.model_name}")
         print_rank0(f"Using precision: {model_config.precision}")
-        model = get_model(model_config.model_path, self.dtype, max_sequence_length=self.inference_config.max_length)
+        model = get_model(model_config, self.dtype, max_sequence_length=self.inference_config.max_length)
         print_rank0(f"Making model parameters contiguous")
         model = self._make_params_contiguous(model)
         model.set_kv_cache(
             batch_size=self.inference_config.batch_size,
             device=self.device,
             dtype=self.dtype,
-            random_init=False
         )
         tokenizer = AutoTokenizer.from_pretrained(model_config.model_name)
         # Check if the tokenizer has a pad token, otherwise use eos_token

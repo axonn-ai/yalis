@@ -38,8 +38,8 @@ if __name__ == "__main__":
     # target_model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
     # target_model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
     # target_model_id = "meta-llama/Llama-2-70b-chat-hf"
-    # target_model_id = "meta-llama/Llama-3.1-70B-Instruct"
-    target_model_id = "meta-llama/Llama-3.1-405B-Instruct"
+    target_model_id = "meta-llama/Llama-3.1-70B-Instruct"
+    # target_model_id = "meta-llama/Llama-3.1-405B-Instruct"
     # target_model_id = "meta-llama/Llama-3.1-8B-Instruct"
     # draft_model_id = "meta-llama/Llama-2-7b-chat-hf"
     # draft_model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
@@ -51,21 +51,21 @@ if __name__ == "__main__":
     tokenizer = AutoTokenizer.from_pretrained(target_model_id)
     user_prompts = [
         "How to bake a cake?",
-        "How to drive a car on a freeway?",
-        "What are the best practices for time management?",
-        "Explain quantum mechanics in simple terms.",
-        "How do I write a great resume for a software engineer role?",
-        "What are the steps to start a successful business?",
-        "How can I improve my public speaking skills?",
-        "What are the benefits of a balanced diet?",
-        "How to train a dog to follow basic commands?",
-        "What is the process for applying to graduate school in the US?",
-        "How do I troubleshoot a slow internet connection?",
-        "What is the meaning of life according to philosophy?",
-        "How can I learn to play the guitar?",
-        "What are the key elements of a good story?",
-        "How do I stay motivated while working from home?",
-        "What is the easiest way to learn a new language?",
+        #"How to drive a car on a freeway?",
+        #"What are the best practices for time management?",
+        #"Explain quantum mechanics in simple terms.",
+        #"How do I write a great resume for a software engineer role?",
+        #"What are the steps to start a successful business?",
+        #"How can I improve my public speaking skills?",
+        #"What are the benefits of a balanced diet?",
+        #"How to train a dog to follow basic commands?",
+        #"What is the process for applying to graduate school in the US?",
+        #"How do I troubleshoot a slow internet connection?",
+        #"What is the meaning of life according to philosophy?",
+        #"How can I learn to play the guitar?",
+        #"What are the key elements of a good story?",
+        #"How do I stay motivated while working from home?",
+        #"What is the easiest way to learn a new language?",
     ]
 
     system_prompt = (
@@ -93,7 +93,8 @@ if __name__ == "__main__":
         model_name=target_model_id, precision="bf16"
     )
     draft_model_config = ModelConfig(
-        model_name=draft_model_id, precision="bf16"
+        model_name=draft_model_id, precision="bf16",
+        disable_tp = True
     )
 
     inference_config = InferenceConfig(
@@ -101,6 +102,7 @@ if __name__ == "__main__":
         max_length_of_generated_sequences=512,
         top_p=0.0,
         temperature=0.0,
+        tp_dims = (8,2,1)
     )
 
     if enable_profiling:
