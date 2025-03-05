@@ -12,7 +12,8 @@ class ModelConfig:
         model_name: str,
         model_path: Optional[str] = None,
         precision: Literal["fp32", "fp16", "bf16"] = "fp16",
-        disable_tp: Optional[bool] = False
+        disable_tp: Optional[bool] = False,
+        tp_dims: Optional[Tuple[int, int, int]] = None
     ):
         """
         Initialize the model configuration.
@@ -30,6 +31,7 @@ class ModelConfig:
         self._validate()
         self.model_path = self._resolve_model_path(self.model_path)
         self.disable_tp = disable_tp
+        self.tp_dims = tp_dims
 
     def _resolve_model_path(self, model_path: Optional[str]) -> str:
         """

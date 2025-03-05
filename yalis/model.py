@@ -29,6 +29,7 @@ def get_model(
         ), f"Maximum sequence length for this model is {config.block_size}"
         config.block_size = max_sequence_length
     config.tensor_parallel = tensor_parallel
+    config.tp_dims = model_config.tp_dims
 
     with _EmptyInit(enabled=(not random_init)):
         model = GPT(config).to(model_dtype)

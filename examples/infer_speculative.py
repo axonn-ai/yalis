@@ -94,7 +94,7 @@ if __name__ == "__main__":
     )
     draft_model_config = ModelConfig(
         model_name=draft_model_id, precision="bf16",
-        disable_tp = True
+        tp_dims = (1, 1, 1)
     )
 
     inference_config = InferenceConfig(
@@ -102,7 +102,7 @@ if __name__ == "__main__":
         max_length_of_generated_sequences=512,
         top_p=0.0,
         temperature=0.0,
-        tp_dims = (8,2,1)
+        tp_dims = (4,2,1)
     )
 
     if enable_profiling:
@@ -130,7 +130,8 @@ if __name__ == "__main__":
             prompt_tokens = tokenizer(prompt, return_tensors="pt").input_ids
             tputs = []
             acceptance_rates = []
-            for _ in range(30):
+            for i in range(30):
+                print (f"[{dist.get_rank()}] Running Iteration {i}")
                 output_tokens, tput, acceptance_rate = engine.generate(
                     prompt_tokens,
                     tokens_to_gen,
@@ -142,6 +143,7 @@ if __name__ == "__main__":
                 if enable_profiling:
                     prof.step()
 
+                print (f"[{dist.get_rank()}] Executing Barrier {i}")
                 dist.barrier()
 
             # Average of last 5 throughput values
