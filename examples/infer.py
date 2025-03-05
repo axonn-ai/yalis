@@ -16,9 +16,7 @@ from contextlib import nullcontext
 
 if __name__ == "__main__":
     # Model ID from Hugging Face
-    model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
-    # model_id = "meta-llama/Llama-2-13b-chat-hf"
-    # model_id = "meta-llama/Meta-Llama-3-70B-Instruct"
+    model_id = "meta-llama/Llama-3.1-8B-Instruct"
     
     user_prompts = [
         "How to bake a cake?",
@@ -76,7 +74,8 @@ if __name__ == "__main__":
     inference_config = InferenceConfig(batch_size=len(input_prompts), 
                                        max_length_of_generated_sequences=1024,
                                        top_p=0.80,
-                                       temperature=1.0)
+                                       temperature=1.0, 
+                                       tp_dims=(4,2,1))
 
     engine = LLMEngine(model_config=model_config, inference_config=inference_config)
 
@@ -89,7 +88,7 @@ if __name__ == "__main__":
         profiler_context = nullcontext()
 
     with profiler_context as prof:
-        for iter in range(2):
+        for iter in range(10):
             output_tokens = engine.generate(
                 input_prompts, report_throughput=True, tokens_to_generate=tokens_to_gen
             )
