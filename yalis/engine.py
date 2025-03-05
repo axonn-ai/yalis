@@ -3,13 +3,14 @@ from typing import Union, List, Optional
 from .config import ModelConfig, InferenceConfig
 from .model import get_model
 from .initialize import init_distributed
-from .utils import print_rank0
+from .utils import print_rank0, get_gpu_memory_info
 from .external.sampling import sample
 import logging
 import torch.distributed as dist
 from transformers import AutoTokenizer
 from torch.nn.attention import SDPBackend, sdpa_kernel
 import time
+import gc
 
 # These flags are taken from the following URL -
 # https://github.com/pytorch/pytorch/blob/347f96061f1cff603983b9be19ec92b374329a5b/benchmarks/gpt_fast/generate.py#L19
@@ -92,15 +93,20 @@ class LLMEngine:
         self.model = None  # Placeholder for the loaded model
         self.device = device
         self.dtype = precision_to_dtype[self.model_config.precision]
-        init_distributed()
+        init_distributed(tp_dims=self.inference_config.tp_dims)
         self._initialize_model()
         torch.cuda.empty_cache()  # return extra memory to CUDA. Can prevent NCCL init OOMs
+        gc.collect()
+        print_rank0(f"Memory Stats After Initializing Model - {get_gpu_memory_info()} ")
 
     def _make_params_contiguous(self):
         if not self.model:
             print_rank0("Model must be initialized before contiguous parameter buffer can be allocated")
             return
         
+        self.model = self.model.to(self.device) 
+        return
+
         total_bytes = 0
         param_info, buf_info = [], []
         
@@ -150,7 +156,7 @@ class LLMEngine:
         t0 = time.time()
         print_rank0(f"Initializing model: {self.model_config.model_name}")
         print_rank0(f"Using precision: {self.model_config.precision}")
-        self.model = get_model(self.model_config.model_path, self.dtype, max_sequence_length=self.inference_config.max_length)
+        self.model = get_model(self.model_config.model_path, self.dtype, max_sequence_length=self.inference_config.max_length, random_init=False)
         self._make_params_contiguous()
         self.model.set_kv_cache(
             batch_size=self.inference_config.batch_size,

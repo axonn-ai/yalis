@@ -1,6 +1,15 @@
+import torch
 import torch.distributed as dist
 
 
 def print_rank0(msg):
     if dist.get_rank() == 0:
         print(f"{msg}")
+
+def get_gpu_memory_info():
+    BYTES_TO_GB = 1 / (1024 ** 3)
+    if torch.cuda.is_available():
+        allocated = torch.cuda.memory_allocated() * BYTES_TO_GB
+        reserved = torch.cuda.memory_reserved() * BYTES_TO_GB
+        return allocated, reserved
+    return 0, 0

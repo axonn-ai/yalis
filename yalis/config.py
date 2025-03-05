@@ -1,4 +1,4 @@
-from typing import Optional, Literal
+from typing import Optional, Literal, Tuple
 import os
 
 
@@ -89,6 +89,7 @@ class InferenceConfig:
         top_p: Optional[float] = 1.0,
         temperature: Optional[float] = 1.0,
         metrics: bool = False,
+        tp_dims: Optional[Tuple[int, int, int]] = None
     ):
         """
         Initialize the inference configuration.
@@ -113,6 +114,7 @@ class InferenceConfig:
         self.top_k = top_k
         self.top_p = top_p
         self.metrics = metrics
+        self.tp_dims = tp_dims
 
         self._validate()
 
@@ -135,6 +137,10 @@ class InferenceConfig:
 
         if self.top_p is not None and (self.top_p <= 0.0 or self.top_p > 1.0):
             raise ValueError("top_p must be in the range (0.0, 1.0].")
+
+        if self.tp_dims is not None and (type(self.tp_dims) != tuple or len(self.tp_dims) != 3):
+            raise ValueError("tp_dims must be a 3-dimensional tuple.")
+
 
     def __repr__(self):
         return (

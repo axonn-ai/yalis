@@ -18,6 +18,7 @@ from axonn.intra_layer.communication import (
 )
 
 from typing import Optional, Sequence
+import gc
 
 
 # Wrapper for custom_fwd to handle different versions of PyTorch
@@ -68,13 +69,19 @@ def initialize_params(
     out_features_group,
     in_features_group,
     init_method,
-    init_device="cpu",
+    init_device="cuda",
 ):
     params = torch.empty((out_features, in_features), device=init_device)
     init_method(params)
     params = extract_local_params_from_full_params(
         params, out_features_group, in_features_group
     )
+
+    # This line is important within this function as placing outside leads to pytorch not deleting the reserved memory
+    torch.cuda.empty_cache()
+
+    # This will lead to immediate memory garbage collection but can be slow - Probably not needed
+    gc.collect()
     return params
 
 
@@ -95,16 +102,11 @@ class TPLinear(torch.nn.Module):
         init_method=None,
         expert_mode=True,
         tensor_parallel_dims: Optional[Sequence[int]] = None,
-        init_device="meta",
         **kwargs,
     ):
         super(TPLinear, self).__init__()
         assert expert_mode, "Only expert mode allowed in inference"
 
-        self.init_device = init_device
-        #TODO: Change this to a soft assert and show a warning instead
-        assert init_device == "meta", "Parameter initialization allowed only on meta device"
-    
         # weights are shaped [out_features, in_features]
         # in_features are distributed across self.inner_group (X tensor parallel group)
         # out_features are distributed across self.inner_group (Y tensor parallel group)
@@ -161,7 +163,6 @@ class TPLinear(torch.nn.Module):
             self.outer_group,
             self.inner_group,
             init_method,
-            init_device=self.init_device
         )
         # register the weight matrix as a trainable parameter.
         self.weight = torch.nn.Parameter(initial_params, requires_grad=True)
@@ -181,7 +182,6 @@ class TPLinear(torch.nn.Module):
             self.bias = torch.nn.Parameter(
                 torch.zeros(
                     self.local_out_features,
-                    device=self.init_device
                 )
             )
             setattr(self.bias, "is_tensor_parallel", True)
@@ -204,8 +204,6 @@ class TPLinear(torch.nn.Module):
         self.skip_bias_add = skip_bias_add
         self._old_load_from_state_dict = self._load_from_state_dict
         self._load_from_state_dict = self._modified_load_from_state_dict
-        self._old_state_dict = self.state_dict
-        self.state_dict = self._modified_state_dict
 
     def all_reduce(self, x):
         dist.all_reduce(x, group=self.inner_group)
@@ -216,8 +214,7 @@ class TPLinear(torch.nn.Module):
 
     def forward(
         self,
-        x,
-        cache_weights_in_all_gather=False,
+        x
     ):
 
         x = self.matmul(self.weight, x)
@@ -248,11 +245,6 @@ class TPLinear(torch.nn.Module):
 
     @torch.no_grad()
     def _modified_load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
-        # If the parameters were initialized on meta-device, we need to materialize them here
-        if self.init_device == "meta":
-            self.to_empty(device="cpu")
-            self.init_device = "cpu"
-
         weight = (
             state_dict[prefix + "weight"] if prefix + "weight" in state_dict else None
         )
@@ -291,30 +283,4 @@ class TPLinear(torch.nn.Module):
 
         self._old_load_from_state_dict(state_dict, prefix, *args, **kwargs)
 
-    @torch.no_grad()
-    def _modified_state_dict(self, *args, **kwargs):
-        local_state_dict = self._old_state_dict(*args, **kwargs)
-        weight_key, bias_key = None, None
-        for key in local_state_dict:
-            if "weight" in key:
-                weight_key = key
-            if "bias" in key:
-                bias_key = key
-        local_weight = local_state_dict[weight_key]
-        global_weight = gather_full_params_from_local_params(
-            local_weight,
-            self.outer_group,
-            self.inner_group,
-            self.depth_group,
-            (self.local_out_features, self.local_in_features),
-        )
-        if bias_key is not None:
-            local_bias = local_state_dict[bias_key]
-            global_bias = Gather.apply(local_bias, self.outer_group)
-
-        if torch.distributed.get_rank() == 0:
-            local_state_dict[weight_key] = global_weight.cpu()
-            if bias_key is not None:
-                local_state_dict[bias_key] = global_bias
-
-        return local_state_dict
+    

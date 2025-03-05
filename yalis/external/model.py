@@ -24,7 +24,7 @@ from litgpt.config import Config
 import sys
 
 from torch.utils import checkpoint
-from .tensor_parallel import TPLinear
+from yalis.tensor_parallel import TPLinear
 from copy import deepcopy
 from axonn import axonn as ax
 from axonn.intra_layer.communication import Drop, Gather
@@ -32,13 +32,27 @@ from axonn.intra_layer.communication import Drop, Gather
 from yalis import print_rank0
 import time
 
+# switch sequential norm classes to TP norm classes if needed
+def get_norm_class(config):
+    if not config.tensor_parallel or ax.config.G_intra_c == 1:
+        # if not tensor parallel then no need to use tensor parallel norms
+        # if tensor parallel and not using column TP then again 
+        # no need to use TP norms
+        return config.norm_class 
+    from yalis.tensor_parallel import TPRMSNorm
+    if config.norm_class_name == "RMSNorm":
+        return TPRMSNorm 
+    else:
+        raise NotImplementedError(f"TP version of {config.norm_class_name} not implemented")
+        
+
 
 class GPT(nn.Module):
     def __init__(self, config: Config) -> None:
         super().__init__()
         assert config.padded_vocab_size is not None
         self.config = config
-        self.config.explicitly_use_flash_kernel = True
+        self.config.explicitly_use_flash_kernel = False
         self.config.explicitly_use_flash_kernel = self.config.explicitly_use_flash_kernel and has_flash_attn
         print_rank0(
             f"Explicit Flash Kernel Usage = {self.config.explicitly_use_flash_kernel}"
@@ -240,22 +254,22 @@ class Block(nn.Module):
                 " (non-parallel residual and shared attention norm)."
             )
 
-        self.norm_1 = config.norm_class(config.n_embd, eps=config.norm_eps)
+        self.norm_1 = get_norm_class(config)(config.n_embd, eps=config.norm_eps)
         self.attn = CausalSelfAttention(config, block_idx)
         self.post_attention_norm = (
-            config.norm_class(config.n_embd, eps=config.norm_eps)
+            get_norm_class(config)(config.n_embd, eps=config.norm_eps)
             if config.post_attention_norm
             else nn.Identity()
         )
         self.norm_2 = (
             None
             if config.shared_attention_norm
-            else config.norm_class(config.n_embd, eps=config.norm_eps)
+            else get_norm_class(config)(config.n_embd, eps=config.norm_eps)
         )
         mlp_class = getattr(sys.modules[__name__], config.mlp_class_name)
         self.mlp = mlp_class(config)
         self.post_mlp_norm = (
-            config.norm_class(config.n_embd, eps=config.norm_eps)
+            get_norm_class(config)(config.n_embd, eps=config.norm_eps)
             if config.post_mlp_norm
             else nn.Identity()
         )
@@ -311,7 +325,7 @@ class CausalSelfAttention(nn.Module):
         if not config.tensor_parallel:
             self.attn = nn.Linear(config.n_embd, shape, bias=config.bias)
         else:
-            self.attn = TPLinear(config.n_embd, shape, bias=config.bias, init_device=config.init_device)
+            self.attn = TPLinear(config.n_embd, shape, bias=config.bias)
 
         # output projection
         # if `head_size` is explicitly specified in the config, `n_emd` might not be equal to `head_size * n_head`
@@ -325,7 +339,6 @@ class CausalSelfAttention(nn.Module):
                 config.n_embd,
                 bias=config.bias,
                 transpose=True,
-                init_device=config.init_device
             )
         # disabled by default
         self.kv_cache: Optional[KVCache] = None
@@ -336,6 +349,8 @@ class CausalSelfAttention(nn.Module):
 
         self.config = config
         if config.tensor_parallel:
+            # dividing attention heads over the row tensor parallel group
+            # currently attention is duplicated across the column tensor parallel group
             self.config = deepcopy(self.config)
             attention_world_size = ax.config.G_intra_r
             assert self.config.n_head % attention_world_size == 0
@@ -643,14 +658,13 @@ class LLaMAMLP(nn.Module):
             )
         else:
             self.gate_up_proj = TPLinear(
-                config.n_embd, 2 * config.intermediate_size, bias=config.bias, init_device=config.init_device
+                config.n_embd, 2 * config.intermediate_size, bias=config.bias
             )
             self.proj = TPLinear(
                 config.intermediate_size,
                 config.n_embd,
                 bias=config.bias,
                 transpose=True,
-                init_device=config.init_device,
             )
 
         self.config = config

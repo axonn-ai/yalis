@@ -27,10 +27,7 @@ def get_model(
         config.block_size = max_sequence_length
     config.tensor_parallel = tensor_parallel
 
-    # Axonn backend requires an argument to specify the device to initialize parameters on
-    config.init_device = "meta"
-
-    with _EmptyInit():
+    with _EmptyInit(enabled=(not random_init)):
         model = GPT(config).to(model_dtype)
 
     if not random_init:
