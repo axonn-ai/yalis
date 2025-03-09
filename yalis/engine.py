@@ -3,7 +3,7 @@ from typing import Union, List, Optional
 from .config import ModelConfig, InferenceConfig
 from .model import get_model
 from .initialize import init_distributed
-from .utils import print_rank0, get_gpu_memory_info
+from .utils import print_rank0, get_gpu_memory_info, test_allreduce_bandwidth
 from .external.sampling import sample
 from .external.rejection_sampler import RejectionSampler
 import logging
@@ -149,6 +149,7 @@ class LLMEngine:
         self.device = device
         self.dtype = precision_to_dtype[self.model_config.precision]
         init_distributed(tp_dims=self.inference_config.tp_dims)
+        test_allreduce_bandwidth()
         self.model, self.tokenizer = self._initialize_model(self.model_config)
         torch.cuda.empty_cache()  # return extra memory to CUDA. Can prevent NCCL init OOMs
         gc.collect()
