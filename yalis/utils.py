@@ -96,7 +96,9 @@ def test_allreduce_bandwidth(
         # Calculate average time and bandwidth
         avg_time_s = np.mean(iteration_times)
         latency_ms = avg_time_s * 1000
-        bandwidth_gbps = (total_bytes / avg_time_s) / (1024**3)  # GB/s
+        #bandwidth_gbps = (total_bytes / avg_time_s) / (1024**3)  # GB/s
+
+        bandwidth_gbps = (2 * ((world_size - 1) / world_size) * bytes_per_rank / avg_time_s) / (1024**3)
 
         bandwidths.append(bandwidth_gbps)
         latencies.append(latency_ms)
