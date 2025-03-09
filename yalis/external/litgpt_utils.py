@@ -6,6 +6,12 @@ import torch.nn as nn
 from torch.overrides import TorchFunctionMode
 from typing_extensions import override
 from pathlib import Path
+from collections.abc import Sequence
+from typing import Any, Callable, Optional
+import torch
+import torch.nn as nn
+from torch.overrides import TorchFunctionMode
+from typing_extensions import override
 
 # From https://lernapparat.de/faster-model-init by Thomas Viehmann
 class _EmptyInit(TorchFunctionMode):
@@ -41,8 +47,8 @@ class _EmptyInit(TorchFunctionMode):
         return func(*args, **kwargs)
 
 
-def load_checkpoint(model: nn.Module, 
-                    checkpoint_path: Path, 
+def load_checkpoint(model: nn.Module,
+                    checkpoint_path: Path,
                     strict: bool = True) -> None:
     state_dict = lazy_load(checkpoint_path)
     state_dict = state_dict.get("model", state_dict)
