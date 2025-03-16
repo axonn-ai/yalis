@@ -34,18 +34,17 @@ import time
 
 # switch sequential norm classes to TP norm classes if needed
 def get_norm_class(config):
-    if not config.tensor_parallel or ax.config.G_intra_c == 1:
+    if not config.tensor_parallel or ax.config.G_intra_c == 1 or (config.tp_dims is not None and config.tp_dims[1] == 1):
         # if not tensor parallel then no need to use tensor parallel norms
         # if tensor parallel and not using column TP then again 
         # no need to use TP norms
-        return config.norm_class 
+        return config.norm_class
+
     from yalis.tensor_parallel import TPRMSNorm
     if config.norm_class_name == "RMSNorm":
-        return TPRMSNorm 
+        return lambda *args, **kwargs: TPRMSNorm(*args, tensor_parallel_dims=config.tp_dims, **kwargs)
     else:
         raise NotImplementedError(f"TP version of {config.norm_class_name} not implemented")
-        
-
 
 class GPT(nn.Module):
     def __init__(self, config: Config) -> None:
@@ -134,7 +133,10 @@ class GPT(nn.Module):
         if self.config.scale_embeddings:
             x = x * torch.tensor(self.config.n_embd**0.5, dtype=x.dtype)
         if self.config.tensor_parallel:
-            x = Drop.apply(x, ax.comm_handle.inner_intra_layer_parallel_group)
+            if self.config.tp_dims is None:
+                x = Drop.apply(x, ax.comm_handle.inner_intra_layer_parallel_group)
+            else:
+                x = Drop.apply(x, ax.comm_handle.intra_layer_group_cache[self.config.tp_dims][0])
 
         # flash attention wants the rope cache to be
         # in the same dtype as the query
@@ -146,7 +148,10 @@ class GPT(nn.Module):
         for block in self.transformer.h:
             x = block(x, self.cos, self.sin, self.token_counter, is_verify)
         if self.config.tensor_parallel:
-            x = Gather.apply(x, ax.comm_handle.inner_intra_layer_parallel_group)
+            if self.config.tp_dims is None:
+                x = Gather.apply(x, ax.comm_handle.inner_intra_layer_parallel_group)
+            else:
+                x = Gather.apply(x, ax.comm_handle.intra_layer_group_cache[self.config.tp_dims][0])
         x = self.transformer.ln_f(x)
         x = self.lm_head(x)  # (b, t, vocab_size)
         if self.config.final_logit_softcapping is not None:
@@ -361,7 +366,10 @@ class CausalSelfAttention(nn.Module):
             # dividing attention heads over the row tensor parallel group
             # currently attention is duplicated across the column tensor parallel group
             self.config = deepcopy(self.config)
-            attention_world_size = ax.config.G_intra_r
+            if config.tp_dims is not None:
+                attention_world_size = config.tp_dims[0]
+            else:
+                attention_world_size = ax.config.G_intra_r
             assert self.config.n_head % attention_world_size == 0
             self.config.n_head //= attention_world_size
             assert self.config.n_query_groups % attention_world_size == 0
