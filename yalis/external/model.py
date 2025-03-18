@@ -34,7 +34,7 @@ import time
 
 # switch sequential norm classes to TP norm classes if needed
 def get_norm_class(config):
-    if not config.tensor_parallel or ax.config.G_intra_c == 1 or (config.tp_dims is not None and config.tp_dims[1] == 1):
+    if not config.tensor_parallel or (config.tp_dims is None and ax.config.G_intra_c == 1) or (config.tp_dims is not None and config.tp_dims[1] == 1):
         # if not tensor parallel then no need to use tensor parallel norms
         # if tensor parallel and not using column TP then again 
         # no need to use TP norms

@@ -1,13 +1,18 @@
+from vllm import LLM, SamplingParams
+from transformers import AutoTokenizer
+import torch
+import torch.distributed as dist
+import numpy as np
+from torch.profiler import _KinetoProfile
+import os
+from vllm.inputs.data import TokensPrompt
 import gc
 import time
 from typing import List
 import random
-import torch
-import torch.distributed as dist
-import numpy as np
 
-from vllm import LLM, SamplingParams
-from transformers import AutoTokenizer
+_KinetoProfile._get_distributed_info = lambda self: None
+
 
 torch.manual_seed(0)
 random.seed(0)
@@ -62,7 +67,7 @@ if __name__ == "__main__":
         input_prompts.append(formatted_prompt)
 
     sampling_params = SamplingParams(
-        temperature=0.0, min_tokens=256, max_tokens=256
+        temperature=0.0, min_tokens=256, max_tokens=256, ignore_eos=True
     )
 
     # Non-speculative
@@ -81,13 +86,21 @@ if __name__ == "__main__":
         max_model_len=4096,
         use_v2_block_manager=True,
         # disable_log_stats=False,
+        skip_tokenizer_init=True,
     )
+
+    tokenizer.pad_token = tokenizer.eos_token
 
     for prompt in input_prompts:
         print(f"prompt = {prompt}")
+        tokenized_input = tokenizer(
+            [prompt], return_tensors="pt", padding=True
+        )["input_ids"]
+        ip = [TokensPrompt(prompt_token_ids=ids) for ids in tokenized_input]
         for _ in range(10):
-            outputs = llm.generate([prompt], sampling_params)
+            outputs = llm.generate(ip, sampling_params)
             # dist.barrier()
+        llm.llm_engine.model_executor.driver_worker.spec_decode_sampler.reset_metrics()
         print("==========================\n")
 
     # Print the output

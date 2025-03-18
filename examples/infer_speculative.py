@@ -17,6 +17,7 @@ import torch.distributed as dist
 import numpy as np
 from contextlib import nullcontext
 from yalis.utils import get_gpu_memory_info, test_allreduce_bandwidth
+import argparse
 
 torch.manual_seed(0)
 random.seed(0)
@@ -25,8 +26,6 @@ np.random.seed(0)
 from torch.profiler import _KinetoProfile
 
 _KinetoProfile._get_distributed_info = lambda self: None
-enable_profiling = False
-
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 
@@ -35,18 +34,82 @@ random.seed(0)
 np.random.seed(0)
 
 if __name__ == "__main__":
+
+    parser = argparse.ArgumentParser()
+
+    # Enable profiling
+    parser.add_argument(
+        "--enable_profiling",
+        action="store_true",
+        help="Enable profiling",
+    )
+
+    # Target Model ID
+    parser.add_argument(
+        "--target_model_id",
+        type=str,
+        default="meta-llama/Llama-3.1-70B-Instruct",
+        help="Target model ID",
+    )
+
+    # Draft Model ID
+    parser.add_argument(
+        "--draft_model_id",
+        type=str,
+        default="meta-llama/Llama-3.2-1B-Instruct",
+        help="Draft model ID",
+    )
+
+    # Tokens to generate
+    parser.add_argument(
+        "--tokens_to_gen",
+        type=int,
+        default=256,
+        help="Number of tokens to generate",
+    )
+
+    # Target TP
+    parser.add_argument(
+        "--target_tp",
+        type=int,
+        nargs=3,
+        default=None,
+        help="Target tensor parallelism",
+    )
+
+    # Draft TP
+    parser.add_argument(
+        "--draft_tp",
+        type=int,
+        nargs=3,
+        default=None,
+        help="Draft tensor parallelism",
+    )
+
+    args = parser.parse_args()
+
     # Assuming model and fabric setup functions exist as init_everything() and get_model()
     # target_model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
     # target_model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
     # target_model_id = "meta-llama/Llama-2-70b-chat-hf"
-    target_model_id = "meta-llama/Llama-3.1-8B-Instruct"
     # target_model_id = "meta-llama/Llama-3.1-405B-Instruct"
     # target_model_id = "meta-llama/Llama-3.1-8B-Instruct"
     # draft_model_id = "meta-llama/Llama-2-7b-chat-hf"
     # draft_model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
     # draft_model_id = "lmsys/vicuna-7b-v1.3"
     # draft_model_id = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-    draft_model_id = "meta-llama/Llama-3.2-1B-Instruct"
+    target_model_id = args.target_model_id
+    draft_model_id = args.draft_model_id
+
+    if args.target_tp is not None:
+        target_tp = tuple(args.target_tp)
+    else:
+        target_tp = None
+
+    if args.draft_tp is not None:
+        draft_tp = tuple(args.draft_tp)
+    else:
+        draft_tp = None
 
     # Initialize prompt and tokenizer
     tokenizer = AutoTokenizer.from_pretrained(target_model_id)
@@ -87,15 +150,14 @@ if __name__ == "__main__":
         )
         input_prompts.append(formatted_prompt)
 
-    tokens_to_gen = 256
+    tokens_to_gen = args.tokens_to_gen
 
     # Configs
     target_model_config = ModelConfig(
         model_name=target_model_id, precision="bf16"
     )
     draft_model_config = ModelConfig(
-        model_name=draft_model_id, precision="bf16",
-        tp_dims = (2,1,1)
+        model_name=draft_model_id, precision="bf16", tp_dims=draft_tp
     )
 
     inference_config = InferenceConfig(
@@ -103,10 +165,10 @@ if __name__ == "__main__":
         max_length_of_generated_sequences=512,
         top_p=0.0,
         temperature=0.0,
-        tp_dims = (2,4,1)
+        tp_dims=target_tp,
     )
 
-    if enable_profiling:
+    if args.enable_profiling:
         profiler_context = torch.profiler.profile(
             activities=[
                 torch.profiler.ProfilerActivity.CPU,
@@ -126,13 +188,18 @@ if __name__ == "__main__":
         inference_config=inference_config,
     )
 
+    print_rank0(f"[INFO] Target Model ID: {target_model_id}")
+    print_rank0(f"[INFO] Draft Model ID: {draft_model_id}")
+    print_rank0(f"[INFO] Target TP: {target_tp}")
+    print_rank0(f"[INFO] Draft TP: {draft_tp}")
+
     with profiler_context as prof:
         for prompt in input_prompts:
             prompt_tokens = tokenizer(prompt, return_tensors="pt").input_ids
             tputs = []
             acceptance_rates = []
             for i in range(30):
-                #print (f"[{dist.get_rank()}] Running Iteration {i}")
+                # print (f"[{dist.get_rank()}] Running Iteration {i}")
                 output_tokens, tput, acceptance_rate = engine.generate(
                     prompt_tokens,
                     tokens_to_gen,
@@ -141,11 +208,10 @@ if __name__ == "__main__":
                 )
                 tputs.append(tput)
                 acceptance_rates.append(acceptance_rate)
-                if enable_profiling:
+                if args.enable_profiling:
                     prof.step()
-                print (f"[{dist.get_rank()}] Memory Stats after Iteration {i} - {get_gpu_memory_info()}")
 
-                #print (f"[{dist.get_rank()}] Executing Barrier {i}")
+                # print (f"[{dist.get_rank()}] Executing Barrier {i}")
                 dist.barrier()
 
             # Average of last 5 throughput values
@@ -169,7 +235,7 @@ if __name__ == "__main__":
     #    print_rank0(f"output = {output}")
     #    print_rank0("==========================\n\n")
 
-    if enable_profiling:
+    if args.enable_profiling:
         print_rank0(
             profiler_context.key_averages().table(
                 sort_by="self_cuda_time_total", row_limit=10
