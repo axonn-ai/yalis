@@ -211,7 +211,7 @@ if __name__ == "__main__":
                 if args.enable_profiling:
                     prof.step()
 
-                # print (f"[{dist.get_rank()}] Executing Barrier {i}")
+                print (f"[{dist.get_rank()}] Executing Barrier {i}")
                 dist.barrier()
 
             # Average of last 5 throughput values
