@@ -95,12 +95,17 @@ class TPRMSNorm(torch.nn.Module):
         self._old_load_from_state_dict = self._load_from_state_dict
         self._load_from_state_dict = self._modified_load_from_state_dict
         
+    def all_reduce(self, x):
+        dist.all_reduce(x, group=self.inner_group)
+        return x
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         dtype = x.dtype
         x = x.float()
         # NOTE: the original RMSNorm paper implementation is not equivalent
         norm_x = torch.mean(x * x, dim=self.dim, keepdim=True)
+        if self.dim == -1:
+            norm_x = self.all_reduce(norm_x) / self.inner_group_size 
         x_normed = x * torch.rsqrt(norm_x + self.eps)
         weight = (1 + self.weight) if self.add_unit_offset else self.weight
         return (x_normed * weight.float()).to(dtype=dtype)
