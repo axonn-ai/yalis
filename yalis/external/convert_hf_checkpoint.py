@@ -200,6 +200,9 @@ def copy_weights_hf_llama(
             # Here I can directly check if a layer is completed in which case I trigger the concatenation and the split for the reshaped tensor, store it to the disk and then delete the information fromt he qkv_weights dictionary which might be the one getting overloaded
 
             # incremental QKV reshaping
+            # Here if None not in in qkv means that all qkv tensors for the particular layer being
+            # loaded right now have been temporarily loaded onto the qkv loading dictionary
+            # which means that we can write the converted tensrors for ll to the disk and free up the space from the RAM for future layers' tensors
             if None not in qkv and saver is not None:
 
                 q,k,v =  qkv
@@ -214,6 +217,8 @@ def copy_weights_hf_llama(
                 qkv = torch.cat(cycled)
 
                 qkv_ref = saver.store_early(qkv)
+                # store early returns a reference to the actual memory stored in the disk
+                # freeing up space from the RAM
                 state_dict[f"transformer.h.{l}.attn.attn.weight"] = qkv_ref
 
                 qkv_weights[l] = None
@@ -222,7 +227,7 @@ def copy_weights_hf_llama(
                     pbar.update(progress_per_file)
 
             # Now doing proj reshaping with the same principle of incremental QKV reshaping
-
+            # Similarly doing the same check for the gate projection layers
             if None not in gate_up_proj and saver is not None:
 
 
@@ -253,15 +258,15 @@ def copy_weights_hf_llama(
             to_name = weight_map[name]
         param = load_param(param, name, dtype, verbose=debug_mode)
         if saver is not None:
+            # For the tensors that have a to mapping, we use the same store early principle
+            # we store the reference and then we delete the loaded tensor from teh RAM
             param_saved = saver.store_early(param)
             del param
             gc.collect()
             state_dict[to_name] = param_saved
 
-        # Here I can directly check if a layer is completed in which case I trigger the concatenation and the split for the reshaped tensor, store it to the disk and then delete the information fromt he qkv_weights dictionary which might be the one getting overloaded
         else:
             state_dict[to_name] = param
-        # Regardless here we are seeing the state dict being updated which emans the entire tensor memory gets updated to the state_dict causing an issue with the memory for really large models.
 
 
 
