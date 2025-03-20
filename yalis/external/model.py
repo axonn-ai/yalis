@@ -11,6 +11,7 @@ from typing import Any, Optional, Tuple
 
 import torch
 import torch.nn as nn
+import torch.distributed as dist
 from typing_extensions import Self
 
 try:
@@ -372,6 +373,43 @@ class CausalSelfAttention(nn.Module):
             index.size(0), 1, -1
         )
 
+    def create_upper_mask(self, dim, device):
+        mask = torch.triu(torch.ones(dim, dim, dtype=torch.bool, device=device), diagonal=1)
+        mask = mask.to(torch.float32)
+        mask.masked_fill_(mask.bool(), -float("inf"))
+        return mask
+
+    def intra_head_sdpa(self, q, k, v, attn_mask, process_group, enable_gqa, parallel=True):
+        mask = self.create_upper_mask(q.size(2), q.device) if attn_mask is None else attn_mask
+        if enable_gqa:
+            B, h, n_q, d = q.shape
+            g = k.size(1)
+            hpg = h // g
+            q = q.view(B, g, hpg, n_q, d)
+            B2, g2, n_k, d2 = k.shape
+            k = k.view(B2, g2, 1, n_k, d2)
+            B3, g3, n_v, d3 = v.shape
+            v = v.view(B3, g3, 1, n_v, d3)
+        if parallel:
+            q = Drop.apply(q, process_group).contiguous()
+            k = Drop.apply(k, process_group).contiguous()
+        scale = 1.0 / math.sqrt(self.config.head_size)
+        if enable_gqa:
+            q = q * scale
+            S = torch.einsum("b g h n d, b g o d t -> b g h n t", q, k.mT).clone().contiguous()
+        else:
+            q = q * scale
+            S = (q @ k.mT).clone().contiguous()
+        if parallel:
+            dist.all_reduce(S, op=dist.ReduceOp.SUM, group=process_group)
+        S = S + mask
+        A = torch.nn.functional.softmax(S, dim=-1, dtype=torch.float).to(dtype=q.dtype)
+        O = A @ v
+        if enable_gqa:
+            O = O.view(B, g * hpg, n_q, d)
+        return O
+
+
     def lit_rotary_kv_update_gen(
         self,
         q: torch.Tensor,  # B,nh,1,hs
@@ -409,16 +447,26 @@ class CausalSelfAttention(nn.Module):
 
         k_cache[b_indices, :, token_counter.view(-1), :] = k[:, :, 0, :]
         v_cache[b_indices, :, token_counter.view(-1), :] = v[:, :, 0, :]
-        mask = self.build_mask_from_index(token_counter, t_max=k_cache.size(-2))[
-            :, None, None, :
-        ]
+        mask = self.build_mask_from_index(token_counter, t_max=k_cache.size(-2))
+        #[:, None, None, :]
         
         enable_gqa = q.size(1) != k.size(1)
-        out = torch.nn.functional.scaled_dot_product_attention(
-            q, k_cache, v_cache, attn_mask=mask, enable_gqa=enable_gqa
-        )
-
-        return out
+        if self.config.use_intra_head_parallelism:
+            mask_float = torch.zeros_like(mask, dtype=torch.float32)
+            mask_float = mask_float.masked_fill(~mask, float("-inf"))
+            mask_float = mask_float[:, None, None, :]
+            out = self.intra_head_sdpa(
+                q, k_cache, v_cache, mask_float,
+                ax.comm_handle.inner_intra_layer_parallel_group,
+                enable_gqa, parallel=True
+            )
+            return out
+        else:
+            #print("NOT USING IHP GEN *****")
+            out = torch.nn.functional.scaled_dot_product_attention(
+                q, k_cache, v_cache, attn_mask=mask[:, None, None, :], enable_gqa=enable_gqa
+            )
+            return out
 
     def lit_rotary_kv_update_prefill(
         self,
@@ -452,9 +500,17 @@ class CausalSelfAttention(nn.Module):
         v_cache[:, :, :T, :] = v[:, :, :T, :]
 
         enable_gqa = q.size(1) != k.size(1)
-        out = torch.nn.functional.scaled_dot_product_attention(q, k, v, is_causal=True, enable_gqa=enable_gqa)
-
-        return out
+        if self.config.use_intra_head_parallelism:
+            out = self.intra_head_sdpa(
+                q, k, v, None,
+                ax.comm_handle.inner_intra_layer_parallel_group,
+                enable_gqa, parallel=True
+            )
+            return out
+        else:
+            #print("NOT USING IHP *****")
+            out = torch.nn.functional.scaled_dot_product_attention(q, k, v, is_causal=True, enable_gqa=enable_gqa)
+            return out
 
     def forward(
         self,

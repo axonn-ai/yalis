@@ -89,7 +89,8 @@ class InferenceConfig:
         top_p: Optional[float] = 1.0,
         temperature: Optional[float] = 1.0,
         metrics: bool = False,
-        tp_dims: Optional[Tuple[int, int, int]] = None
+        tp_dims: Optional[Tuple[int, int, int]] = None,
+        use_intra_head_parallelism: bool = False
     ):
         """
         Initialize the inference configuration.
@@ -115,6 +116,7 @@ class InferenceConfig:
         self.top_p = top_p
         self.metrics = metrics
         self.tp_dims = tp_dims
+        self.use_intra_head_parallelism = use_intra_head_parallelism
 
         self._validate()
 

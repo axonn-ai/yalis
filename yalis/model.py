@@ -14,6 +14,7 @@ def get_model(
     max_sequence_length=None,
     random_init=False,
     device="cuda",
+    use_intra_head_parallelism=False
 ):
     tensor_parallel = dist.get_world_size() > 1
     if tensor_parallel and dist.get_rank() == 0:
@@ -26,6 +27,7 @@ def get_model(
         ), f"Maximum sequence length for this model is {config.block_size}"
         config.block_size = max_sequence_length
     config.tensor_parallel = tensor_parallel
+    config.use_intra_head_parallelism = use_intra_head_parallelism
 
     with _EmptyInit(enabled=(not random_init)):
         model = GPT(config).to(model_dtype)
