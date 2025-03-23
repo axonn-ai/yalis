@@ -197,6 +197,59 @@ def copy_weights_hf_llama(
             elif "up_proj" in name:
                 gate_up_proj[1] = param
 
+            # Here I can directly check if a layer is completed in which case I trigger the concatenation and the split for the reshaped tensor, store it to the disk and then delete the information fromt he qkv_weights dictionary which might be the one getting overloaded
+
+            # incremental QKV reshaping
+            # Here if None not in in qkv means that all qkv tensors for the particular layer being
+            # loaded right now have been temporarily loaded onto the qkv loading dictionary
+            # which means that we can write the converted tensrors for ll to the disk and free up the space from the RAM for future layers' tensors
+            if None not in qkv and saver is not None:
+
+                q,k,v =  qkv
+                q = load_param(q, f"layer {l} q", dtype, verbose=debug_mode)
+                k = load_param(k, f"layer {l} k", dtype, verbose=debug_mode)
+                v = load_param(v, f"layer {l} v", dtype, verbose=debug_mode)
+                q_per_kv = config.n_head // config.n_query_groups
+                qs = torch.split(q, config.head_size * q_per_kv)
+                ks = torch.split(k, config.head_size)
+                vs = torch.split(v, config.head_size)
+                cycled = [t for group in zip(qs, ks, vs) for t in group]
+                qkv = torch.cat(cycled)
+
+                qkv_ref = saver.store_early(qkv)
+                # store early returns a reference to the actual memory stored in the disk
+                # freeing up space from the RAM
+                state_dict[f"transformer.h.{l}.attn.attn.weight"] = qkv_ref
+
+                qkv_weights[l] = None
+                del qkv_weights[l]
+                if progress_per_file is not None:
+                    pbar.update(progress_per_file)
+
+            # Now doing proj reshaping with the same principle of incremental QKV reshaping
+            # Similarly doing the same check for the gate projection layers
+            if None not in gate_up_proj and saver is not None:
+
+
+                gate_proj, up_proj = gate_up_proj
+                gate_proj = load_param(
+                    gate_proj, f"layer {l} gate_proj", dtype, verbose=debug_mode
+                )
+                up_proj = load_param(up_proj, f"layer {l} up_proj", dtype, verbose=debug_mode)
+
+                gate_up_proj = torch.stack((gate_proj, up_proj), dim=1).reshape(
+                    2 * gate_proj.size(0), -1
+                )
+                gate_up_proj_ref = saver.store_early(gate_up_proj)
+                state_dict[f"transformer.h.{l}.mlp.gate_up_proj.weight"] = gate_up_proj_ref
+
+                gate_up_proj_weights[l] = None
+
+                del gate_up_proj_weights[l]
+                if progress_per_file is not None:
+                    pbar.update(progress_per_file)
+            gc.collect()
+
             to_name = weight_map[from_name]
             if to_name is None:
                 continue
@@ -205,8 +258,17 @@ def copy_weights_hf_llama(
             to_name = weight_map[name]
         param = load_param(param, name, dtype, verbose=debug_mode)
         if saver is not None:
-            param = saver.store_early(param)
-        state_dict[to_name] = param
+            # For the tensors that have a to mapping, we use the same store early principle
+            # we store the reference and then we delete the loaded tensor from teh RAM
+            param_saved = saver.store_early(param)
+            del param
+            gc.collect()
+            state_dict[to_name] = param_saved
+
+        else:
+            state_dict[to_name] = param
+
+
 
         if progress_per_file is not None:
             pbar.update(progress_per_file)
@@ -238,6 +300,8 @@ def copy_weights_hf_llama(
         # GPU 0 will get get [gate_proj[0], up_proj[0]] and GPU 1 will get [gate_proj[1], up_proj[1]]]
         # now they do not need to communicate with each other to apply swiglu.
 
+        # Now doing proj reshaping with the same principle of incremental QKV reshaping
+
         gate_up_proj = torch.stack((gate_proj, up_proj), dim=1).reshape(
             2 * gate_proj.size(0), -1
         )
@@ -261,7 +325,9 @@ def copy_weights_hf_llama(
         vs = torch.split(v, config.head_size)
         cycled = [t for group in zip(qs, ks, vs) for t in group]
         qkv = torch.cat(cycled)
+
         state_dict[f"transformer.h.{i}.attn.attn.weight"] = qkv
+
         del qkv_weights[i]
         if progress_per_file is not None:
             pbar.update(progress_per_file)
@@ -607,7 +673,7 @@ def convert_hf_checkpoint(
         copy_fn = copy_weights_gpt_neox
 
     # initialize a new empty state dict to hold our new weights
-    sd = {}
+    sd = {} # This is the main state_dict that  is being updated and will get finally saved in the last line.
 
     # Load the json file containing weight mapping
     pytorch_bin_map_json_path = checkpoint_dir / "pytorch_model.bin.index.json"
