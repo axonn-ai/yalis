@@ -178,6 +178,18 @@ class LLMEngine:
                 "Pad token not found in the tokenizer. Using eos_token as pad token."
             )
         print_rank0(f"Initializing Model took {time.time() - t0} seconds")
+    
+    def reset_kv_cache(self, batch_size):
+        if not self.model:
+            print_rank0("Model must be initialized before contiguous parameter buffer can be allocated")
+            return
+        self.model.clear_kv_cache()
+        self.model.set_kv_cache(
+            batch_size=batch_size,
+            device=self.device,
+            dtype=self.dtype,
+        )
+
 
     def generate(
         self,

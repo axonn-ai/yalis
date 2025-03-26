@@ -1,7 +1,3 @@
-try:
-    from mpi4py import MPI
-except ImportError:
-    pass
 
 from yalis import ModelConfig, InferenceConfig, print_rank0, LLMEngine
 from transformers import AutoTokenizer
@@ -13,6 +9,11 @@ from torch.profiler import _KinetoProfile
 _KinetoProfile._get_distributed_info = lambda self: None
 
 from contextlib import nullcontext
+
+try:
+    from mpi4py import MPI
+except ImportError:
+    pass
 
 if __name__ == "__main__":
     # Model ID from Hugging Face
@@ -46,6 +47,7 @@ if __name__ == "__main__":
     print(f"Number of prompts = {len(user_prompts)}")
 
 
+    #print(f"Number of prompts = {len(user_prompts)}")
 
     system_prompt = "You are a helpful chatbot. Answer the following question.\n"
 
@@ -71,11 +73,11 @@ if __name__ == "__main__":
 
     # configs
     model_config = ModelConfig(model_name=model_id, precision="bf16")
-    inference_config = InferenceConfig(batch_size=len(input_prompts), 
+    inference_config = InferenceConfig(batch_size=1, #len(input_prompts), 
                                        max_length_of_generated_sequences=1024,
-                                       top_p=0.80,
-                                       temperature=1.0, 
-                                       tp_dims=(4,1,1),
+                                       top_p=0.0,
+                                       temperature=0.0, 
+                                       tp_dims=(8,4,1),
                                        explicitly_use_flash_kernel=True)
 
     engine = LLMEngine(model_config=model_config, inference_config=inference_config)
@@ -88,14 +90,26 @@ if __name__ == "__main__":
     else:
         profiler_context = nullcontext()
 
+    batch_sizes = [1, 2, 4, 8, 16, 32, 64]
+    batch_sizes = [1]
+
     with profiler_context as prof:
-        for iter in range(10):
-            output_tokens = engine.generate(
-                input_prompts, report_throughput=True, tokens_to_generate=tokens_to_gen
-            )
-            if enable_profiling:
-                prof.step()
+        for batch_size in batch_sizes:
+            print_rank0(f"Running BatchSize - {batch_size}")
+
+            prompts = input_prompts[:batch_size]
+            engine.reset_kv_cache(batch_size)
+
             dist.barrier()
+            torch.cuda.synchronize()
+
+            for iter in range(10):
+                output_tokens = engine.generate(
+                    prompts, report_throughput=True, tokens_to_generate=tokens_to_gen
+                )
+                if enable_profiling:
+                    prof.step()
+                dist.barrier()
 
     output_tokens = output_tokens.cpu()
 
