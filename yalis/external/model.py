@@ -266,6 +266,7 @@ class GPT(nn.Module):
     def clear_kv_cache(self) -> None:
         for block in self.transformer.h:
             block.attn.kv_cache = None
+        torch.cuda.empty_cache()
 
 
 class Block(nn.Module):
@@ -350,7 +351,7 @@ class CausalSelfAttention(nn.Module):
         if not config.tensor_parallel:
             self.attn = nn.Linear(config.n_embd, shape, bias=config.bias)
         else:
-            self.attn = TPLinear(config.n_embd, shape, bias=config.bias)
+            self.attn = TPLinear(config.n_embd, shape, bias=config.bias, init_device=config.init_device)
 
         # output projection
         # if `head_size` is explicitly specified in the config, `n_embd` might not be equal to `head_size * n_head`
@@ -364,6 +365,7 @@ class CausalSelfAttention(nn.Module):
                 config.n_embd,
                 bias=config.bias,
                 transpose=True,
+                init_device=config.init_device,
             )
         # disabled by default
         self.kv_cache: Optional[KVCache] = None
@@ -548,13 +550,14 @@ class LLaMAMLP(nn.Module):
             )
         else:
             self.gate_up_proj = TPLinear(
-                config.n_embd, 2 * config.intermediate_size, bias=config.bias
+                config.n_embd, 2 * config.intermediate_size, bias=config.bias, init_device=config.init_device
             )
             self.proj = TPLinear(
                 config.intermediate_size,
                 config.n_embd,
                 bias=config.bias,
                 transpose=True,
+                init_device=config.init_device,
             )
 
         self.config = config
