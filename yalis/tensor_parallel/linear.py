@@ -102,11 +102,13 @@ class TPLinear(torch.nn.Module):
         init_method=None,
         expert_mode=True,
         tensor_parallel_dims: Optional[Sequence[int]] = None,
+        init_device="cuda",
         **kwargs,
     ):
         super(TPLinear, self).__init__()
         assert expert_mode, "Only expert mode allowed in inference"
 
+        self.init_device = init_device
         # weights are shaped [out_features, in_features]
         # in_features are distributed across self.inner_group (X tensor parallel group)
         # out_features are distributed across self.inner_group (Y tensor parallel group)
@@ -163,6 +165,7 @@ class TPLinear(torch.nn.Module):
             self.outer_group,
             self.inner_group,
             init_method,
+            init_device=self.init_device,
         )
         # register the weight matrix as a trainable parameter.
         self.weight = torch.nn.Parameter(initial_params, requires_grad=True)
@@ -182,6 +185,7 @@ class TPLinear(torch.nn.Module):
             self.bias = torch.nn.Parameter(
                 torch.zeros(
                     self.local_out_features,
+                    device=self.init_device,
                 )
             )
             setattr(self.bias, "is_tensor_parallel", True)
@@ -245,6 +249,11 @@ class TPLinear(torch.nn.Module):
 
     @torch.no_grad()
     def _modified_load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
+        # If the parameters were initialized on meta-device, we need to materialize them here
+        if self.init_device == "meta":
+            self.to_empty(device="cuda")
+            self.init_device = "cuda"
+
         weight = (
             state_dict[prefix + "weight"] if prefix + "weight" in state_dict else None
         )

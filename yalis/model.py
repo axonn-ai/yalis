@@ -30,6 +30,7 @@ def get_model(
     config.tensor_parallel = tensor_parallel
     config.use_intra_head_parallelism = use_intra_head_parallelism
     config.explicitly_use_flash_kernel = explicitly_use_flash_kernel
+    config.init_device = device if random_init else "meta"
 
     with _EmptyInit(enabled=(not random_init)):
         model = GPT(config).to(model_dtype)
