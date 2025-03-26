@@ -1,12 +1,23 @@
 import torch
+import torch.distributed as dist
 from typing import Optional
 
+
 def multinomial_num_samples_1(probs: torch.Tensor) -> torch.Tensor:
-    if torch._dynamo.is_compiling():
-        # Faster alternative to `torch.multinomial(probs, num_samples=1)` that is also CUDAGraph friendly
-        distribution = torch.empty_like(probs).exponential_(1)
-        return torch.argmax(probs / distribution, dim=-1, keepdim=True)
-    return torch.multinomial(probs, num_samples=1)
+    #if torch._dynamo.is_compiling():
+    #    # Faster alternative to `torch.multinomial(probs, num_samples=1)` that is also CUDAGraph friendly
+    #    generator = torch.Generator(device=f"cuda:{dist.get_rank()}")
+    #    generator.manual_seed(dist.get_rank())
+    #    distribution = torch.randn(probs.shape, generator=generator, device=probs.device, dtype=probs.dtype).exponential_(1)
+    #    print (f"[{dist.get_rank()}] Distribution: {distribution}")
+    #    return torch.argmax(probs / distribution, dim=-1, keepdim=True)
+    generator = torch.Generator(device=f"cuda:{dist.get_rank()}")
+    generator.manual_seed(dist.get_rank())
+    sample = torch.multinomial(probs, num_samples=4, generator=generator)[:, dist.get_rank() % 4].unsqueeze(1)
+    print (f"[{dist.get_rank()}] Sample: {sample.shape}")
+    return sample
+    #[:, dist.get_rank() % 4].squeeze(1)
+
 
 
 def sample_top_p(logits: torch.Tensor, top_p: float) -> torch.Tensor:

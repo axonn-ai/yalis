@@ -18,6 +18,7 @@ def get_model(
     litgpt_checkpoint_directory = model_config.model_path
     tensor_parallel = dist.get_world_size() > 1
     if model_config.disable_tp:
+        print(f"Disabling Tensor parallelism for {litgpt_checkpoint_directory}")
         tensor_parallel = False
     if tensor_parallel and dist.get_rank() == 0:
         print(f"Using Tensor parallelism on {dist.get_world_size()} GPUs")
@@ -29,7 +30,11 @@ def get_model(
         ), f"Maximum sequence length for this model is {config.block_size}"
         config.block_size = max_sequence_length
     config.tensor_parallel = tensor_parallel
-    config.tp_dims = model_config.tp_dims
+    if config.tensor_parallel:
+        config.tp_dims = model_config.tp_dims
+    else:
+        config.tp_dims = None
+
 
     with _EmptyInit(enabled=(not random_init)):
         model = GPT(config).to(model_dtype)

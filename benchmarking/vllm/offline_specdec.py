@@ -80,7 +80,7 @@ if __name__ == "__main__":
     llm = LLM(
         model=target_model_id,
         speculative_model=draft_model_id,
-        tensor_parallel_size=4,
+        tensor_parallel_size=16,
         num_speculative_tokens=5,
         max_num_batched_tokens=4096,
         max_model_len=4096,

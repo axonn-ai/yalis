@@ -14,6 +14,11 @@ import gc
 import time
 from .timers import Timers
 
+try:
+    from mpi4py import MPI
+except ImportError:
+    pass
+
 # These flags are taken from the following URL -
 # https://github.com/pytorch/pytorch/blob/347f96061f1cff603983b9be19ec92b374329a5b/benchmarks/gpt_fast/generate.py#L19
 torch._inductor.config.coordinate_descent_tuning = True
@@ -29,7 +34,6 @@ precision_to_dtype = {
     "fp16": torch.float16,
     "fp32": torch.float32,
 }
-
 
 @torch.no_grad()
 @torch.compile()
@@ -64,8 +68,10 @@ def prefill(model, tokens, unpadded_prompt_lengths=None, temperature=1.0, top_k=
         return token_id
 
 
+#@torch.compile(mode="reduce-overhead")
+#@torch.compile(mode="reduce-overhead")
+#@torch.compile()
 @torch.no_grad()
-@torch.compile(mode="reduce-overhead")
 def verify(model, tokens, unpadded_prompt_lengths=None, temperature=1.0, top_k=None, top_p=1.0):
     """
     Verify function used in Speculative Decoding
@@ -80,6 +86,10 @@ def verify(model, tokens, unpadded_prompt_lengths=None, temperature=1.0, top_k=N
 
     logits = model(tokens, unpadded_prompt_lengths, is_verify=True)["logits"]
 
+    num_parallel_drafters = 4
+    # Reshape logits to (batch_size, num_parallel_drafters, -1, vocab_size)
+    logits = logits.view(logits.size(0), num_parallel_drafters, -1, logits.size(-1))
+
     if unpadded_prompt_lengths is None:
         unpadded_prompt_lengths = 0 # If not provided, assume no padding
 
@@ -91,11 +101,21 @@ def verify(model, tokens, unpadded_prompt_lengths=None, temperature=1.0, top_k=N
                       top_p=top_p, 
                       get_probs=True,
                       should_modify_probs=True)
-    #print (f"TokenIds - {token_ids.shape}")
+    rank = dist.get_rank()
+
+    # Get token_ids for this rank
+    token_ids = token_ids[:, rank, :, :].squeeze(1)
+    probs = probs[:, rank, :, :].squeeze(1)
+
+
+    print (f"TokenIds - {token_ids.shape}")
+    print (f"TokenIds - {token_ids}")
+    #exit()
     return token_ids[torch.arange(logits.size(0)), unpadded_prompt_lengths - 1], probs
 
+#@torch.compile(mode="reduce-overhead")
 @torch.no_grad()
-@torch.compile(mode="reduce-overhead")
+@torch.compile()
 def generate(
     model,
     tokens,
@@ -366,6 +386,7 @@ class SpecDecLLMEngine(LLMEngine):
         target_model_config: ModelConfig,
         draft_model_config: ModelConfig,
         inference_config: InferenceConfig,
+        parallel_drafting: bool = False,
         device="cuda",
     ):
         super().__init__(target_model_config, inference_config, device)
@@ -373,6 +394,7 @@ class SpecDecLLMEngine(LLMEngine):
         self.draft_model, _ = super()._initialize_model(draft_model_config)
         #print (f"Draft model: {self.draft_model}")
         self.sampler = RejectionSampler()
+        self.parallel_drafting = parallel_drafting
     
     # Function 
     @torch.no_grad()
@@ -387,14 +409,18 @@ class SpecDecLLMEngine(LLMEngine):
         tokens_to_gen,
         gamma,
         report_throughput: bool = False,
+        iter_idx: Optional[int] = None,
     ):
-
+        #torch.set_deterministic_debug_mode(1)
         output_tokens = []
         # Start timing the operation
         start = torch.cuda.Event(enable_timing=True)
         end = torch.cuda.Event(enable_timing=True)
         timers = Timers()
         start.record()
+
+        rank = dist.get_rank()
+        num_drafters = dist.get_world_size()
 
         self.model.token_counter.zero_()
         self.draft_model.token_counter.zero_()
@@ -413,7 +439,10 @@ class SpecDecLLMEngine(LLMEngine):
                 self.device
             )  # Move prompt tokens to the device
             generated_tokens = 0
+            step = 0
             while generated_tokens < tokens_to_gen:
+                print (f"[{rank}] Step: {step}, iteration: {iter_idx}")
+                step+=1
                 #print_rank0(f"Token Generation - {torch.cuda.memory_allocated() * BYTE_TO_GB}, {torch.cuda.max_memory_allocated() * BYTE_TO_GB}")
                 if generated_tokens == 0:  # Prefill step
                     # Only the target model is used for prefilling
@@ -444,8 +473,8 @@ class SpecDecLLMEngine(LLMEngine):
                             next_token, probs = generate(
                                 self.draft_model,
                                 draft_tokens,
-                                top_p=0.0,
-                                temperature=0.0,
+                                top_p=0.5,
+                                temperature=1.0,
                                 get_probs=True,
                                 should_modify_probs=True
                             )
@@ -456,7 +485,7 @@ class SpecDecLLMEngine(LLMEngine):
                             draft_output_tokens.append(next_token.clone())
                             #timers.stop("draft")
 
-                        _ = generate(self.draft_model, draft_tokens, top_p=0.0, temperature=0.0)
+                        _ = generate(self.draft_model, draft_tokens, top_p=0.5, temperature=1.0)
                         #timers.stop("draft")
                         #print_rank0(f"Draft Probs: {len(draft_probs)}, Draft Probs Size: {draft_probs[0].size()}")
 
@@ -464,15 +493,38 @@ class SpecDecLLMEngine(LLMEngine):
                         draft_probs = torch.cat(draft_probs, dim=1)
                         #draft_probs = self.logits_to_probs(draft_probs)
                         draft_output_tokens = torch.cat(draft_output_tokens, dim=1)
+                        print (f"[{rank},{iter_idx},{step}] Generated {gamma} draft tokens: {draft_output_tokens}")
                         #print_rank0(f"[Decode] Draft Output Tokens: {draft_output_tokens}")
                         #print_rank0(f"Draft Probs: {draft_probs.size()}, Draft Output Tokens: {draft_output_tokens.size()}")
 
                         #print_rank0(f"Draft Probs: {draft_probs.size()}, Draft Output Tokens: {draft_output_tokens.size()}")
+                        if self.parallel_drafting:
+                            #if False:
+                            # We need to gather the draft tokens from all ranks
+                            draft_output_tokens_all = torch.cat(
+                                [torch.empty_like(draft_output_tokens) for _ in range(dist.get_world_size())], dim=0
+                            )
+                            print (f"[{rank}] Draft Output Tokens: {draft_output_tokens}")
+                            dist.all_gather_into_tensor(draft_output_tokens_all, draft_output_tokens)
+
+                            draft_output_tokens_all = draft_output_tokens_all.view(1, -1)
+                            print(f"[{rank}] Draft Output Tokens: {draft_output_tokens_all}")
+                        else:
+                            draft_output_tokens_all = draft_output_tokens
+
+                        
+
+
+
+                        torch.cuda.synchronize()
+                        dist.barrier()
+                        MPI.COMM_WORLD.Barrier()
+
 
                         # Verify the output of the draft model
                         #timers.start("verify")
                         next_token, target_probs = verify(
-                            self.model, draft_output_tokens, top_p=0.0, temperature=0.0
+                            self.model, draft_output_tokens_all, top_p=0.0, temperature=0.0
                         )
                         #target_probs = target_probs.unsqueeze(1)
                         #print_rank0(f"Verify step: {target_probs}")
@@ -491,6 +543,7 @@ class SpecDecLLMEngine(LLMEngine):
                         draft_output_tokens[:, 1:],
                         next_token,
                     )
+                    print (f"[{rank},{iter_idx},{step}] Output with bonus tokens: {output_with_bonus_tokens}")
                     # if print_initial_tokens:
                         # print_rank0(f"Draft Tokens: {draft_output_tokens}")
                         # print_rank0(f"Draft Probs: {draft_probs[:, :5]}")
@@ -508,6 +561,21 @@ class SpecDecLLMEngine(LLMEngine):
                         )[1][0]
                     else:
                         num_accepted_tokens = output_with_bonus_tokens.size(1)
+                    print (f"[{rank},{iter_idx},{step}] Number of accepted tokens: {num_accepted_tokens}")
+
+                    # All gather the number of accepted tokens from all the parallel drafters
+                    if self.parallel_drafting:
+                        num_accepted_tokens_all = torch.zeros(
+                            dist.get_world_size(), dtype=torch.int64, device="cuda"
+                        )
+                        num_accepted_tokens = torch.tensor([num_accepted_tokens], device="cuda", dtype=torch.int64)
+                        dist.all_gather_into_tensor(num_accepted_tokens_all, num_accepted_tokens)
+
+                        print (f"[{rank}] Number of accepted tokens: {num_accepted_tokens_all}")
+
+                    #print (f"[{rank},{iter_idx},{step}] Number of accepted tokens: {num_accepted_tokens}")
+                    exit()
+
 
                     global_accepted_tokens += num_accepted_tokens - 1
 
@@ -523,17 +591,21 @@ class SpecDecLLMEngine(LLMEngine):
                     tokens.copy_(accepted_tokens[-1])
                     generated_tokens += num_accepted_tokens
                     output_tokens.extend(accepted_tokens)
+
+                    MPI.COMM_WORLD.Barrier()
         
-        #print (f"Generated tokens: {len(output_tokens)}")
+        print (f"[{rank}]Generated tokens: {len(output_tokens)}")
 
         output_tensor = torch.cat(output_tokens, dim=1)
         # End timing and calculate elapsed time
         end.record()
         torch.cuda.synchronize()  # Wait for all events to finish
+
         time_taken = start.elapsed_time(end) / 1000  # Time in seconds
+        print (f"[{rank}] Recorded Time")
         #timers,_ = timers.get_times()
         tput = input_tokens.shape[0] * tokens_to_gen / time_taken
-        if report_throughput and dist.get_rank() == 0:
-            print(f"Throughput = {tput:.2f} tok/s, Acceptance Rate = {global_accepted_tokens / generated_draft_tokens:.2f}, Time = {time_taken:.2f} s")
-            #print (f"Total Rejected Tokens: {total_rejected_tokens}")
+        #if report_throughput and dist.get_rank() == 0:
+        #    print(f"Throughput = {tput:.2f} tok/s, Acceptance Rate = {global_accepted_tokens / generated_draft_tokens:.2f}, Time = {time_taken:.2f} s")
+        #    #print (f"Total Rejected Tokens: {total_rejected_tokens}")
         return output_tensor, tput, float(global_accepted_tokens) / float(generated_draft_tokens)

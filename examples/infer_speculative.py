@@ -1,7 +1,3 @@
-try:
-    from mpi4py import MPI
-except ImportError:
-    pass
 from yalis import (
     ModelConfig,
     InferenceConfig,
@@ -19,9 +15,20 @@ from contextlib import nullcontext
 from yalis.utils import get_gpu_memory_info, test_allreduce_bandwidth
 import argparse
 
+try:
+    from mpi4py import MPI
+    MPI.Init()
+except ImportError:
+    pass
+
 torch.manual_seed(0)
 random.seed(0)
 np.random.seed(0)
+#torch.use_deterministic_algorithms(True)
+#torch.backends.cudnn.benchmark = False
+#torch.backends.cudnn.deterministic = True
+# This is required because TF32 cores only look at the first 10 bits of mantissa
+#torch.backends.cudnn.allow_tf32 = False
 
 from torch.profiler import _KinetoProfile
 
@@ -48,7 +55,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--target_model_id",
         type=str,
-        default="meta-llama/Llama-3.1-70B-Instruct",
+        default="meta-llama/Llama-3.1-8B-Instruct",
         help="Target model ID",
     )
 
@@ -156,9 +163,20 @@ if __name__ == "__main__":
     target_model_config = ModelConfig(
         model_name=target_model_id, precision="bf16"
     )
-    draft_model_config = ModelConfig(
-        model_name=draft_model_id, precision="bf16", tp_dims=draft_tp
-    )
+
+    if draft_tp == (1, 1, 1):
+        draft_model_config = ModelConfig(
+            model_name=draft_model_id,
+            precision="bf16",
+            tp_dims=draft_tp,
+            disable_tp=True,
+        )
+    else:
+        draft_model_config = ModelConfig(
+            model_name=draft_model_id,
+            precision="bf16",
+            tp_dims=draft_tp,
+        )
 
     inference_config = InferenceConfig(
         batch_size=1,
@@ -186,6 +204,7 @@ if __name__ == "__main__":
         target_model_config=target_model_config,
         draft_model_config=draft_model_config,
         inference_config=inference_config,
+        parallel_drafting=True,
     )
 
     print_rank0(f"[INFO] Target Model ID: {target_model_id}")
@@ -193,26 +212,33 @@ if __name__ == "__main__":
     print_rank0(f"[INFO] Target TP: {target_tp}")
     print_rank0(f"[INFO] Draft TP: {draft_tp}")
 
+    rank = dist.get_rank()
+    local_rank = rank % torch.cuda.device_count()
+
     with profiler_context as prof:
         for prompt in input_prompts:
             prompt_tokens = tokenizer(prompt, return_tensors="pt").input_ids
             tputs = []
             acceptance_rates = []
             for i in range(30):
-                # print (f"[{dist.get_rank()}] Running Iteration {i}")
+                print(f"[{rank}] Running Iteration {i}")
                 output_tokens, tput, acceptance_rate = engine.generate(
                     prompt_tokens,
                     tokens_to_gen,
                     gamma=5,
-                    report_throughput=True,
+                    # report_throughput=True,
+                    iter_idx=i,
                 )
                 tputs.append(tput)
                 acceptance_rates.append(acceptance_rate)
                 if args.enable_profiling:
                     prof.step()
 
-                print (f"[{dist.get_rank()}] Executing Barrier {i}")
-                dist.barrier()
+                torch.cuda.synchronize()
+                print(f"[{rank}] Executing Barrier {i}")
+                MPI.COMM_WORLD.Barrier()
+
+                #dist.barrier(device_ids=[local_rank])
 
             # Average of last 5 throughput values
             avg_tput = sum(tputs[-10:]) / 10
@@ -242,5 +268,5 @@ if __name__ == "__main__":
             )
         )
         # Export json trace
-        # prof.export_chrome_trace(f"trace_{dist.get_rank()}.json")
+        prof.export_chrome_trace(f"trace_{dist.get_rank()}.json")
         # prof.export_memory_timeline(f"memory_{dist.get_rank()}.html")

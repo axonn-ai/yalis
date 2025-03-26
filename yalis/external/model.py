@@ -56,6 +56,9 @@ class GPT(nn.Module):
         print_rank0(
             f"Explicit Flash Kernel Usage = {self.config.explicitly_use_flash_kernel}"
         )
+        print_rank0(
+            f"Tensor Parallel= {self.config.tensor_parallel}"
+        )
 
         self.lm_head = nn.Linear(
             config.n_embd, config.padded_vocab_size, bias=config.lm_head_bias
@@ -447,18 +450,32 @@ class CausalSelfAttention(nn.Module):
         token_counter_tensor: torch.Tensor,  # 1,1
         k_cache: torch.Tensor,  # B,nh,t_max,hs
         v_cache: torch.Tensor,  # B,nh,t_max,hs,
+        num_parallel_drafters: int = 4,
     ) -> torch.Tensor:
         # cos = self.index_into_rope_cache_gen(cos, token_counter)
         # sin = self.index_into_rope_cache_gen(sin, token_counter)
-        B, T = q.shape[0], q.shape[-2]
+        B = k_cache.shape[0]
+        T = q.shape[-2]
         assert B == 1, "Speculative decoding only supports batch size of 1"
+
+        #print (f"{B=}, {T=}, {token_counter_tensor=}") 
         token_counter = token_counter_tensor.squeeze(0)
-        # print (f"{token_counter=}, {T=}")
-        index_range = torch.arange(T, device=token_counter.device)
-        index = token_counter + index_range
-        
-        cos = torch.index_select(cos, 0, index.view(-1))
-        sin = torch.index_select(sin, 0, index.view(-1))
+        index_range_pos = torch.arange(T // num_parallel_drafters, device=token_counter.device).repeat(num_parallel_drafters)
+        index_range_kv = torch.arange(T, device=token_counter.device)
+        index_pos = token_counter + index_range_pos
+        index_kv = token_counter + index_range_kv
+        #print (f"{token_counter=}, {T=}, {index_pos=}, {index_kv=}")
+       
+        cos = torch.index_select(cos, 0, index_pos.view(-1))
+        sin = torch.index_select(sin , 0, index_pos.view(-1))
+
+        # Repeat cos and sin for each drafter
+        #cos = cos.repeat(num_parallel_drafters, 1)
+        #sin = sin.repeat(num_parallel_drafters, 1)
+
+        #print (f"{cos.shape=}, {sin.shape=}")
+
+        #print (f"{cos=}, {sin=}")
         #cos, sin = cos[token_counter: token_counter + T], sin[token_counter: token_counter + T]
 
         #reshape(
@@ -480,16 +497,35 @@ class CausalSelfAttention(nn.Module):
             roped_tensors.append(roped)
 
         q, k = roped_tensors
+        #print (f"{q.shape=}, {k.shape=}")
+        #print (f"{q=}, {k=}") 
 
         # Cache update
         # print (f"{k_cache.shape=}, {v_cache.shape=}, {k.shape=}, {v.shape=}")
-        k_cache[:, :, index.view(-1), :] = k[:, :, :T, :]
-        v_cache[:, :, index.view(-1), :] = v[:, :, :T, :]
+        k_cache[:, :, index_kv.view(-1), :] = k[:, :, :T, :]
+        v_cache[:, :, index_kv.view(-1), :] = v[:, :, :T, :]
 
         # Create the mask
-        arange_t = torch.arange(k_cache.size(-2), device=k_cache.device).unsqueeze(0)
-        arange_l = token_counter_tensor + torch.arange(T, device=k_cache.device).unsqueeze(1)
-        mask = arange_t <= arange_l
+        if num_parallel_drafters == 1:
+            arange_t = torch.arange(k_cache.size(-2), device=k_cache.device).unsqueeze(0)
+            arange_l = token_counter_tensor + torch.arange(T, device=k_cache.device).unsqueeze(1)
+            mask = arange_t <= arange_l
+        else:
+            arange_t = torch.arange(k_cache.size(-2), device=k_cache.device).unsqueeze(0)
+            arange_l = token_counter_tensor + torch.arange(T, device=k_cache.device).unsqueeze(1)
+
+            mask1 = arange_t <= arange_l
+            num_per_draft_tokens = T // num_parallel_drafters
+
+            # Block diagonal mask after token_counter
+            mask2 = (arange_t - token_counter_tensor) // num_per_draft_tokens == (arange_l - token_counter_tensor) //num_per_draft_tokens 
+
+            mask3 = arange_t < token_counter_tensor
+            mask = (mask2 | mask3) & mask1
+
+
+            mask_print = mask[:, :token_counter_tensor.item() + T]
+
         #mask = torch.ones(T, k_cache.size(-2), dtype=torch.bool, device=k_cache.device)
 
         #mask = self.build_mask_from_index(token_counter, t_max=k_cache.size(-2))[
