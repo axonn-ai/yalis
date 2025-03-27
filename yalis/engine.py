@@ -11,6 +11,7 @@ from transformers import AutoTokenizer
 from torch.nn.attention import SDPBackend, sdpa_kernel
 import time
 import gc
+from .timers import Timers
 
 # These flags are taken from the following URL -
 # https://github.com/pytorch/pytorch/blob/347f96061f1cff603983b9be19ec92b374329a5b/benchmarks/gpt_fast/generate.py#L19
@@ -245,9 +246,8 @@ class LLMEngine:
 
         output_tokens = []
         # Start timing the operations
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
-        start.record()
+        timers = Timers()
+        timers.start("generate")
         self.model.token_counter.zero_()
         with torch.no_grad(), torch.autocast(
             self.device, dtype=self.dtype, cache_enabled=False
@@ -257,7 +257,10 @@ class LLMEngine:
             )  # Move prompt tokens to the device
             prompt_sequence_lengths = prompt_sequence_lengths.to(self.device)
             for step in range(tokens_to_generate):
+                timer_key = None
                 if step == 0:  # Prefill step
+                    timer_key = "prefill"
+                    timers.start(timer_key)
                     # print_rank0(f"mem before prefill = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
                     next_token = prefill(
                         self.model, current_input_to_model, prompt_sequence_lengths, 
@@ -268,7 +271,9 @@ class LLMEngine:
                     # print_rank0(f"mem after prefill = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
                     current_input_to_model = next_token.clone()
                 else:  # Generation step
-                    with sdpa_kernel(SDPBackend.MATH):
+                    timer_key = "decode"
+                    timers.start(timer_key)
+                    with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
                         next_token = generate(
                             self.model, current_input_to_model, 
                             temperature=self.inference_config.temperature, 
@@ -279,13 +284,31 @@ class LLMEngine:
                     current_input_to_model.copy_(
                         next_token
                     )  # Copy the new token into tokens
+
                 output_tokens.append(next_token.clone())
+                timers.stop(timer_key)
+
         output_tensor = torch.cat(output_tokens, dim=1)
         # End timing and calculate elapsed time
-        end.record()
-        torch.cuda.synchronize()  # Wait for all events to finish
-        time_taken = start.elapsed_time(end) / 1000  # Time in seconds
-        tput = prompt_tokens.shape[0] * tokens_to_generate / time_taken
-        if report_throughput and dist.get_rank() == 0:
-            print(f"Throughput = {tput:.2f} tok/s")
-        return output_tensor
+        timers.stop("generate")
+        times, events = timers.get_times()
+        tput = prompt_tokens.shape[0] * tokens_to_generate / (times[('generate',)] / 1000)
+        ttft = (
+            (times[('generate', 'prefill')] / events[('generate', 'prefill')])
+        )
+        tbt = (
+            (times[('generate', 'decode')] / events[('generate', 'decode')]) 
+        )
+        metrics = {
+            "BatchSize": prompt_tokens.shape[0],
+            "PromptLength": prompt_tokens.shape[1],
+            "DecodeLength": tokens_to_generate,
+            "Throughput": tput,
+            "TTFT": ttft,
+            "TBT": tbt,
+        }
+        if dist.get_rank() == 0 and report_throughput:
+            print (f"[Metrics] BatchSize = {prompt_tokens.shape[0]}, PromptLength = {prompt_tokens.shape[1]}, DecodeLength = {tokens_to_generate}, Throughput = {tput:.2f} tok/s, TTFT = {ttft:.4f} ms, TBT = {tbt:.4f} ms")
+
+
+        return output_tensor, metrics
