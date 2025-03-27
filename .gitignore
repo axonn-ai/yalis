@@ -5,3 +5,5 @@ yalis.egg-info/
 *.so
 *.sh
 build/
+**/*.out
+**/*.txt
