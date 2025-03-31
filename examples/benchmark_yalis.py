@@ -222,7 +222,7 @@ if __name__ == "__main__":
             torch.cuda.synchronize()
             batch_metrics = []
 
-            for iter in range(5):
+            for itr in range(10):
                 output_tokens, metrics = engine.generate(
                     prompts,
                     report_throughput=True,
@@ -230,9 +230,9 @@ if __name__ == "__main__":
                 )
 
                 # Skip the first 5 iterations
-                if iter >= 1:
+                if itr >= 5:
                     metrics["NumGpus"] = dist.get_world_size()
-                    metrics["TP"] = tp_dims
+                    metrics["TP"] = f"{tp_dims}"
                     batch_metrics.append(metrics)
 
                 if args.enable_profiling:
