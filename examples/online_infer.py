@@ -164,7 +164,7 @@ def infer_endpoint():
         return jsonify(response)
     else:
         print(f"==> Rank {dist.get_rank()} process here, done work now shutting down.")
-        return
+        infer_endpoint()
 
 
 if __name__ == "__main__":
