@@ -111,7 +111,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--tokens_to_gen",
         type=int,
-        default=256,
+        default=512,
         help="Number of tokens to generate",
     )
 
@@ -183,8 +183,8 @@ if __name__ == "__main__":
             "run_name": run_name,
             "project": "Yalis-Experiments",
             "group": "tioga",
-            "job_type": "test",
-            "tags": ["flash-attn"],
+            "job_type": "yalis",
+            "tags": ["yalis"],
             "param_config": {
                 "model_name": model_id,
                 "precision": model_config.precision,
