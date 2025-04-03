@@ -455,6 +455,7 @@ class CausalSelfAttention(nn.Module):
             mask_float = torch.zeros_like(mask, dtype=torch.float32)
             mask_float = mask_float.masked_fill(~mask, float("-inf"))
             mask_float = mask_float[:, None, None, :]
+            mask_float = mask_float.unsqueeze(1)
             out = self.intra_head_sdpa(
                 q, k_cache, v_cache, mask_float,
                 ax.comm_handle.inner_intra_layer_parallel_group,
