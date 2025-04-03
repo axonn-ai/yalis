@@ -698,11 +698,10 @@ class CausalSelfAttention(nn.Module):
 
         if self.config.use_intra_head_parallelism:
             assert k_shape[-1] % ax.config.G_intra_c == 0
-            k_shape[-1] //= ax.config.G_intra_c
+            k_shape = k_shape[:-1] + (k_shape[-1] // ax.config.G_intra_c,)
 
             assert v_shape[-1] % ax.config.G_intra_c == 0
-            v_shape[-1] //= ax.config.G_intra_c
-
+            v_shape = v_shape[:-1] + (v_shape[-1] // ax.config.G_intra_c,)
         return KVCache(k_shape, v_shape, device=device, dtype=dtype)
 
 
