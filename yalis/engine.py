@@ -156,7 +156,13 @@ class LLMEngine:
         t0 = time.time()
         print_rank0(f"Initializing model: {self.model_config.model_name}")
         print_rank0(f"Using precision: {self.model_config.precision}")
-        self.model = get_model(self.model_config.model_path, self.dtype, max_sequence_length=self.inference_config.max_length, random_init=False)
+        self.model = get_model(
+            self.model_config.model_path,
+            self.dtype,
+            max_sequence_length=self.inference_config.max_length,
+            random_init=False,
+            use_intra_head_parallelism=self.inference_config.use_intra_head_parallelism
+        )
         self._make_params_contiguous()
         self.model.set_kv_cache(
             batch_size=self.inference_config.batch_size,

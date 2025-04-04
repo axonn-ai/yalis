@@ -1,6 +1,7 @@
 from typing import Optional, Literal, Tuple
 import os
-
+from packaging.version import Version
+from importlib.metadata import version, PackageNotFoundError
 
 class ModelConfig:
     """
@@ -89,7 +90,8 @@ class InferenceConfig:
         top_p: Optional[float] = 1.0,
         temperature: Optional[float] = 1.0,
         metrics: bool = False,
-        tp_dims: Optional[Tuple[int, int, int]] = None
+        tp_dims: Optional[Tuple[int, int, int]] = None,
+        use_intra_head_parallelism: bool = False
     ):
         """
         Initialize the inference configuration.
@@ -115,6 +117,13 @@ class InferenceConfig:
         self.top_p = top_p
         self.metrics = metrics
         self.tp_dims = tp_dims
+        self.use_intra_head_parallelism = use_intra_head_parallelism
+        try:
+            pkg_ver = version("torch")
+        except PackageNotFoundError:
+            raise RuntimeError("torch isn’t installed")
+        if Version(pkg_ver) < Version("2.6.0"):
+            raise RuntimeError(f"torch >= 2.6.0 required (found {pkg_ver})")
 
         self._validate()
 
