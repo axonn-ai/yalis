@@ -447,7 +447,7 @@ class CausalSelfAttention(nn.Module):
         b_indices = torch.arange(B, device=k_cache.device)
         t_indices = token_counter.view(-1)
 
-        if ax.config.G_intra_c > 1:
+        if ax.config.G_intra_c > 1 and  self.config.use_intra_head_parallelism:
             k_cache[b_indices, :, t_indices, :] = Drop.apply(k[:, :, 0, :], ax.comm_handle.inner_intra_layer_parallel_group)
             v_cache[b_indices, :, t_indices, :] = Drop.apply(v[:, :, 0, :], ax.comm_handle.inner_intra_layer_parallel_group)
         else:
@@ -504,7 +504,7 @@ class CausalSelfAttention(nn.Module):
 
         q, k = roped_tensors
         
-        if ax.config.G_intra_c > 1:
+        if ax.config.G_intra_c > 1 and  self.config.use_intra_head_parallelism:
             k_cache[:, :, :T, :] = Drop.apply(k[:, :, :T, :], ax.comm_handle.inner_intra_layer_parallel_group)
             v_cache[:, :, :T, :] = Drop.apply(v[:, :, :T, :], ax.comm_handle.inner_intra_layer_parallel_group)
         else:
