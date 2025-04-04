@@ -407,7 +407,7 @@ class CausalSelfAttention(nn.Module):
         O = A @ v
         if enable_gqa:
             O = O.view(B, g * hpg, n_q, -1)
-            O = Gather.apply(O, process_group)
+        O = Gather.apply(O, process_group)
         return O
 
 
