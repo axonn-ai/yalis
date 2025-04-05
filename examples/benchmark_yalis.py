@@ -103,7 +103,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model_id",
         type=str,
-        default="meta-llama/Llama-3.1-8B-Instruct",
+        default="meta-llama/Llama-3.1-70B-Instruct",
         help="Model ID",
     )
 
@@ -158,7 +158,7 @@ if __name__ == "__main__":
     model_config = ModelConfig(model_name=model_id, precision="bf16")
     inference_config = InferenceConfig(
         batch_size=1,  # len(input_prompts),
-        max_length_of_generated_sequences=tokens_to_gen * 2,
+        max_length_of_generated_sequences=tokens_to_gen + 1000,
         top_p=0.0,
         temperature=0.0,
         tp_dims=tp_dims,
@@ -207,8 +207,12 @@ if __name__ == "__main__":
     else:
         profiler_context = nullcontext()
 
-    batch_sizes = [1, 2, 4, 8, 16, 32, 64]
-    #batch_sizes = [1]
+    batch_sizes = [1, 8, 64]
+    #batch_sizes = [32]
+
+
+    start = torch.cuda.Event(enable_timing=True)
+    end = torch.cuda.Event(enable_timing=True)
 
     df = None 
     with profiler_context as prof:
@@ -222,15 +226,15 @@ if __name__ == "__main__":
             torch.cuda.synchronize()
             batch_metrics = []
 
-            for itr in range(10):
+            for itr in range(2):
                 output_tokens, metrics = engine.generate(
                     prompts,
                     report_throughput=True,
                     tokens_to_generate=tokens_to_gen,
                 )
 
-                # Skip the first 5 iterations
-                if itr >= 5:
+                # Skip the first iterations
+                if itr >= 1:
                     metrics["NumGpus"] = dist.get_world_size()
                     metrics["TP"] = f"{tp_dims}"
                     batch_metrics.append(metrics)
@@ -261,12 +265,27 @@ if __name__ == "__main__":
                 avg_dict = df_avg.to_dict(orient="records")
                 print_rank0(f"Average metrics for batch size {batch_size}: {avg_dict}")
 
+    
+    start.record()
     output_tokens = output_tokens.cpu()
 
     # Decode the token IDs into text
     detokenized_text = tokenizer.batch_decode(
         output_tokens, skip_special_tokens=True
     )
+    end.record()
+
+    torch.cuda.synchronize()
+    elapsed_time = start.elapsed_time(end)
+    print_rank0(f"Elapsed time for decoding: {elapsed_time} ms")
+
+    if args.use_wandb:
+        wandb_logger.log(
+            {
+                "DetokenizationTime": elapsed_time, 
+            },
+            step=batch_sizes[-1],
+        )
 
     for prompt, output in zip(user_prompts, detokenized_text):
         print_rank0("==========================\n\n")

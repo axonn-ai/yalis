@@ -215,6 +215,9 @@ class LLMEngine:
             torch.Tensor: A tensor containing the generated tokens, with shape `(batch_size, tokens_to_generate)`.
 
         """
+        timers = Timers()
+
+        timers.start("tokenize")
         if isinstance(prompts, list) and all(isinstance(p, str) for p in prompts):
             prompt_tokens_and_mask = self.tokenizer(
                 prompts, return_tensors="pt", padding=True
@@ -243,10 +246,12 @@ class LLMEngine:
             raise TypeError(
                 "prompts must be either a list of strings or a list of lists of integers"
             )
-
+        timers.stop("tokenize")
+        print_rank0(
+            f"Tokenization took {timers.get_times()[0][('tokenize',)]} ms"
+        )
         output_tokens = []
         # Start timing the operations
-        timers = Timers()
         timers.start("generate")
         self.model.token_counter.zero_()
         with torch.no_grad(), torch.autocast(
@@ -273,7 +278,7 @@ class LLMEngine:
                 else:  # Generation step
                     timer_key = "decode"
                     timers.start(timer_key)
-                    with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
+                    with sdpa_kernel(SDPBackend.MATH):
                         next_token = generate(
                             self.model, current_input_to_model, 
                             temperature=self.inference_config.temperature, 
@@ -306,9 +311,11 @@ class LLMEngine:
             "Throughput": tput,
             "TTFT": ttft,
             "TBT": tbt,
+            "E2E": times[('generate',)],
+            "TokenizationTime": times[('tokenize',)],
         }
         if dist.get_rank() == 0 and report_throughput:
-            print (f"[Metrics] BatchSize = {prompt_tokens.shape[0]}, PromptLength = {prompt_tokens.shape[1]}, DecodeLength = {tokens_to_generate}, Throughput = {tput:.2f} tok/s, TTFT = {ttft:.4f} ms, TBT = {tbt:.4f} ms")
+            print (f"[Metrics] BatchSize = {prompt_tokens.shape[0]}, PromptLength = {prompt_tokens.shape[1]}, DecodeLength = {tokens_to_generate}, Throughput = {tput:.2f} tok/s, TTFT = {ttft:.4f} ms, TBT = {tbt:.4f} ms, E2E = {times[('generate',)]:.4f} ms")
 
 
         return output_tensor, metrics
