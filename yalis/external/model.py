@@ -21,7 +21,7 @@ except ImportError:
     flash_attn_with_kvcache = None
     has_flash_attn = False
 
-from litgpt.config import Config
+from config import Config
 import sys
 
 from torch.utils import checkpoint
