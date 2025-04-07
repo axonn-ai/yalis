@@ -16,7 +16,7 @@ from typing_extensions import Self
 
 from yalis.attention import attention_wrapper 
 
-from config import Config
+from yalis.external.config import Config
 import sys
 
 from torch.utils import checkpoint
