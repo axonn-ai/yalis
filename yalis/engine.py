@@ -248,7 +248,7 @@ class LLMEngine:
             )
         timers.stop("tokenize")
         print_rank0(
-            f"Tokenization took {timers.get_times()[0][('tokenize',)]} ms"
+            f"[{dist.get_rank()}] Tokenization took {timers.get_times()[0][('tokenize',)]} ms"
         )
         output_tokens = []
         # Start timing the operations

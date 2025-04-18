@@ -30,6 +30,8 @@ from copy import deepcopy
 from axonn import axonn as ax
 from axonn.intra_layer.communication import Drop, Gather
 
+
+from torch.nn.attention.flex_attention import flex_attention, create_block_mask 
 from yalis import print_rank0
 import time
 
@@ -413,6 +415,10 @@ class CausalSelfAttention(nn.Module):
         O = Gather.apply(O, process_group)
         return O
 
+    @staticmethod
+    def decode_mask(b, h, q_idx, kv_idx, token_counter):
+        return (kv_idx <= token_counter[b])
+
 
     def lit_rotary_kv_update_gen(
         self,
@@ -473,9 +479,12 @@ class CausalSelfAttention(nn.Module):
             return out
         else:
             #print("NOT USING IHP GEN *****")
-            out = torch.nn.functional.scaled_dot_product_attention(
-                q, k_cache, v_cache, attn_mask=mask[:, None, None, :], enable_gqa=enable_gqa
-            )
+            causal_fn = lambda b, h, q_idx, kv_idx: self.decode_mask(b, h, q_idx, kv_idx, token_counter)
+            block_mask = create_block_mask(causal_fn, B=None, H=None, Q_LEN=1, KV_LEN=k_cache.size(-2))
+            out = flex_attention(q, k_cache, v_cache, enable_gqa=True, block_mask=block_mask)
+            #out = torch.nn.functional.scaled_dot_product_attention(
+            #    q, k_cache, v_cache, attn_mask=mask[:, None, None, :], enable_gqa=enable_gqa
+            #)
             return out
 
     def lit_rotary_kv_update_prefill(
