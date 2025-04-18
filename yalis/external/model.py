@@ -15,7 +15,7 @@ import torch.distributed as dist
 from typing_extensions import Self
 
 try:
-    from flash_attn import flash_attn_with_kvcache
+    from yalis.attention.torch_compile_compatible_flash import torch_compile_compatible_flash_attention as flash_attention
     has_flash_attn = True
 except ImportError:
     flash_attn_with_kvcache = None
@@ -53,7 +53,6 @@ class GPT(nn.Module):
         super().__init__()
         assert config.padded_vocab_size is not None
         self.config = config
-        self.config.explicitly_use_flash_kernel = False
         self.config.explicitly_use_flash_kernel = self.config.explicitly_use_flash_kernel and has_flash_attn
         print_rank0(
             f"Explicit Flash Kernel Usage = {self.config.explicitly_use_flash_kernel}"
@@ -562,7 +561,7 @@ class CausalSelfAttention(nn.Module):
             k = k.contiguous()
             v = v.contiguous()
 
-            y = flash_attn_with_kvcache(
+            y = flash_attention(
                 q=q,
                 k_cache=k_cache,
                 v_cache=v_cache,
