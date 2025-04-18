@@ -15,7 +15,7 @@ import torch.distributed as dist
 from typing_extensions import Self
 
 try:
-    from yalis.attention.torch_compile_compatible_flash import torch_compile_compatible_flash_attention as flash_attention
+    from yalis.attention.torch_compile_compatible_flash_attention import torch_compile_compatible_flash_attention as flash_attention
     has_flash_attn = True
 except ImportError:
     flash_attn_with_kvcache = None
