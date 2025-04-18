@@ -53,10 +53,12 @@ class GPT(nn.Module):
         super().__init__()
         assert config.padded_vocab_size is not None
         self.config = config
-        self.config.explicitly_use_flash_kernel = self.config.explicitly_use_flash_kernel and has_flash_attn
-        print_rank0(
-            f"Explicit Flash Kernel Usage = {self.config.explicitly_use_flash_kernel}"
-        )
+        if self.config.explicitly_use_flash_kernel and not has_flash_attn:
+            raise ValueError(
+                "FlashAttention was explicitly requested via `explicitly_use_flash_kernel=True`, "
+                "but it is not available in the current environment. "
+                "Please install FlashAttention or disable this option."
+            )
 
         self.lm_head = nn.Linear(
             config.n_embd, config.padded_vocab_size, bias=config.lm_head_bias
