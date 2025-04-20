@@ -92,7 +92,7 @@ class InferenceConfig:
         metrics: bool = False,
         tp_dims: Optional[Tuple[int, int, int]] = None,
         use_intra_head_parallelism: bool = False,
-        explicitly_use_flash_kernel = False
+        explicitly_use_flash_kernel: bool = False
     ):
         """
         Initialize the inference configuration.
