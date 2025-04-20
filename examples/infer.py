@@ -16,7 +16,7 @@ from contextlib import nullcontext
 
 if __name__ == "__main__":
     # Model ID from Hugging Face
-    model_id = "meta-llama/Llama-3.1-8B-Instruct"
+    model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
     
     user_prompts = [
         "How to bake a cake?",
@@ -42,7 +42,7 @@ if __name__ == "__main__":
     #user_prompts = user_prompts[:num_prompts]
     # user_prompts has 16 prompts 
     # mul by 8 to make batch size 128 
-    user_prompts = user_prompts * 8 
+    user_prompts = user_prompts[:1]
     print(f"Number of prompts = {len(user_prompts)}")
 
 
@@ -75,7 +75,8 @@ if __name__ == "__main__":
                                        max_length_of_generated_sequences=1024,
                                        top_p=0.80,
                                        temperature=1.0, 
-                                       tp_dims=(4,2,1))
+                                       tp_dims=(4,1,1),
+                                       explicitly_use_flash_kernel=True)
 
     engine = LLMEngine(model_config=model_config, inference_config=inference_config)
 
@@ -101,11 +102,11 @@ if __name__ == "__main__":
     # Decode the token IDs into text
     detokenized_text = tokenizer.batch_decode(output_tokens, skip_special_tokens=True)
 
-    # for prompt, output in zip(user_prompts, detokenized_text):
-    #     print_rank0("==========================\n\n")
-    #     print_rank0(f"prompt = {prompt}")
-    #     print_rank0(f"output = {output}")
-    #     print_rank0("==========================\n\n")
+    for prompt, output in zip(user_prompts, detokenized_text):
+        print_rank0("==========================\n\n")
+        print_rank0(f"prompt = {prompt}")
+        print_rank0(f"output = {output}")
+        print_rank0("==========================\n\n")
         
 
     if enable_profiling:
