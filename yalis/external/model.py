@@ -28,11 +28,15 @@ from kvcache_manager import KVCacheManager
 from flash_attn.ops.triton.rotary import apply_rotary
 from yalis.attention.backends import AttentionBackend
 from yalis.attention.masking import create_causal_block_mask_for_flex_attention
+from yalis.attention.utils import fit_powerlaw_linreg_torch
+
 
 from yalis import print_rank0
 
 # todo: these should be dynamically set during engine initialization
 NUM_BLOCKS, PAGE_BLOCK_SIZE = 1024, 256
+
+NUM_WARMUP_STEPS = 64
 
 # switch sequential norm classes to TP norm classes if needed
 def get_norm_class(config):
@@ -110,7 +114,7 @@ class GPT(nn.Module):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def forward(
-        self, input_ids: torch.Tensor, actual_sequence_lengths: torch.Tensor = None
+        self, input_ids: torch.Tensor, actual_sequence_lengths: torch.Tensor = None, warmup: bool = False
     ) -> torch.Tensor:
         idx = input_ids
         T = idx.size(1)
@@ -149,7 +153,7 @@ class GPT(nn.Module):
         )
 
         for block in self.transformer.h:
-            x = block(x, self.cos, self.sin, self.token_counter, block_table, flex_attention_block_mask)
+            x = block(x, self.cos, self.sin, self.token_counter, block_table, flex_attention_block_mask, self.generation_counter, warmup=warmup)
         if self.config.tensor_parallel:
             x = Gather.apply(x, ax.comm_handle.inner_intra_layer_parallel_group)
         x = self.transformer.ln_f(x)
@@ -162,6 +166,7 @@ class GPT(nn.Module):
         self.token_counter.add_(
                 T if actual_sequence_lengths is None else actual_sequence_lengths
         )
+        self.generation_counter.add_(1)
         if self.config.use_paged_kv_caching:
             # readjusting the token counters of the block table to exclude padded tokens.
             # we can exclude this for generation
@@ -255,18 +260,32 @@ class GPT(nn.Module):
                 device,
                 dtype,
             )
+
+            block.attn.warmup_quantiles = torch.zeros(
+                batch_size,
+                self.config.n_head,
+                NUM_WARMUP_STEPS,
+                dtype=dtype, 
+                device=device,
+            )
+
         if self.config.use_paged_kv_caching:
             self.kv_cache_manager = KVCacheManager(batch_size, 
                                                 16384//PAGE_BLOCK_SIZE, # ToDo: set these dynamically 
                                                 NUM_BLOCKS, 
                                                 PAGE_BLOCK_SIZE)
-
         self.token_counter = torch.zeros(batch_size, device=device, dtype=torch.int32)
+        self.generation_counter = torch.zeros(batch_size, device=device, dtype=torch.int32)
 
     def clear_kv_cache(self) -> None:
         for block in self.transformer.h:
             block.attn.kv_cache = None
         torch.cuda.empty_cache()
+    
+
+    def fit_powerlaw(self):
+        for block in self.transformer.h:
+            block.attn.fit_power_law()
 
 
 class Block(nn.Module):
@@ -308,6 +327,8 @@ class Block(nn.Module):
         token_counter: Optional[torch.Tensor] = None,
         block_table: Optional[torch.Tensor] = None,
         flex_attention_block_mask = None,
+        generation_counter: Optional[torch.Tensor] = None,
+        warmup: bool = False,
     ) -> torch.Tensor:
         """
         Non-parallel residual       Parallel residual
@@ -331,7 +352,7 @@ class Block(nn.Module):
         """
 
         x_normed = self.norm_1(x)
-        attention_output = self.attn(x_normed, cos, sin, token_counter, block_table, flex_attention_block_mask)
+        attention_output = self.attn(x_normed, cos, sin, token_counter, block_table, flex_attention_block_mask, generation_counter, warmup=warmup)
         attention_output = self.post_attention_norm(attention_output)
 
         if self.config.parallel_residual:
@@ -374,6 +395,9 @@ class CausalSelfAttention(nn.Module):
             and block_idx % config.sliding_window_layer_placing == 0
         )
 
+        # Used by thresh attention
+        self.warmup_quantiles = None
+
         self.config = config
         if config.tensor_parallel:
             # dividing attention heads over the row tensor parallel group
@@ -385,6 +409,18 @@ class CausalSelfAttention(nn.Module):
             assert self.config.n_query_groups % attention_world_size == 0
             self.config.n_query_groups //= attention_world_size
 
+
+    def fit_power_law(self):
+        if self.config.attention_backend == AttentionBackend.THRESH:
+            x = torch.arange(0, NUM_WARMUP_STEPS, dtype=self.warmup_quantiles.dtype, device=self.warmup_quantiles.device).unsqueeze(0).unsqueeze(0)
+            x = x.expand(self.warmup_quantiles.size(0), self.warmup_quantiles.size(1), NUM_WARMUP_STEPS)
+            self.powerlaw_a, self.powerlaw_b, r2 = fit_powerlaw_linreg_torch(
+                x,
+                self.warmup_quantiles,
+            )
+        else:
+            raise NotImplementedError("Power law fitting is only supported for THRESH attention backend")
+
     def forward(
         self,
         x: torch.Tensor,
@@ -393,6 +429,8 @@ class CausalSelfAttention(nn.Module):
         token_counter: torch.Tensor,
         block_table: torch.Tensor = None,
         flex_attention_block_mask = None,
+        generation_counter: torch.Tensor = None,
+        warmup: bool = False, 
     ) -> torch.Tensor:
         B, T, C = (
             x.size()
@@ -453,10 +491,14 @@ class CausalSelfAttention(nn.Module):
             use_intra_head_parallelism=self.config.use_intra_head_parallelism,
             prestore_kv_cache=self.config.prestore_kv_cache,
             flex_attention_block_mask=flex_attention_block_mask,
+            generation_counter=generation_counter,
+            warmup_quantiles=self.warmup_quantiles,
+            warmup=warmup,
         )
         
         if not self.config.attention_backend == AttentionBackend.FLASH:
             y = y.transpose(1, 2).contiguous()
+        
 
         y = y.reshape(
             B, T, self.config.head_size * self.config.n_head

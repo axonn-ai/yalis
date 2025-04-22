@@ -49,7 +49,7 @@ def prefill(model, tokens, unpadded_prompt_lengths, temperature=1.0, top_k=None,
 
 @torch.no_grad()
 @torch.compile(mode="reduce-overhead")
-def generate(model, tokens, get_probs=False, temperature=1.0, top_k=None, top_p=1.0):
+def generate(model, tokens, get_probs=False, temperature=1.0, top_k=None, top_p=1.0, warmup=False):
     """
     Generate function for producing the next token(s).
 
@@ -63,7 +63,7 @@ def generate(model, tokens, get_probs=False, temperature=1.0, top_k=None, top_p=
         token_id: The next predicted token.
         logits: (Optional) The raw logits from the model.
     """
-    logits = model(tokens)["logits"]
+    logits = model(tokens, warmup=warmup)["logits"]
     token_id = sample(logits=logits[:, -1], temperature=temperature, top_k=top_k, top_p=top_p)
     if get_probs:
         return token_id, logits
@@ -255,6 +255,11 @@ class LLMEngine:
         output_tokens = []
         # Start timing the operations
         timers.start("generate")
+
+        ## Changes for Thresh
+        num_generation_step = 0
+        self.model.generation_counter.zero_() 
+
         self.model.token_counter.zero_()
         if self.inference_config.use_paged_kv_caching:
             self.model.kv_cache_manager.reset()
@@ -280,20 +285,33 @@ class LLMEngine:
                     # print_rank0(f"mem after prefill = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
                     current_input_to_model = next_token.clone()
                 else:  # Generation step
-                    timer_key = "decode"
+                    if num_generation_step <= 64:
+                        warmup = True
+                        timer_key = "warmup"
+                    else:
+                        warmup = False
+                        timer_key = "decode"
+
                     timers.start(timer_key)
+                    #print ("Running generation step - ", num_generation_step)
                     with sdpa_kernel(SDPBackend.MATH):
                         next_token = generate(
                             self.model, current_input_to_model, 
                             temperature=self.inference_config.temperature, 
                             top_k=self.inference_config.top_k, 
-                            top_p=self.inference_config.top_p
+                            top_p=self.inference_config.top_p,
+                            warmup=warmup,
                         )  # Call generate function
                     # print_rank0(f"mem after generate {step} = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
                     current_input_to_model.copy_(
                         next_token
                     )  # Copy the new token into tokens
 
+                if num_generation_step == 64:
+                    #print (f"[DEBUG] Fitting Power Law")
+                    self.model.fit_powerlaw()
+
+                num_generation_step += 1
                 output_tokens.append(next_token.clone())
                 timers.stop(timer_key)
 
@@ -308,6 +326,8 @@ class LLMEngine:
         tbt = (
             (times[('generate', 'decode')] / events[('generate', 'decode')]) 
         )
+        warmup_time = times[('generate', 'warmup')] / events[('generate', 'warmup')]
+        #warmup_end_time = times[('generate', 'warmup_end')] / events[('generate', 'warmup_end')]
         metrics = {
             "BatchSize": prompt_tokens.shape[0],
             "PromptLength": prompt_tokens.shape[1],
@@ -319,7 +339,7 @@ class LLMEngine:
             "TokenizationTime": times[('tokenize',)],
         }
         if dist.get_rank() == 0 and report_throughput:
-            print (f"[Metrics] BatchSize = {prompt_tokens.shape[0]}, PromptLength = {prompt_tokens.shape[1]}, DecodeLength = {tokens_to_generate}, Throughput = {tput:.2f} tok/s, TTFT = {ttft:.4f} ms, TBT = {tbt:.4f} ms, E2E = {times[('generate',)]:.4f} ms")
+            print (f"[Metrics] BatchSize = {prompt_tokens.shape[0]}, PromptLength = {prompt_tokens.shape[1]}, DecodeLength = {tokens_to_generate}, Throughput = {tput:.2f} tok/s, TTFT = {ttft:.4f} ms, TBT = {tbt:.4f} ms, E2E = {times[('generate',)]:.4f} ms, WarmupTime = {warmup_time:.4f} ms")
 
 
         return output_tensor, metrics

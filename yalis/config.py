@@ -83,6 +83,21 @@ class InferenceConfig:
     Configuration for inference parameters.
     """
 
+    def get_next_power_of_2(self, n: int) -> int:
+        """
+        Get the next power of 2 greater than or equal to n.
+
+        Args:
+            n (int): The input number.
+
+        Returns:
+            int: The next power of 2.
+        """
+        if n < 1:
+            raise ValueError("Input must be a positive integer.")
+        return 1 << (n - 1).bit_length()
+
+
     def __init__(
         self,
         batch_size: int = 1,
@@ -120,7 +135,10 @@ class InferenceConfig:
         # from the model config
         # anyway this arg isn't being used right now. KV Cache is defaulting to the model
         # max sequence length
-        self.max_length = max_length_of_generated_sequences
+        self.max_length = self.get_next_power_of_2(max_length_of_generated_sequences)
+        print (
+            f"[DEBUG] InferenceConfig: max_length = {self.max_length} (next power of 2)"
+        ) 
         self.temperature = temperature
         self.top_k = top_k
         self.top_p = top_p
