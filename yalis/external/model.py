@@ -477,14 +477,16 @@ class CausalSelfAttention(nn.Module):
                 enable_gqa, parallel=True
             )
             return out
-        else:
+        elif self.config.use_flex_attention:
             #print("NOT USING IHP GEN *****")
             causal_fn = lambda b, h, q_idx, kv_idx: self.decode_mask(b, h, q_idx, kv_idx, token_counter)
             block_mask = create_block_mask(causal_fn, B=None, H=None, Q_LEN=1, KV_LEN=k_cache.size(-2))
             out = flex_attention(q, k_cache, v_cache, enable_gqa=True, block_mask=block_mask)
-            #out = torch.nn.functional.scaled_dot_product_attention(
-            #    q, k_cache, v_cache, attn_mask=mask[:, None, None, :], enable_gqa=enable_gqa
-            #)
+            return out
+        else:
+            out = torch.nn.functional.scaled_dot_product_attention(
+                q, k_cache, v_cache, attn_mask=mask[:, None, None, :], enable_gqa=enable_gqa
+            )
             return out
 
     def lit_rotary_kv_update_prefill(

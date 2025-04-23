@@ -92,6 +92,7 @@ class InferenceConfig:
         metrics: bool = False,
         tp_dims: Optional[Tuple[int, int, int]] = None,
         use_intra_head_parallelism: bool = False,
+        use_flex_attention: bool = False,
         explicitly_use_flash_kernel: bool = False
     ):
         """
@@ -119,6 +120,7 @@ class InferenceConfig:
         self.metrics = metrics
         self.tp_dims = tp_dims
         self.use_intra_head_parallelism = use_intra_head_parallelism
+        self.use_flex_attention = use_flex_attention
         self.explicitly_use_flash_kernel = explicitly_use_flash_kernel
         try:
             pkg_ver = version("torch")

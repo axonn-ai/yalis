@@ -157,12 +157,14 @@ class LLMEngine:
         t0 = time.time()
         print_rank0(f"Initializing model: {self.model_config.model_name}")
         print_rank0(f"Using precision: {self.model_config.precision}")
+        # TODO: We should probably just pass the inference config to the model
         self.model = get_model(
             self.model_config.model_path,
             self.dtype,
             max_sequence_length=self.inference_config.max_length,
             random_init=False,
             use_intra_head_parallelism=self.inference_config.use_intra_head_parallelism,
+            use_flex_attention=self.inference_config.use_flex_attention,
             explicitly_use_flash_kernel=self.inference_config.explicitly_use_flash_kernel
         )
         self._make_params_contiguous()

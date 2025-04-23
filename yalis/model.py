@@ -15,6 +15,7 @@ def get_model(
     random_init=False,
     device="cuda",
     use_intra_head_parallelism=False,
+    use_flex_attention=False,
     explicitly_use_flash_kernel=False
 ):
     tensor_parallel = dist.get_world_size() > 1
@@ -29,6 +30,7 @@ def get_model(
         config.block_size = max_sequence_length
     config.tensor_parallel = tensor_parallel
     config.use_intra_head_parallelism = use_intra_head_parallelism
+    config.use_flex_attention = use_flex_attention
     config.explicitly_use_flash_kernel = explicitly_use_flash_kernel
     config.init_device = device if random_init else "meta"
 

@@ -2,3 +2,4 @@ __pycache__/
 yalis/external/checkpoints/
 **/*.out
 **/*.txt
+build/
