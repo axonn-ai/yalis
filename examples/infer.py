@@ -42,14 +42,14 @@ if __name__ == "__main__":
     #user_prompts = user_prompts[:num_prompts]
     # user_prompts has 16 prompts 
     # mul by 8 to make batch size 128 
-    user_prompts = user_prompts[:2]
+    user_prompts = user_prompts[:16]
     print(f"Number of prompts = {len(user_prompts)}")
 
 
     system_prompt = "You are a helpful chatbot. Answer the following question.\n"
 
     # profile the run or not
-    enable_profiling = False
+    enable_profiling = True
 
     # Tokenizer for encoding the prompt
     tokenizer = AutoTokenizer.from_pretrained(model_id)
@@ -74,9 +74,10 @@ if __name__ == "__main__":
                                        max_length_of_generated_sequences=1024,
                                        top_p=0.80,
                                        temperature=1.0, 
-                                       tp_dims=(4,1,1),
+                                       tp_dims=None,
                                        explicitly_use_flash_kernel=True,
-                                       use_paged_kv_caching=True)
+                                       use_paged_kv_caching=False,
+                                       prestore_kv_cache=True)
 
     engine = LLMEngine(model_config=model_config, inference_config=inference_config)
 
@@ -107,6 +108,7 @@ if __name__ == "__main__":
         print_rank0(f"prompt = {prompt}")
         print_rank0(f"output = {output}")
         print_rank0("==========================\n\n")
+        
         
 
     if enable_profiling:
