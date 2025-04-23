@@ -34,8 +34,8 @@ from kvcache_manager import KVCacheManager
 from flash_attn.ops.triton.rotary import apply_rotary
 
 from yalis import print_rank0
-import time
 
+# todo: these should be dynamically set during engine initialization
 NUM_BLOCKS, PAGE_BLOCK_SIZE = 1024, 256
 
 # switch sequential norm classes to TP norm classes if needed
@@ -134,10 +134,8 @@ class GPT(nn.Module):
         # assign new pages to each sequence if needed to store new keys and values
         # actual storage will be done by the flash attention kernel.
         # this is just assigning pages to each sequence
-        # if actual_sequence_lengths is None:
-        #     actual_sequence_lengths = torch.ones(input_ids.shape[0], dtype=torch.int64)
         if self.config.use_paged_kv_caching:
-            self.kv_cache_manager.update_block_table(torch.ones(input_ids.shape[0], dtype=torch.int64))
+           self.kv_cache_manager.update_block_table(torch.full((input_ids.shape[0],), T, dtype=torch.int64))
 
         x = self.transformer.wte(idx)  # token embeddings of shape (b, t, n_embd)
         if self.config.scale_embeddings:
