@@ -93,7 +93,8 @@ class InferenceConfig:
         tp_dims: Optional[Tuple[int, int, int]] = None,
         use_intra_head_parallelism: bool = False,
         explicitly_use_flash_kernel: bool = False,
-        use_paged_kv_caching: bool = False
+        use_paged_kv_caching: bool = False,
+        prestore_kv_cache: bool = True,
     ):
         """
         Initialize the inference configuration.
@@ -107,6 +108,10 @@ class InferenceConfig:
             top_k (Optional[int]): Top-k sampling limit.
             top_p (Optional[float]): Nucleus sampling probability.
             metrics (bool): Enable real-time metrics collection.
+            use_intra_head_parallelism (bool): Use intra-head parallelism for attention. 
+            explicitly_use_flash_kernel (bool): Use the flash attention kernel directly instead of via torch.sdpa.
+            use_paged_kv_caching (bool): Use paged k/v caching for attention. Not applicable when explicitly_use_flash_kernel is False.
+            prestore_kv_cache (bool): Pre-store k/v in cache before calling flash attention. Not applicable when explicitly_use_flash_kernel is False.
         """
         self.batch_size = batch_size
         # ToDo - default max_length should be none. If it is none, we should set it
@@ -122,6 +127,7 @@ class InferenceConfig:
         self.use_intra_head_parallelism = use_intra_head_parallelism
         self.explicitly_use_flash_kernel = explicitly_use_flash_kernel
         self.use_paged_kv_caching = use_paged_kv_caching
+        self.prestore_kv_cache = prestore_kv_cache
         
         try:
             pkg_ver = version("torch")
@@ -158,9 +164,22 @@ class InferenceConfig:
         if self.use_paged_kv_caching and not self.explicitly_use_flash_kernel:
             raise ValueError("use_paged_kv_caching requires explicitly_use_flash_kernel=True")
 
+        if self.use_paged_kv_caching and self.prestore_kv_cache:
+            raise ValueError("use_paged_kv_caching and prestore_kv_cache cannot be used together.")        
+
     def __repr__(self):
         return (
-            f"InferenceConfig(batch_size={self.batch_size}, max_length={self.max_length}, "
-            f"decoding_strategy={self.decoding_strategy}, num_beams={self.num_beams}, "
-            f"temperature={self.temperature}, top_k={self.top_k}, top_p={self.top_p}, metrics={self.metrics})"
+            f"{self.__class__.__name__}(\n"
+            f"  batch_size={self.batch_size},\n"
+            f"  max_length_of_generated_sequences={self.max_length},\n"
+            f"  top_k={self.top_k},\n"
+            f"  top_p={self.top_p},\n"
+            f"  temperature={self.temperature},\n"
+            f"  metrics={self.metrics},\n"
+            f"  tp_dims={self.tp_dims},\n"
+            f"  use_intra_head_parallelism={self.use_intra_head_parallelism},\n"
+            f"  explicitly_use_flash_kernel={self.explicitly_use_flash_kernel},\n"
+            f"  use_paged_kv_caching={self.use_paged_kv_caching},\n"
+            f"  prestore_kv_cache={self.prestore_kv_cache}\n"
+            f")"
         )

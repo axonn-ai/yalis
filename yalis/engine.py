@@ -94,6 +94,8 @@ class LLMEngine:
         self.device = device
         self.dtype = precision_to_dtype[self.model_config.precision]
         init_distributed(tp_dims=self.inference_config.tp_dims)
+        print_rank0(f"Model Config: {self.model_config}")
+        print_rank0(f"Inference Config: {self.inference_config}")
         self._initialize_model()
         torch.cuda.empty_cache()  # return extra memory to CUDA. Can prevent NCCL init OOMs
         gc.collect()
@@ -154,8 +156,6 @@ class LLMEngine:
         Internal method to load and set up the model based on ModelConfig.
         """
         t0 = time.time()
-        print_rank0(f"Initializing model: {self.model_config.model_name}")
-        print_rank0(f"Using precision: {self.model_config.precision}")
         self.model = get_model(
             self.model_config.model_path,
             self.dtype,
@@ -163,7 +163,8 @@ class LLMEngine:
             random_init=False,
             use_intra_head_parallelism=self.inference_config.use_intra_head_parallelism,
             explicitly_use_flash_kernel=self.inference_config.explicitly_use_flash_kernel,
-            use_paged_kv_caching=self.inference_config.use_paged_kv_caching
+            use_paged_kv_caching=self.inference_config.use_paged_kv_caching,
+            prestore_kv_cache=self.inference_config.prestore_kv_cache,
         )
         self._make_params_contiguous()
         self.model.set_kv_cache(

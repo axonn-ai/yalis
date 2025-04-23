@@ -10,6 +10,9 @@ WRKSPC=$SCRATCH
 ENV_NAME="yalis_venv"
 # this is the name of your python venv, change if needed
 
+YALIS_DIR=$(pwd)   # Save the current directory before changing it
+cd $WRKSPC
+
 cd $WRKSPC
 echo -e "${RED}Creating Python Environment in $WRKSPC:${GREEN}"
 module load python
@@ -35,8 +38,13 @@ pip install transformers
 pip install datasets
 pip install flash-attn --no-build-isolation
 
+cd ${YALIS_DIR}
+CC=cc CXX=CC pip install -e .
+
 python -c "import torch; print(torch.__version__)"
 echo -e "${RED}Your Python Environment is ready. To activate it run the following commands in the SAME order:${NC}"
 echo -e "${GREEN}source $WRKSPC/$ENV_NAME/bin/activate${NC}"
 echo ""
 echo -e "${NC}"
+
+echo -e "${RED}The last step is to go to yalis/ and run `pip install -e .` ${NC}"

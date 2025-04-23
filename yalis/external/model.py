@@ -14,13 +14,7 @@ import torch.nn as nn
 import torch.distributed as dist
 from typing_extensions import Self
 
-
-try:
-    from yalis.attention.torch_compile_compatible_flash_attention import torch_compile_compatible_flash_attention as flash_attention
-    has_flash_attn = True
-except ImportError:
-    flash_attn_with_kvcache = None
-    has_flash_attn = False
+from yalis.attention import attention 
 
 from litgpt.config import Config
 import sys
@@ -58,12 +52,6 @@ class GPT(nn.Module):
         super().__init__()
         assert config.padded_vocab_size is not None
         self.config = config
-        if self.config.explicitly_use_flash_kernel and not has_flash_attn:
-            raise ValueError(
-                "FlashAttention was explicitly requested via `explicitly_use_flash_kernel=True`, "
-                "but it is not available in the current environment. "
-                "Please install FlashAttention or disable this option."
-            )
 
         self.lm_head = nn.Linear(
             config.n_embd, config.padded_vocab_size, bias=config.lm_head_bias
@@ -152,6 +140,7 @@ class GPT(nn.Module):
             self.sin = self.sin.to(x.dtype)
 
         block_table=self.kv_cache_manager.block_table() if self.config.use_paged_kv_caching else None
+       
         for block in self.transformer.h:
             x = block(x, self.cos, self.sin, self.token_counter, block_table)
         if self.config.tensor_parallel:
@@ -162,9 +151,9 @@ class GPT(nn.Module):
             x = (
                 torch.tanh(x / self.config.final_logit_softcapping)
                 * self.config.final_logit_softcapping
-            )
+            )        
         self.token_counter.add_(
-            T if actual_sequence_lengths is None else actual_sequence_lengths
+                T if actual_sequence_lengths is None else actual_sequence_lengths
         )
         if self.config.use_paged_kv_caching:
             # readjusting the token counters of the block table to exclude padded tokens.
@@ -384,170 +373,7 @@ class CausalSelfAttention(nn.Module):
             assert self.config.n_query_groups % attention_world_size == 0
             self.config.n_query_groups //= attention_world_size
 
-    def build_mask_from_index(self, index, t_max):
-        B = index.size(0)
-        # Create a range [0, 1, 2, ..., t_max-1] and reshape to [1, t_max] so it can broadcast.
-        arange_t = torch.arange(t_max, device=index.device).unsqueeze(0)
-        # Compare to index[:, None]: [B, 1] which will broadcast to [B, t_max]
-        return arange_t <= index.unsqueeze(1)
-
-    def index_into_rope_cache_gen(self, cache, index):
-        # index - [B, T]
-        assert index.dim() == 1, "this method is only for the generation phase"
-        return torch.index_select(cache, 0, index.view(-1)).reshape(
-            index.size(0), 1, -1
-        )
-
-    def create_upper_mask(self, dim, device):
-        mask = torch.triu(torch.ones(dim, dim, dtype=torch.bool, device=device), diagonal=1)
-        mask = mask.to(torch.float32)
-        mask.masked_fill_(mask.bool(), -float("inf"))
-        return mask
-
-    def intra_head_sdpa(self, q, k, v, attn_mask, process_group, enable_gqa, parallel=True):
-        mask = self.create_upper_mask(q.size(2), q.device) if attn_mask is None else attn_mask
-        if enable_gqa:
-            B, h, n_q, d = q.shape
-            g = k.size(1)
-            hpg = h // g
-            q = q.view(B, g, hpg, n_q, d)
-            B2, g2, n_k, d2 = k.shape
-            k = k.view(B2, g2, 1, n_k, d2)
-            B3, g3, n_v, d3 = v.shape
-            v = v.view(B3, g3, 1, n_v, d3)
-        if parallel:
-            q = Drop.apply(q, process_group).contiguous()
-            #k = Drop.apply(k, process_group).contiguous()
-        scale = 1.0 / math.sqrt(self.config.head_size)
-        if enable_gqa:
-            q = q * scale
-            S = torch.einsum("b g h n d, b g o d t -> b g h n t", q, k.mT).clone().contiguous()
-        else:
-            q = q * scale
-            S = (q @ k.mT).clone().contiguous()
-        if parallel:
-            dist.all_reduce(S, op=dist.ReduceOp.SUM, group=process_group)
-        S = S + mask
-        A = torch.nn.functional.softmax(S, dim=-1, dtype=torch.float).to(dtype=q.dtype)
-        O = A @ v
-        if enable_gqa:
-            O = O.view(B, g * hpg, n_q, -1)
-        O = Gather.apply(O, process_group)
-        return O
-
-
-    def lit_rotary_kv_update_gen(
-        self,
-        q: torch.Tensor,  # B,nh,1,hs
-        k: torch.Tensor,  # B,nh,1,hs
-        v: torch.Tensor,  # B,nh,1,hs
-        cos: torch.Tensor,
-        sin: torch.Tensor,
-        token_counter: torch.Tensor,  # B,1
-        k_cache: torch.Tensor,  # B,nh,t_max,hs
-        v_cache: torch.Tensor,  # B,nh,t_max,hs,
-    ) -> torch.Tensor:
-        cos = self.index_into_rope_cache_gen(cos, token_counter)
-        sin = self.index_into_rope_cache_gen(sin, token_counter)
-
-        if cos.dim() > 1:
-            # batch dimensions must align
-            # sin/cos are (B, T, hs) so we unsqeeze -3 for nh
-            # we count from back because all of apply_rope does
-            cos = cos.unsqueeze(-3)
-            sin = sin.unsqueeze(-3)
-        roped_tensors = []
-        for x in [q, k]:
-            head_size = x.size(-1)
-            x1 = x[..., : head_size // 2]  # (B, nh, T, hs/2)
-            x2 = x[..., head_size // 2 :]  # (B, nh, T, hs/2)
-            rotated = torch.cat((-x2, x1), dim=-1)  # (B, nh, T, hs)
-            roped = (x * cos) + (rotated * sin)
-            roped = roped.to(dtype=x.dtype)
-            roped_tensors.append(roped)
-
-        q, k = roped_tensors
-
-        B = k_cache.size(0)
-        b_indices = torch.arange(B, device=k_cache.device)
-        t_indices = token_counter.view(-1)
-
-        if ax.config.G_intra_c > 1 and  self.config.use_intra_head_parallelism:
-            k_cache[b_indices, :, t_indices, :] = Drop.apply(k[:, :, 0, :], ax.comm_handle.inner_intra_layer_parallel_group)
-            v_cache[b_indices, :, t_indices, :] = Drop.apply(v[:, :, 0, :], ax.comm_handle.inner_intra_layer_parallel_group)
-        else:
-            k_cache[b_indices, :, t_indices, :] = k[:, :, 0, :]
-            v_cache[b_indices, :, t_indices, :] = v[:, :, 0, :]
-        mask = self.build_mask_from_index(token_counter, t_max=k_cache.size(-2))
-        #[:, None, None, :]
-        
-        enable_gqa = q.size(1) != k.size(1)
-        if self.config.use_intra_head_parallelism:
-            mask_float = torch.zeros_like(mask, dtype=torch.float32)
-            mask_float = mask_float.masked_fill(~mask, float("-inf"))
-            mask_float = mask_float[:, None, None, :]
-            mask_float = mask_float.unsqueeze(1)
-            out = self.intra_head_sdpa(
-                q, k_cache, v_cache, mask_float,
-                ax.comm_handle.inner_intra_layer_parallel_group,
-                enable_gqa, parallel=True
-            )
-            return out
-        else:
-            #print("NOT USING IHP GEN *****")
-            out = torch.nn.functional.scaled_dot_product_attention(
-                q, k_cache, v_cache, attn_mask=mask[:, None, None, :], enable_gqa=enable_gqa
-            )
-            return out
-
-    def lit_rotary_kv_update_prefill(
-        self,
-        q: torch.Tensor,  # B,nh,T,hs
-        k: torch.Tensor,  # B,nh,T,hs
-        v: torch.Tensor,  # B,nh,T,hs
-        cos: torch.Tensor,
-        sin: torch.Tensor,
-        k_cache: torch.Tensor,  # B,nh,t_max,hs
-        v_cache: torch.Tensor,  # B,nh,t_max,hs,
-    ) -> torch.Tensor:
-        B, T = q.shape[0], q.shape[-2]
-        cos, sin = cos[:T], sin[:T]
-        # cos and sin are of shape (T, hs)
-        # we want to add singleton dimensions - (1, 1, T, hs)
-        cos = cos[None, None, :, :]
-        sin = sin[None, None, :, :]
-
-        roped_tensors = []
-        for x in [q, k]:
-            head_size = x.size(-1)
-            x1 = x[..., : head_size // 2]  # (B, nh, T, hs/2)
-            x2 = x[..., head_size // 2 :]  # (B, nh, T, hs/2)
-            rotated = torch.cat((-x2, x1), dim=-1)  # (B, nh, T, hs)
-            roped = (x * cos) + (rotated * sin)
-            roped = roped.to(dtype=x.dtype)
-            roped_tensors.append(roped)
-
-        q, k = roped_tensors
-        
-        if ax.config.G_intra_c > 1 and  self.config.use_intra_head_parallelism:
-            k_cache[:, :, :T, :] = Drop.apply(k[:, :, :T, :], ax.comm_handle.inner_intra_layer_parallel_group)
-            v_cache[:, :, :T, :] = Drop.apply(v[:, :, :T, :], ax.comm_handle.inner_intra_layer_parallel_group)
-        else:
-            k_cache[:, :, :T, :] = k[:, :, :T, :]
-            v_cache[:, :, :T, :] = v[:, :, :T, :]
-
-        enable_gqa = q.size(1) != k.size(1)
-        if False: #self.config.use_intra_head_parallelism:
-            out = self.intra_head_sdpa(
-                q, k, v, None,
-                ax.comm_handle.inner_intra_layer_parallel_group,
-                enable_gqa, parallel=True
-            )
-            return out
-        else:
-            #print("NOT USING IHP *****")
-            out = torch.nn.functional.scaled_dot_product_attention(q, k, v, is_causal=True, enable_gqa=enable_gqa)
-            return out
+    
 
     def forward(
         self,
@@ -588,67 +414,39 @@ class CausalSelfAttention(nn.Module):
             k = k.contiguous()
             v = v.contiguous()
 
-            if self.config.use_paged_kv_caching:
-                # for some unknown reason,
-                # rotary embeddings do not work with a block table
-                # in the flash attention kernel
-                # So here we are applying them separately
-                q = apply_rotary(q, 
-                                 cos, 
-                                 sin, 
-                                 token_counter)
-                k = apply_rotary(k, 
-                                 cos, 
-                                 sin, 
-                                 token_counter)
-
-  
-            y = flash_attention(
-                q=q,
-                k_cache=k_cache,
-                v_cache=v_cache,
-                k=k,
-                v=v,
-                causal=(T > 1),
-                cache_seqlens=token_counter,
-                block_table=block_table,
-                rotary_cos=cos if not self.config.use_paged_kv_caching else None,
-                rotary_sin=sin if not self.config.use_paged_kv_caching else None,
-                rotary_interleaved=False,
-                window_size=(
-                    (self.config.sliding_window_size, self.config.sliding_window_size)
-                    if self.apply_sliding_window_attention
-                    else (-1, -1)
-                ),
-            )
+            q = apply_rotary(q, 
+                            cos, 
+                            sin, 
+                            token_counter)
+            k = apply_rotary(k, 
+                            cos, 
+                            sin, 
+                            token_counter)
+            
+            cos, sin = None, None
+            backend = "flash"
         else:
             q = q.transpose(1, 2).contiguous()
             k = k.transpose(1, 2).contiguous()
             v = v.transpose(1, 2).contiguous()
+            backend = "sdpa"
 
-            if T == 1:
-                # generative phase
-                y = self.lit_rotary_kv_update_gen(
-                    q,
-                    k,
-                    v,
-                    cos,
-                    sin,
-                    token_counter,  # B,1
-                    k_cache,  # B,nh,t_max,hs
-                    v_cache,  # B,nh,t_max,hs
-                )
-            else:
-                # prefill
-                y = self.lit_rotary_kv_update_prefill(
-                    q,
-                    k,
-                    v,
-                    cos,
-                    sin,
-                    k_cache,  # B,nh,t_max,hs
-                    v_cache,  # B,nh,t_max,hs
-                )
+        y = attention(
+            q=q,
+            k_cache=k_cache,
+            v_cache=v_cache,
+            k=k,
+            v=v,
+            cache_seqlens=token_counter,
+            block_table=block_table,
+            rotary_cos=cos,
+            rotary_sin=sin,
+            backend=backend,
+            use_intra_head_parallelism=self.config.use_intra_head_parallelism,
+            prestore_kv_cache=self.config.prestore_kv_cache
+        )
+        
+        if not self.config.explicitly_use_flash_kernel:
             y = y.transpose(1, 2).contiguous()
 
         y = y.reshape(
