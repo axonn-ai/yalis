@@ -46,6 +46,9 @@ def sample(
 
         # Step 3: Scatter the top-k values back into their original positions
         logits_masked.scatter_(-1, i, v)
+
+        # Step 4: Assign the masked logits back to the original logits
+        logits = logits_masked
     # optionally scale the logits and sample from a probability distribution
     if temperature > 0.0 or top_p > 0.0:
         if temperature > 0.0:

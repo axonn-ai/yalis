@@ -42,9 +42,8 @@ if __name__ == "__main__":
     #user_prompts = user_prompts[:num_prompts]
     # user_prompts has 16 prompts 
     # mul by 8 to make batch size 128 
-    user_prompts = user_prompts[:1]
+    user_prompts = user_prompts[:2]
     print(f"Number of prompts = {len(user_prompts)}")
-
 
 
     system_prompt = "You are a helpful chatbot. Answer the following question.\n"
@@ -90,7 +89,7 @@ if __name__ == "__main__":
         profiler_context = nullcontext()
 
     with profiler_context as prof:
-        for iter in range(10):
+        for iter in range(2):
             output_tokens = engine.generate(
                 input_prompts, report_throughput=True, tokens_to_generate=tokens_to_gen
             )

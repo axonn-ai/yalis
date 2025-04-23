@@ -122,7 +122,6 @@ class GPT(nn.Module):
     def forward(
         self, input_ids: torch.Tensor, actual_sequence_lengths: torch.Tensor = None
     ) -> torch.Tensor:
-        # assert attention_mask is None, "litgpt model does not accept an attention mask"
         idx = input_ids
         T = idx.size(1)
         if self.max_seq_length < T:
@@ -135,6 +134,8 @@ class GPT(nn.Module):
         # actual storage will be done by the flash attention kernel.
         # this is just assigning pages to each sequence
         if self.config.use_paged_kv_caching:
+           # create pages for T new tokens if needed. Note that T includes padding tokens in prefill.
+           # we will readjust the token counters of the block table at the end to exclude padded tokens. 
            self.kv_cache_manager.update_block_table(torch.full((input_ids.shape[0],), T, dtype=torch.int64))
 
         x = self.transformer.wte(idx)  # token embeddings of shape (b, t, n_embd)
@@ -163,9 +164,11 @@ class GPT(nn.Module):
                 * self.config.final_logit_softcapping
             )
         self.token_counter.add_(
-            T if actual_sequence_lengths is None else actual_sequence_lengths.cuda()
+            T if actual_sequence_lengths is None else actual_sequence_lengths
         )
         if self.config.use_paged_kv_caching:
+            # readjusting the token counters of the block table to exclude padded tokens.
+            # we can exclude this for generation
             self.kv_cache_manager.force_update_tokens_assigned(self.token_counter)
         return {"logits": x}
 
@@ -586,6 +589,10 @@ class CausalSelfAttention(nn.Module):
             v = v.contiguous()
 
             if self.config.use_paged_kv_caching:
+                # for some unknown reason,
+                # rotary embeddings do not work with a block table
+                # in the flash attention kernel
+                # So here we are applying them separately
                 q = apply_rotary(q, 
                                  cos, 
                                  sin, 
@@ -595,6 +602,7 @@ class CausalSelfAttention(nn.Module):
                                  sin, 
                                  token_counter)
 
+  
             y = flash_attention(
                 q=q,
                 k_cache=k_cache,

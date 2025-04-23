@@ -19,11 +19,13 @@ public:
         int64_t batch_size, 
         int64_t max_num_blocks_per_seq, 
         int64_t num_blocks, 
-        int64_t page_block_size)
+        int64_t page_block_size,
+        bool verbose = false)
       : batch_size_(batch_size),
         max_num_blocks_per_seq_(max_num_blocks_per_seq),
         num_blocks_(num_blocks),
-        page_block_size_(page_block_size)
+        page_block_size_(page_block_size),
+        verbose_(verbose)
     {
         // Initialize the block table tensor of shape [batch_size, max_num_blocks_per_seq]
         // with all elements set to -1 (indicating "no page assigned"), as int32.
@@ -79,6 +81,11 @@ public:
                     }
                     int32_t free_page = free_pages_.front();
                     free_pages_.pop_front();
+                    if (verbose_) {
+                        std::cout << "Seq " << seq << ": assigning free page " 
+                                  << free_page << " at block index " 
+                                  << block_idx << std::endl;
+                    }
                     // Update the block_table_ for sequence 'seq' at column 'block_idx'.
                     block_table_.index_put_({seq, block_idx}, free_page);
                 }
@@ -148,6 +155,7 @@ private:
     int64_t max_num_blocks_per_seq_;
     int64_t num_blocks_;
     int64_t page_block_size_;
+    bool verbose_;
 
     // Tensor holding the block table of shape [batch_size, max_num_blocks_per_seq] (using int32 type).
     torch::Tensor block_table_;
