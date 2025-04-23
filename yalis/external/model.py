@@ -14,6 +14,7 @@ import torch.nn as nn
 import torch.distributed as dist
 from typing_extensions import Self
 
+
 try:
     from yalis.attention.torch_compile_compatible_flash_attention import torch_compile_compatible_flash_attention as flash_attention
     has_flash_attn = True
@@ -29,9 +30,13 @@ from yalis.tensor_parallel import TPLinear
 from copy import deepcopy
 from axonn import axonn as ax
 from axonn.intra_layer.communication import Drop, Gather
+from kvcache_manager import KVCacheManager
+from flash_attn.ops.triton.rotary import apply_rotary
 
 from yalis import print_rank0
 import time
+
+NUM_BLOCKS, PAGE_BLOCK_SIZE = 1024, 256
 
 # switch sequential norm classes to TP norm classes if needed
 def get_norm_class(config):
@@ -124,6 +129,15 @@ class GPT(nn.Module):
             raise ValueError(
                 f"Cannot forward sequence of length {T}, max seq length is only {self.max_seq_length}."
             )
+        
+        # update block table
+        # assign new pages to each sequence if needed to store new keys and values
+        # actual storage will be done by the flash attention kernel.
+        # this is just assigning pages to each sequence
+        # if actual_sequence_lengths is None:
+        #     actual_sequence_lengths = torch.ones(input_ids.shape[0], dtype=torch.int64)
+        if self.config.use_paged_kv_caching:
+            self.kv_cache_manager.update_block_table(torch.ones(input_ids.shape[0], dtype=torch.int64))
 
         x = self.transformer.wte(idx)  # token embeddings of shape (b, t, n_embd)
         if self.config.scale_embeddings:
@@ -138,8 +152,9 @@ class GPT(nn.Module):
             self.cos = self.cos.to(x.dtype)
             self.sin = self.sin.to(x.dtype)
 
+        block_table=self.kv_cache_manager.block_table() if self.config.use_paged_kv_caching else None
         for block in self.transformer.h:
-            x = block(x, self.cos, self.sin, self.token_counter)
+            x = block(x, self.cos, self.sin, self.token_counter, block_table)
         if self.config.tensor_parallel:
             x = Gather.apply(x, ax.comm_handle.inner_intra_layer_parallel_group)
         x = self.transformer.ln_f(x)
@@ -150,8 +165,10 @@ class GPT(nn.Module):
                 * self.config.final_logit_softcapping
             )
         self.token_counter.add_(
-            T if actual_sequence_lengths is None else actual_sequence_lengths
+            T if actual_sequence_lengths is None else actual_sequence_lengths.cuda()
         )
+        if self.config.use_paged_kv_caching:
+            self.kv_cache_manager.force_update_tokens_assigned(self.token_counter)
         return {"logits": x}
 
     @classmethod
@@ -239,6 +256,11 @@ class GPT(nn.Module):
                 device,
                 dtype,
             )
+        if self.config.use_paged_kv_caching:
+            self.kv_cache_manager = KVCacheManager(batch_size, 
+                                                16384//PAGE_BLOCK_SIZE, 
+                                                NUM_BLOCKS, 
+                                                PAGE_BLOCK_SIZE)
 
         self.token_counter = torch.zeros(batch_size, device=device, dtype=torch.int32)
 
@@ -284,6 +306,7 @@ class Block(nn.Module):
         cos: torch.Tensor,
         sin: torch.Tensor,
         token_counter: Optional[torch.Tensor] = None,
+        block_table: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         """
         Non-parallel residual       Parallel residual
@@ -307,7 +330,7 @@ class Block(nn.Module):
         """
 
         x_normed = self.norm_1(x)
-        attention_output = self.attn(x_normed, cos, sin, token_counter)
+        attention_output = self.attn(x_normed, cos, sin, token_counter, block_table)
         attention_output = self.post_attention_norm(attention_output)
 
         if self.config.parallel_residual:
@@ -531,6 +554,7 @@ class CausalSelfAttention(nn.Module):
         cos: torch.Tensor,
         sin: torch.Tensor,
         token_counter: torch.Tensor,
+        block_table: torch.Tensor = None,
     ) -> torch.Tensor:
         B, T, C = (
             x.size()
@@ -563,6 +587,16 @@ class CausalSelfAttention(nn.Module):
             k = k.contiguous()
             v = v.contiguous()
 
+            if self.config.use_paged_kv_caching:
+                q = apply_rotary(q, 
+                                 cos, 
+                                 sin, 
+                                 token_counter)
+                k = apply_rotary(k, 
+                                 cos, 
+                                 sin, 
+                                 token_counter)
+
             y = flash_attention(
                 q=q,
                 k_cache=k_cache,
@@ -571,8 +605,9 @@ class CausalSelfAttention(nn.Module):
                 v=v,
                 causal=(T > 1),
                 cache_seqlens=token_counter,
-                rotary_cos=cos,
-                rotary_sin=sin,
+                block_table=block_table,
+                rotary_cos=cos if not self.config.use_paged_kv_caching else None,
+                rotary_sin=sin if not self.config.use_paged_kv_caching else None,
                 rotary_interleaved=False,
                 window_size=(
                     (self.config.sliding_window_size, self.config.sliding_window_size)
@@ -671,7 +706,11 @@ class CausalSelfAttention(nn.Module):
 
         heads = self.config.n_query_groups
         if self.config.explicitly_use_flash_kernel:
-            v_shape = (batch_size, max_seq_length, heads, self.config.head_size)
+            if self.config.use_paged_kv_caching:
+                v_shape = (NUM_BLOCKS, PAGE_BLOCK_SIZE, heads, self.config.head_size)
+            else:      
+                v_shape = (batch_size, max_seq_length, heads, self.config.head_size)
+
         else:
             v_shape = (batch_size, heads, max_seq_length, self.config.head_size)
 
@@ -683,12 +722,20 @@ class CausalSelfAttention(nn.Module):
             k_shape = v_shape
         else:
             if self.config.explicitly_use_flash_kernel:
-                k_shape = (
-                    batch_size,
-                    max_seq_length,
-                    heads,
-                    rope_cache_length + self.config.head_size - self.config.rope_n_elem,
-                )
+                if self.config.use_paged_kv_caching:
+                    k_shape = (
+                        NUM_BLOCKS,
+                        PAGE_BLOCK_SIZE,
+                        heads,
+                        rope_cache_length + self.config.head_size - self.config.rope_n_elem,
+                    )
+                else:
+                    k_shape = (
+                        batch_size,
+                        max_seq_length,
+                        heads,
+                        rope_cache_length + self.config.head_size - self.config.rope_n_elem,
+                    )
             else:
                 k_shape = (
                     batch_size,

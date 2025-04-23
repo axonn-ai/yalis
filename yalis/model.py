@@ -15,7 +15,8 @@ def get_model(
     random_init=False,
     device="cuda",
     use_intra_head_parallelism=False,
-    explicitly_use_flash_kernel=False
+    explicitly_use_flash_kernel=False,
+    use_paged_kv_caching=False
 ):
     tensor_parallel = dist.get_world_size() > 1
     if tensor_parallel and dist.get_rank() == 0:
@@ -30,6 +31,7 @@ def get_model(
     config.tensor_parallel = tensor_parallel
     config.use_intra_head_parallelism = use_intra_head_parallelism
     config.explicitly_use_flash_kernel = explicitly_use_flash_kernel
+    config.use_paged_kv_caching = use_paged_kv_caching
 
     with _EmptyInit(enabled=(not random_init)):
         model = GPT(config).to(model_dtype)

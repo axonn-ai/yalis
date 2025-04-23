@@ -1,19 +1,24 @@
 # yalis
 YALIS stands for Yet Another LLM Inference System. It is what it is. 
-On Mordor, please clone this repo in `/scratch0/$(whoami)`
+On Perlmutter, please clone this repo in `${SCRATCH}`
 
 ## Installing Dependencies
 Go to `scripts` and run:
 ```bash
-bash create_python_env_mordor.sh
+bash create_python_env_perlmutter.sh
 ```
 This should create a python environment for you with all dependencies. 
+
+## Building Yalis
+The following build the paged kv caching C++ extension in yalis.
+```bash
+CC=cc CXX=CC pip install -e .
+```
 
 ## Important Environment Variables for YALIS
 Before running anything with yalis, please ensure that the following environment variables are set.
 
 ```bash
-export SCRATCH=/scratch0/$(whoami)
 export HF_HOME="${SCRATCH}/.cache/huggingface"
 export HF_TRANSFORMERS_CACHE="${HF_HOME}"
 export HF_DATASETS_CACHE="${HF_HOME}/datasets"
@@ -41,10 +46,15 @@ python download.py meta-llama/Meta-Llama-3-8B-Instruct
 ```
 
 ## Running 
-Let's say we want to run Llama-3 8B Instruct on mordor. Run the following command.
+Let's say we want to run Llama-3 8B Instruct on a single node of Perlmutter. First request an interactive session - 
 
 ```bash
-bash scripts/run_mordor.sh
+salloc --nodes 1 --qos interactive --time 01:00:00 --constraint gpu --gpus 4 --account=m4641_g
 ```
 
-This will basically run `examples/infer.py`.
+Once a node has been granted to you, run the following command
+```bash
+bash scripts/run_pm.sh
+```
+
+On other clusters, modify the workflow and scripts accordingly.

@@ -5,7 +5,7 @@
 
 from flash_attn import flash_attn_with_kvcache
 import torch
-from typing import Sequence
+from typing import Sequence, Optional
     
 
 @torch.library.custom_op("yalis::torch_compile_compatible_flash_attention", mutates_args=("k_cache", "v_cache"))
@@ -19,7 +19,8 @@ def torch_compile_compatible_flash_attention(q: torch.Tensor,
                             rotary_cos: torch.Tensor, 
                             rotary_sin: torch.Tensor, 
                             rotary_interleaved: bool, 
-                            window_size: Sequence[int]) -> torch.Tensor:
+                            window_size: Sequence[int],
+                            block_table: Optional[torch.Tensor]) -> torch.Tensor:
     y = flash_attn_with_kvcache(q=q,
                 k_cache=k_cache,
                 v_cache=v_cache,
@@ -31,9 +32,11 @@ def torch_compile_compatible_flash_attention(q: torch.Tensor,
                 rotary_sin=rotary_sin,
                 rotary_interleaved=rotary_interleaved,
                 window_size=window_size,
+                block_table=block_table
             )
     return y
 
 @torch_compile_compatible_flash_attention.register_fake
-def _(q, k_cache, v_cache, k, v, causal, cache_seqlens, rotary_cos, rotary_sin, rotary_interleaved, window_size):
+def _(q, k_cache, v_cache, k, v, causal, cache_seqlens, rotary_cos, rotary_sin, rotary_interleaved, window_size, block_table):
+    # This is a fake implementation that returns an empty tensor of the same shape as q
     return torch.empty_like(q)

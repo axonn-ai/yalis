@@ -162,7 +162,8 @@ class LLMEngine:
             max_sequence_length=self.inference_config.max_length,
             random_init=False,
             use_intra_head_parallelism=self.inference_config.use_intra_head_parallelism,
-            explicitly_use_flash_kernel=self.inference_config.explicitly_use_flash_kernel
+            explicitly_use_flash_kernel=self.inference_config.explicitly_use_flash_kernel,
+            use_paged_kv_caching=self.inference_config.use_paged_kv_caching
         )
         self._make_params_contiguous()
         self.model.set_kv_cache(
@@ -237,6 +238,8 @@ class LLMEngine:
         end = torch.cuda.Event(enable_timing=True)
         start.record()
         self.model.token_counter.zero_()
+        if self.inference_config.use_paged_kv_caching:
+            self.model.kv_cache_manager.reset()
         with torch.no_grad(), torch.autocast(
             self.device, dtype=self.dtype, cache_enabled=False
         ):
