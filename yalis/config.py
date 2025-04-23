@@ -110,9 +110,9 @@ class InferenceConfig:
             metrics (bool): Enable real-time metrics collection.
             use_intra_head_parallelism (bool): Use intra-head parallelism for attention. 
             explicitly_use_flash_kernel (bool): Use the flash attention kernel directly instead of via torch.sdpa.
-            use_paged_kv_caching (bool): Use paged k/v caching for attention. Not applicable when explicitly_use_flash_kernel is False.
-            prestore_kv_cache (bool): Pre-store k/v in cache before calling flash attention. Not applicable when explicitly_use_flash_kernel is False.
-        """
+            use_paged_kv_caching (bool): Use paged k/v caching for attention. 
+            prestore_kv_cache (bool): Pre-store k/v in cache before calling attention.
+        """ 
         self.batch_size = batch_size
         # ToDo - default max_length should be none. If it is none, we should set it
         # from the model config
@@ -165,7 +165,8 @@ class InferenceConfig:
             raise ValueError("use_paged_kv_caching requires explicitly_use_flash_kernel=True")
 
         if self.use_paged_kv_caching and self.prestore_kv_cache:
-            raise ValueError("use_paged_kv_caching and prestore_kv_cache cannot be used together.")        
+            raise ValueError("use_paged_kv_caching and prestore_kv_cache cannot be used together.")    
+    
 
     def __repr__(self):
         return (
