@@ -122,8 +122,7 @@ class InferenceConfig:
         self.use_intra_head_parallelism = use_intra_head_parallelism
         self.explicitly_use_flash_kernel = explicitly_use_flash_kernel
         self.use_paged_kv_caching = use_paged_kv_caching
-        if self.use_paged_kv_caching:
-            assert self.explicitly_use_flash_kernel, "Paged KV Caching requires explicitly_use_flash_kernel=True"
+        
         try:
             pkg_ver = version("torch")
         except PackageNotFoundError:
@@ -156,6 +155,8 @@ class InferenceConfig:
         if self.tp_dims is not None and (type(self.tp_dims) != tuple or len(self.tp_dims) != 3):
             raise ValueError("tp_dims must be a 3-dimensional tuple.")
 
+        if self.use_paged_kv_caching and not self.explicitly_use_flash_kernel:
+            raise ValueError("use_paged_kv_caching requires explicitly_use_flash_kernel=True")
 
     def __repr__(self):
         return (
