@@ -3,7 +3,7 @@ from typing import Optional
 
 from .registry import get_attention
 from .backends import AttentionBackend
-from .utils import create_block_mask
+from .masking import create_block_mask
 
 def attention_wrapper(q: torch.Tensor, 
               k: torch.Tensor, 
