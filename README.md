@@ -11,7 +11,7 @@ YALIS is a modular, high-performance, research-friendly inference system built t
 
 - 🔁 **Pluggable attention backends** (`flash`, `sdpa`, `flex`) via a unified API
 - 🧠 **Paged KV caching** support for efficient generation
-- ⚙️ **Intra-head parallelism** and tensor parallelism
+- ⚙️  **2D tensor parallelism** for large scale multi-node inference
 - 📦 Clean Python/C++ extension integration
 - 🔍 TorchDynamo/`torch.compile` friendly design
 
@@ -54,9 +54,10 @@ Before running anything with YALIS, please ensure the following environment vari
 
 > **Note:**  
 > Your `SCRATCH` directory should point to a filesystem with **plenty of space** and **fast I/O**, as model checkpoints can be extremely large.  
-> For example, **LLaMA 3 70B requires ~140GB** just for weights. If you're working on an HPC cluster, make sure you're using a burst buffer or high-throughput scratch space — **not your home directory**.
+> For example, **LLaMA 3 70B requires ~140GB** just for weights. If you're working on an HPC cluster, make sure you're using a high-throughput scratch space — **not your home directory**.
 
 ```bash
+SCRATCH="... some high performance file system"
 export HF_HOME="${SCRATCH}/.cache/huggingface"
 export HF_TRANSFORMERS_CACHE="${HF_HOME}"
 export HF_DATASETS_CACHE="${HF_HOME}/datasets"
