@@ -50,7 +50,7 @@ if __name__ == "__main__":
     system_prompt = "You are a helpful chatbot. Answer the following question.\n"
 
     # profile the run or not
-    enable_profiling = False
+    enable_profiling = True
 
     # Tokenizer for encoding the prompt
     tokenizer = AutoTokenizer.from_pretrained(model_id)
@@ -77,8 +77,8 @@ if __name__ == "__main__":
                                        temperature=1.0, 
                                        tp_dims=None,
                                        attention_backend="flash",
-                                       use_paged_kv_caching=False,
-                                       prestore_kv_cache=True)
+                                       use_paged_kv_caching=True,
+                                       prestore_kv_cache=False)
 
     engine = LLMEngine(model_config=model_config, inference_config=inference_config)
 
@@ -93,18 +93,18 @@ if __name__ == "__main__":
     batch_sizes = [len(input_prompts)]
 
     with profiler_context as prof:
-        for batch_size in batch_sizes:
-            print_rank0(f"Running BatchSize - {batch_size}")
-
-            prompts = input_prompts[:batch_size]
-            engine.reset_kv_cache(batch_size)
-
+        for iter in range(2):
+            output_tokens = engine.generate(
+                input_prompts, report_throughput=True, tokens_to_generate=tokens_to_gen
+            )
+            if enable_profiling:
+                prof.step()
             dist.barrier()
             torch.cuda.synchronize()
 
             for iter in range(10):
                 output_tokens = engine.generate(
-                    prompts, report_throughput=True, tokens_to_generate=tokens_to_gen
+                    user_prompts, report_throughput=True, tokens_to_generate=tokens_to_gen
                 )
                 if enable_profiling:
                     prof.step()
@@ -120,6 +120,7 @@ if __name__ == "__main__":
         print_rank0(f"prompt = {prompt}")
         print_rank0(f"output = {output}")
         print_rank0("==========================\n\n")
+        break
         
              
     if enable_profiling:

@@ -2,6 +2,7 @@ from flash_attn import flash_attn_with_kvcache
 import torch
 from typing import Sequence, Optional, Union
 from .registry import register_attention
+from .update_kv_cache import update_paged_kv_cache
 
 
 # here we are registering the flash_attn_with_kv_cache kernel as a custom pytorch op 
@@ -60,17 +61,28 @@ def flash_attention(q: torch.Tensor,
     # pre-store in k_cache, v_cache - this should be under a conditional
     B, T = q.shape[0], q.shape[1]
     causal = T > 1
-    if block_table is None and prestore_kv_cache:
-        if T == 1: 
-            b_indices = torch.arange(B, device=k_cache.device)
-            t_indices = cache_seqlens.view(-1)
-            k_cache[b_indices, t_indices, :, :] = k[:, 0, :, :]
-            v_cache[b_indices, t_indices, :, :] = v[:, 0, :, :]
-            cache_seqlens = cache_seqlens + 1
+    if prestore_kv_cache:
+        if block_table is None:
+            if T == 1: 
+                b_indices = torch.arange(B, device=k_cache.device)
+                t_indices = cache_seqlens.view(-1)
+                k_cache[b_indices, t_indices, :, :] = k[:, 0, :, :]
+                v_cache[b_indices, t_indices, :, :] = v[:, 0, :, :]
+                cache_seqlens = cache_seqlens + 1
+            else:
+                k_cache[:, :T, :, :] = k[:, :T, :, :]
+                v_cache[:, :T, :, :] = v[:, :T, :, :]
+                cache_seqlens = torch.full_like(cache_seqlens, T) 
         else:
-            k_cache[:, :T, :, :] = k[:, :T, :, :]
-            v_cache[:, :T, :, :] = v[:, :T, :, :]
-            cache_seqlens = torch.full_like(cache_seqlens, T)  
+            update_paged_kv_cache(k=k, 
+                                   v=v, 
+                                   block_table=block_table, 
+                                   cache_seq_len=cache_seqlens, 
+                                   k_cache=k_cache, 
+                                   v_cache=v_cache) 
+            cache_seqlens = cache_seqlens + T
+
+
         k, v = None, None
 
     return torch_compile_compatible_flash_attention(
