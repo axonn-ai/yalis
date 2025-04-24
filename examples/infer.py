@@ -1,7 +1,3 @@
-try:
-    from mpi4py import MPI
-except ImportError:
-    pass
 
 from yalis import ModelConfig, InferenceConfig, print_rank0, LLMEngine
 from transformers import AutoTokenizer
@@ -13,6 +9,11 @@ from torch.profiler import _KinetoProfile
 _KinetoProfile._get_distributed_info = lambda self: None
 
 from contextlib import nullcontext
+
+try:
+    from mpi4py import MPI
+except ImportError:
+    pass
 
 if __name__ == "__main__":
     # Model ID from Hugging Face
@@ -89,14 +90,25 @@ if __name__ == "__main__":
     else:
         profiler_context = nullcontext()
 
+    batch_sizes = [len(input_prompts)]
+
     with profiler_context as prof:
-        for iter in range(10):
-            output_tokens = engine.generate(
-                input_prompts, report_throughput=True, tokens_to_generate=tokens_to_gen
-            )
-            if enable_profiling:
-                prof.step()
+        for batch_size in batch_sizes:
+            print_rank0(f"Running BatchSize - {batch_size}")
+
+            prompts = input_prompts[:batch_size]
+            engine.reset_kv_cache(batch_size)
+
             dist.barrier()
+            torch.cuda.synchronize()
+
+            for iter in range(10):
+                output_tokens = engine.generate(
+                    prompts, report_throughput=True, tokens_to_generate=tokens_to_gen
+                )
+                if enable_profiling:
+                    prof.step()
+                dist.barrier()
 
     output_tokens = output_tokens.cpu()
 

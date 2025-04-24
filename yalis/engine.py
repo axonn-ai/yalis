@@ -11,6 +11,7 @@ from transformers import AutoTokenizer
 from torch.nn.attention import SDPBackend, sdpa_kernel
 import time
 import gc
+from .timers import Timers
 
 # These flags are taken from the following URL -
 # https://github.com/pytorch/pytorch/blob/347f96061f1cff603983b9be19ec92b374329a5b/benchmarks/gpt_fast/generate.py#L19
@@ -180,6 +181,18 @@ class LLMEngine:
                 "Pad token not found in the tokenizer. Using eos_token as pad token."
             )
         print_rank0(f"Initializing Model took {time.time() - t0} seconds")
+    
+    def reset_kv_cache(self, batch_size):
+        if not self.model:
+            print_rank0("Model must be initialized before contiguous parameter buffer can be allocated")
+            return
+        self.model.clear_kv_cache()
+        self.model.set_kv_cache(
+            batch_size=batch_size,
+            device=self.device,
+            dtype=self.dtype,
+        )
+
 
     def generate(
         self,
@@ -204,6 +217,9 @@ class LLMEngine:
             torch.Tensor: A tensor containing the generated tokens, with shape `(batch_size, tokens_to_generate)`.
 
         """
+        timers = Timers()
+
+        timers.start("tokenize")
         if isinstance(prompts, list) and all(isinstance(p, str) for p in prompts):
             prompt_tokens_and_mask = self.tokenizer(
                 prompts, return_tensors="pt", padding=True
@@ -232,12 +248,13 @@ class LLMEngine:
             raise TypeError(
                 "prompts must be either a list of strings or a list of lists of integers"
             )
-
+        timers.stop("tokenize")
+        print_rank0(
+            f"Tokenization took {timers.get_times()[0][('tokenize',)]} ms"
+        )
         output_tokens = []
         # Start timing the operations
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
-        start.record()
+        timers.start("generate")
         self.model.token_counter.zero_()
         if self.inference_config.use_paged_kv_caching:
             self.model.kv_cache_manager.reset()
@@ -249,7 +266,10 @@ class LLMEngine:
             )  # Move prompt tokens to the device
             prompt_sequence_lengths = prompt_sequence_lengths.to(self.device)
             for step in range(tokens_to_generate):
+                timer_key = None
                 if step == 0:  # Prefill step
+                    timer_key = "prefill"
+                    timers.start(timer_key)
                     # print_rank0(f"mem before prefill = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
                     next_token = prefill(
                         self.model, current_input_to_model, prompt_sequence_lengths, 
@@ -260,6 +280,8 @@ class LLMEngine:
                     # print_rank0(f"mem after prefill = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
                     current_input_to_model = next_token.clone()
                 else:  # Generation step
+                    timer_key = "decode"
+                    timers.start(timer_key)
                     with sdpa_kernel(SDPBackend.MATH):
                         next_token = generate(
                             self.model, current_input_to_model, 
@@ -271,13 +293,33 @@ class LLMEngine:
                     current_input_to_model.copy_(
                         next_token
                     )  # Copy the new token into tokens
+
                 output_tokens.append(next_token.clone())
+                timers.stop(timer_key)
+
         output_tensor = torch.cat(output_tokens, dim=1)
         # End timing and calculate elapsed time
-        end.record()
-        torch.cuda.synchronize()  # Wait for all events to finish
-        time_taken = start.elapsed_time(end) / 1000  # Time in seconds
-        tput = prompt_tokens.shape[0] * tokens_to_generate / time_taken
-        if report_throughput and dist.get_rank() == 0:
-            print(f"Throughput = {tput:.2f} tok/s")
-        return output_tensor
+        timers.stop("generate")
+        times, events = timers.get_times()
+        tput = prompt_tokens.shape[0] * tokens_to_generate / (times[('generate',)] / 1000)
+        ttft = (
+            (times[('generate', 'prefill')] / events[('generate', 'prefill')])
+        )
+        tbt = (
+            (times[('generate', 'decode')] / events[('generate', 'decode')]) 
+        )
+        metrics = {
+            "BatchSize": prompt_tokens.shape[0],
+            "PromptLength": prompt_tokens.shape[1],
+            "DecodeLength": tokens_to_generate,
+            "Throughput": tput,
+            "TTFT": ttft,
+            "TBT": tbt,
+            "E2E": times[('generate',)],
+            "TokenizationTime": times[('tokenize',)],
+        }
+        if dist.get_rank() == 0 and report_throughput:
+            print (f"[Metrics] BatchSize = {prompt_tokens.shape[0]}, PromptLength = {prompt_tokens.shape[1]}, DecodeLength = {tokens_to_generate}, Throughput = {tput:.2f} tok/s, TTFT = {ttft:.4f} ms, TBT = {tbt:.4f} ms, E2E = {times[('generate',)]:.4f} ms")
+
+
+        return output_tensor, metrics
