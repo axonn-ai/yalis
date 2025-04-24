@@ -1,2 +1,7 @@
 __pycache__/
 yalis/external/checkpoints/
+.vscode/
+yalis.egg-info/
+*.so
+*.sh
+build/

@@ -42,9 +42,8 @@ if __name__ == "__main__":
     #user_prompts = user_prompts[:num_prompts]
     # user_prompts has 16 prompts 
     # mul by 8 to make batch size 128 
-    user_prompts = user_prompts[:1]
+    user_prompts = user_prompts[:16]
     print(f"Number of prompts = {len(user_prompts)}")
-
 
 
     system_prompt = "You are a helpful chatbot. Answer the following question.\n"
@@ -75,8 +74,10 @@ if __name__ == "__main__":
                                        max_length_of_generated_sequences=1024,
                                        top_p=0.80,
                                        temperature=1.0, 
-                                       tp_dims=(4,1,1),
-                                       explicitly_use_flash_kernel=True)
+                                       tp_dims=None,
+                                       attention_backend="flash",
+                                       use_paged_kv_caching=False,
+                                       prestore_kv_cache=True)
 
     engine = LLMEngine(model_config=model_config, inference_config=inference_config)
 
@@ -108,7 +109,7 @@ if __name__ == "__main__":
         print_rank0(f"output = {output}")
         print_rank0("==========================\n\n")
         
-
+             
     if enable_profiling:
         print_rank0(
             prof.key_averages().table(sort_by="self_cuda_time_total", row_limit=10)
