@@ -68,20 +68,20 @@ def flash_attention(q: torch.Tensor,
                 t_indices = cache_seqlens.view(-1)
                 k_cache[b_indices, t_indices, :, :] = k[:, 0, :, :]
                 v_cache[b_indices, t_indices, :, :] = v[:, 0, :, :]
-                cache_seqlens = cache_seqlens + 1
             else:
                 k_cache[:, :T, :, :] = k[:, :T, :, :]
                 v_cache[:, :T, :, :] = v[:, :T, :, :]
-                cache_seqlens = torch.full_like(cache_seqlens, T) 
         else:
             update_paged_kv_cache(k=k, 
                                    v=v, 
                                    block_table=block_table, 
                                    cache_seq_len=cache_seqlens, 
                                    k_cache=k_cache, 
-                                   v_cache=v_cache) 
-            cache_seqlens = cache_seqlens + T
-
+                                   v_cache=v_cache)     
+        # since the kv-cache has been updated, we need to update the cache_seqlens
+        # note: do not update this in-place as the original cache_seqlens is used by 
+        # subsequent layers 
+        cache_seqlens = cache_seqlens + T
 
         k, v = None, None
 
