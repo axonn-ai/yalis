@@ -18,4 +18,6 @@ setup(
     install_requires=[
         'torch',  # Ensure PyTorch is installed
     ],
+    author='Siddharth Singh, Prajwal Singhania, Lannie Dalton Hough, Ishan Revankar',
+    description='An easy-to-use library for LLM inference'
 )

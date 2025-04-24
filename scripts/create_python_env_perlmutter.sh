@@ -36,6 +36,7 @@ pip install lightning
 pip install transformers
 pip install datasets
 pip install flash-attn --no-build-isolation
+pip install axonn
 
 cd ${YALIS_DIR}
 CC=cc CXX=CC pip install -e .
