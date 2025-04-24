@@ -14,7 +14,7 @@ import torch.nn as nn
 import torch.distributed as dist
 from typing_extensions import Self
 
-from yalis.attention import attention 
+from yalis.attention import attention_wrapper 
 
 from litgpt.config import Config
 import sys
@@ -27,6 +27,7 @@ from axonn.intra_layer.communication import Drop, Gather
 from kvcache_manager import KVCacheManager
 from flash_attn.ops.triton.rotary import apply_rotary
 from yalis.attention.backends import AttentionBackend
+from yalis.attention.utils import create_causal_block_mask_for_flex_attention
 
 from yalis import print_rank0
 
@@ -141,9 +142,14 @@ class GPT(nn.Module):
             self.sin = self.sin.to(x.dtype)
 
         block_table=self.kv_cache_manager.block_table() if self.config.use_paged_kv_caching else None
-       
+
+        flex_attention_block_mask = (
+            create_causal_block_mask_for_flex_attention(self.token_counter, self.kv_length)
+            if self.config.attention_backend == AttentionBackend.FLEX else None
+        )
+
         for block in self.transformer.h:
-            x = block(x, self.cos, self.sin, self.token_counter, block_table)
+            x = block(x, self.cos, self.sin, self.token_counter, block_table, flex_attention_block_mask)
         if self.config.tensor_parallel:
             x = Gather.apply(x, ax.comm_handle.inner_intra_layer_parallel_group)
         x = self.transformer.ln_f(x)
@@ -237,6 +243,8 @@ class GPT(nn.Module):
 
         if max_seq_length is None:
             max_seq_length = self.max_seq_length
+        
+        self.kv_length = max_seq_length
 
         # initialize the kv cache for all blocks
         for block in self.transformer.h:
@@ -297,7 +305,8 @@ class Block(nn.Module):
         cos: torch.Tensor,
         sin: torch.Tensor,
         token_counter: Optional[torch.Tensor] = None,
-        block_table: Optional[torch.Tensor] = None
+        block_table: Optional[torch.Tensor] = None,
+        flex_attention_block_mask = None,
     ) -> torch.Tensor:
         """
         Non-parallel residual       Parallel residual
@@ -321,7 +330,7 @@ class Block(nn.Module):
         """
 
         x_normed = self.norm_1(x)
-        attention_output = self.attn(x_normed, cos, sin, token_counter, block_table)
+        attention_output = self.attn(x_normed, cos, sin, token_counter, block_table, flex_attention_block_mask)
         attention_output = self.post_attention_norm(attention_output)
 
         if self.config.parallel_residual:
@@ -381,6 +390,7 @@ class CausalSelfAttention(nn.Module):
         sin: torch.Tensor,
         token_counter: torch.Tensor,
         block_table: torch.Tensor = None,
+        flex_attention_block_mask = None,
     ) -> torch.Tensor:
         B, T, C = (
             x.size()
@@ -407,7 +417,7 @@ class CausalSelfAttention(nn.Module):
         ), "partial rope is not supported yet"
 
         k_cache, v_cache = self.kv_cache.k, self.kv_cache.v
-
+        
         if self.config.attention_backend == AttentionBackend.FLASH:
             q = q.contiguous()
             k = k.contiguous()
@@ -426,8 +436,8 @@ class CausalSelfAttention(nn.Module):
             q = q.transpose(1, 2).contiguous()
             k = k.transpose(1, 2).contiguous()
             v = v.transpose(1, 2).contiguous()
-
-        y = attention(
+             
+        y = attention_wrapper(
             q=q,
             k_cache=k_cache,
             v_cache=v_cache,
@@ -439,7 +449,8 @@ class CausalSelfAttention(nn.Module):
             rotary_sin=sin,
             backend=self.config.attention_backend,
             use_intra_head_parallelism=self.config.use_intra_head_parallelism,
-            prestore_kv_cache=self.config.prestore_kv_cache
+            prestore_kv_cache=self.config.prestore_kv_cache,
+            flex_attention_block_mask=flex_attention_block_mask,
         )
         
         if not self.config.attention_backend == AttentionBackend.FLASH:

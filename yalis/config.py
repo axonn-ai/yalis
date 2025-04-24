@@ -153,7 +153,6 @@ class InferenceConfig:
         if self.max_length <= 0:
             raise ValueError("max_length must be a positive integer.")
 
-
         if self.temperature is not None and (self.temperature < 0.0):
             raise ValueError("temperature must be >=0.0.")
 
@@ -170,7 +169,10 @@ class InferenceConfig:
             raise ValueError("use_paged_kv_caching requires attention_backend=flash")
 
         if self.use_paged_kv_caching and self.prestore_kv_cache:
-            raise ValueError("use_paged_kv_caching and prestore_kv_cache cannot be used together.")    
+            raise ValueError("use_paged_kv_caching and prestore_kv_cache cannot be used together.")   
+
+        if self.use_intra_head_parallelism and not self.attention_backend == AttentionBackend.SDPA:
+            raise ValueError("use_intra_head_parallelism requires attention_backend=sdpa") 
     
 
     def __repr__(self):

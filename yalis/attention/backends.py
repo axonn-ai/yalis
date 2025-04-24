@@ -1,5 +1,5 @@
 # These imports trigger @register_attention decorators
-from . import sdpa
+from . import sdpa_and_flex
 from . import flash
 
 from enum import Enum
