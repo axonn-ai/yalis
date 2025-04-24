@@ -29,7 +29,14 @@ precision_to_dtype = {
 
 @torch.no_grad()
 @torch.compile()
-def prefill(model, tokens, unpadded_prompt_lengths, temperature=1.0, top_k=None, top_p=1.0):
+def prefill(
+    model,
+    tokens,
+    unpadded_prompt_lengths,
+    temperature=1.0,
+    top_k=None,
+    top_p=1.0,
+):
     """
     Prefill function for generating the first token.
 
@@ -43,13 +50,23 @@ def prefill(model, tokens, unpadded_prompt_lengths, temperature=1.0, top_k=None,
 
     logits = model(tokens, unpadded_prompt_lengths)["logits"]
     logits = logits[torch.arange(logits.size(0)), unpadded_prompt_lengths - 1]
-    token_id = sample(logits=logits, temperature=temperature, top_k=top_k, top_p=top_p)
+    token_id = sample(
+        logits=logits, temperature=temperature, top_k=top_k, top_p=top_p
+    )
     return token_id
 
 
 @torch.no_grad()
 @torch.compile(mode="reduce-overhead")
-def generate(model, tokens, get_probs=False, temperature=1.0, top_k=None, top_p=1.0, warmup=False):
+def generate(
+    model,
+    tokens,
+    get_probs=False,
+    temperature=1.0,
+    top_k=None,
+    top_p=1.0,
+    warmup=False,
+):
     """
     Generate function for producing the next token(s).
 
@@ -63,12 +80,16 @@ def generate(model, tokens, get_probs=False, temperature=1.0, top_k=None, top_p=
         token_id: The next predicted token.
         logits: (Optional) The raw logits from the model.
     """
-    logits = model(tokens, warmup=warmup)["logits"]
-    token_id = sample(logits=logits[:, -1], temperature=temperature, top_k=top_k, top_p=top_p)
+    out = model(tokens, warmup=warmup)
+    logits = out["logits"]
+    retain_perc = out["retain_perc"]
+    token_id = sample(
+        logits=logits[:, -1], temperature=temperature, top_k=top_k, top_p=top_p
+    )
     if get_probs:
-        return token_id, logits
+        return token_id, logits, retain_perc
     else:
-        return token_id
+        return token_id, retain_perc
 
 
 class LLMEngine:
@@ -100,41 +121,49 @@ class LLMEngine:
         self._initialize_model()
         torch.cuda.empty_cache()  # return extra memory to CUDA. Can prevent NCCL init OOMs
         gc.collect()
-        print_rank0(f"Memory Stats After Initializing Model - {get_gpu_memory_info()} ")
+        print_rank0(
+            f"Memory Stats After Initializing Model - {get_gpu_memory_info()} "
+        )
 
     def _make_params_contiguous(self):
         if not self.model:
-            print_rank0("Model must be initialized before contiguous parameter buffer can be allocated")
+            print_rank0(
+                "Model must be initialized before contiguous parameter buffer can be allocated"
+            )
             return
-        
-        self.model = self.model.to(self.device) 
+
+        self.model = self.model.to(self.device)
         return
 
         total_bytes = 0
         param_info, buf_info = [], []
-        
+
         for name, param in self.model.named_parameters():
             num_bytes = param.numel() * param.element_size()
-            param_info.append({
-                "name": name,
-                "shape": param.shape,
-                "dtype": param.dtype,
-                "num_bytes": num_bytes,
-                "offset": total_bytes,
-                "param": param,
-            })
+            param_info.append(
+                {
+                    "name": name,
+                    "shape": param.shape,
+                    "dtype": param.dtype,
+                    "num_bytes": num_bytes,
+                    "offset": total_bytes,
+                    "param": param,
+                }
+            )
             total_bytes += num_bytes
-        
+
         for name, buf in self.model.named_buffers():
             num_bytes = buf.numel() * buf.element_size()
-            buf_info.append({
-                "name": name,
-                "shape": buf.shape,
-                "dtype": buf.dtype,
-                "num_bytes": num_bytes,
-                "offset": total_bytes,
-                "buf": buf,
-            })
+            buf_info.append(
+                {
+                    "name": name,
+                    "shape": buf.shape,
+                    "dtype": buf.dtype,
+                    "num_bytes": num_bytes,
+                    "offset": total_bytes,
+                    "buf": buf,
+                }
+            )
             total_bytes += num_bytes
 
         # make buffer 128-byte aligned
@@ -143,12 +172,20 @@ class LLMEngine:
         gpu_buffer = torch.empty(total_bytes, dtype=torch.uint8, device="cuda")
 
         for info in param_info:
-            param_view = gpu_buffer[info["offset"]: info["offset"] + info["num_bytes"]].view(info["dtype"]).reshape(info["shape"])
+            param_view = (
+                gpu_buffer[info["offset"] : info["offset"] + info["num_bytes"]]
+                .view(info["dtype"])
+                .reshape(info["shape"])
+            )
             param_view.copy_(info["param"], non_blocking=True)
             info["param"].data = param_view
 
         for info in buf_info:
-            buf_view = gpu_buffer[info["offset"]: info["offset"] + info["num_bytes"]].view(info["dtype"]).reshape(info["shape"])
+            buf_view = (
+                gpu_buffer[info["offset"] : info["offset"] + info["num_bytes"]]
+                .view(info["dtype"])
+                .reshape(info["shape"])
+            )
             buf_view.copy_(info["buf"], non_blocking=True)
             info["buf"].data = buf_view
 
@@ -160,6 +197,7 @@ class LLMEngine:
         self.model = get_model(
             self.model_config.model_path,
             self.dtype,
+            self.inference_config,
             max_sequence_length=self.inference_config.max_length,
             random_init=False,
             use_intra_head_parallelism=self.inference_config.use_intra_head_parallelism,
@@ -173,7 +211,9 @@ class LLMEngine:
             device=self.device,
             dtype=self.dtype,
         )
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_config.model_name)
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            self.model_config.model_name
+        )
         # Check if the tokenizer has a pad token, otherwise use eos_token
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
@@ -181,10 +221,12 @@ class LLMEngine:
                 "Pad token not found in the tokenizer. Using eos_token as pad token."
             )
         print_rank0(f"Initializing Model took {time.time() - t0} seconds")
-    
+
     def reset_kv_cache(self, batch_size):
         if not self.model:
-            print_rank0("Model must be initialized before contiguous parameter buffer can be allocated")
+            print_rank0(
+                "Model must be initialized before contiguous parameter buffer can be allocated"
+            )
             return
         self.model.clear_kv_cache()
         self.model.set_kv_cache(
@@ -192,7 +234,6 @@ class LLMEngine:
             device=self.device,
             dtype=self.dtype,
         )
-
 
     def generate(
         self,
@@ -220,16 +261,21 @@ class LLMEngine:
         timers = Timers()
 
         timers.start("tokenize")
-        if isinstance(prompts, list) and all(isinstance(p, str) for p in prompts):
+        if isinstance(prompts, list) and all(
+            isinstance(p, str) for p in prompts
+        ):
             prompt_tokens_and_mask = self.tokenizer(
                 prompts, return_tensors="pt", padding=True
             )
             prompt_tokens = prompt_tokens_and_mask.input_ids
             # prompt tokens contain padding tokens. Summing the attention mask
             # gives us the actual sequence lengths of each prompt sans padding
-            prompt_sequence_lengths = prompt_tokens_and_mask.attention_mask.sum(dim=1)
+            prompt_sequence_lengths = (
+                prompt_tokens_and_mask.attention_mask.sum(dim=1)
+            )
         elif isinstance(prompts, list) and all(
-            isinstance(p, list) and all(isinstance(x, int) for x in p) for p in prompts
+            isinstance(p, list) and all(isinstance(x, int) for x in p)
+            for p in prompts
         ):
             # Get the maximum length of the sequences
             max_length = max(len(p) for p in prompts)
@@ -258,11 +304,14 @@ class LLMEngine:
 
         ## Changes for Thresh
         num_generation_step = 0
+        num_retain_steps = 0
         self.model.generation_counter.zero_() 
+        global_retain_perc = torch.zeros(1, device=self.device, dtype=torch.float32)
 
         self.model.token_counter.zero_()
         if self.inference_config.use_paged_kv_caching:
             self.model.kv_cache_manager.reset()
+
         with torch.no_grad(), torch.autocast(
             self.device, dtype=self.dtype, cache_enabled=False
         ):
@@ -277,15 +326,17 @@ class LLMEngine:
                     timers.start(timer_key)
                     # print_rank0(f"mem before prefill = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
                     next_token = prefill(
-                        self.model, current_input_to_model, prompt_sequence_lengths, 
-                        temperature=self.inference_config.temperature, 
-                        top_k=self.inference_config.top_k, 
-                        top_p=self.inference_config.top_p
+                        self.model,
+                        current_input_to_model,
+                        prompt_sequence_lengths,
+                        temperature=self.inference_config.temperature,
+                        top_k=self.inference_config.top_k,
+                        top_p=self.inference_config.top_p,
                     )  # Call prefill function
                     # print_rank0(f"mem after prefill = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
                     current_input_to_model = next_token.clone()
                 else:  # Generation step
-                    if num_generation_step <= 64:
+                    if num_generation_step <= self.inference_config.num_warmup_steps:
                         warmup = True
                         timer_key = "warmup"
                     else:
@@ -293,23 +344,28 @@ class LLMEngine:
                         timer_key = "decode"
 
                     timers.start(timer_key)
-                    #print ("Running generation step - ", num_generation_step)
+                    # print ("Running generation step - ", num_generation_step)
                     with sdpa_kernel(SDPBackend.MATH):
-                        next_token = generate(
-                            self.model, current_input_to_model, 
-                            temperature=self.inference_config.temperature, 
-                            top_k=self.inference_config.top_k, 
+                        next_token, retain_perc = generate(
+                            self.model,
+                            current_input_to_model,
+                            temperature=self.inference_config.temperature,
+                            top_k=self.inference_config.top_k,
                             top_p=self.inference_config.top_p,
                             warmup=warmup,
                         )  # Call generate function
                     # print_rank0(f"mem after generate {step} = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
+                    if not warmup:
+                        global_retain_perc += retain_perc
+                        num_retain_steps += 1
+
                     current_input_to_model.copy_(
                         next_token
                     )  # Copy the new token into tokens
 
-                if num_generation_step == 64:
-                    #print (f"[DEBUG] Fitting Power Law")
-                    self.model.fit_powerlaw()
+                    if num_generation_step == self.inference_config.num_warmup_steps:
+                        # print (f"[DEBUG] Fitting Power Law")
+                        self.model.fit_powerlaw()
 
                 num_generation_step += 1
                 output_tokens.append(next_token.clone())
@@ -319,15 +375,20 @@ class LLMEngine:
         # End timing and calculate elapsed time
         timers.stop("generate")
         times, events = timers.get_times()
-        tput = prompt_tokens.shape[0] * tokens_to_generate / (times[('generate',)] / 1000)
-        ttft = (
-            (times[('generate', 'prefill')] / events[('generate', 'prefill')])
+        tput = (
+            prompt_tokens.shape[0]
+            * tokens_to_generate
+            / (times[("generate",)] / 1000)
         )
-        tbt = (
-            (times[('generate', 'decode')] / events[('generate', 'decode')]) 
+        ttft = times[("generate", "prefill")] / events[("generate", "prefill")]
+        tbt = times[("generate", "decode")] / events[("generate", "decode")]
+        warmup_time = (
+            times[("generate", "warmup")] / events[("generate", "warmup")]
         )
-        warmup_time = times[('generate', 'warmup')] / events[('generate', 'warmup')]
-        #warmup_end_time = times[('generate', 'warmup_end')] / events[('generate', 'warmup_end')]
+        global_retain_perc = (
+            global_retain_perc / num_retain_steps
+        ).item()
+        # warmup_end_time = times[('generate', 'warmup_end')] / events[('generate', 'warmup_end')]
         metrics = {
             "BatchSize": prompt_tokens.shape[0],
             "PromptLength": prompt_tokens.shape[1],
@@ -335,11 +396,13 @@ class LLMEngine:
             "Throughput": tput,
             "TTFT": ttft,
             "TBT": tbt,
-            "E2E": times[('generate',)],
-            "TokenizationTime": times[('tokenize',)],
+            "E2E": times[("generate",)],
+            "TokenizationTime": times[("tokenize",)],
+            "RetainPercentage": global_retain_perc,
         }
         if dist.get_rank() == 0 and report_throughput:
-            print (f"[Metrics] BatchSize = {prompt_tokens.shape[0]}, PromptLength = {prompt_tokens.shape[1]}, DecodeLength = {tokens_to_generate}, Throughput = {tput:.2f} tok/s, TTFT = {ttft:.4f} ms, TBT = {tbt:.4f} ms, E2E = {times[('generate',)]:.4f} ms, WarmupTime = {warmup_time:.4f} ms")
-
+            print(
+                f"[Metrics] BatchSize = {prompt_tokens.shape[0]}, PromptLength = {prompt_tokens.shape[1]}, DecodeLength = {tokens_to_generate}, Throughput = {tput:.2f} tok/s, TTFT = {ttft:.4f} ms, TBT = {tbt:.4f} ms, E2E = {times[('generate',)]:.4f} ms, WarmupTime = {warmup_time:.4f} ms, GlobalRetainPerc = {global_retain_perc:.4f}"
+            )
 
         return output_tensor, metrics

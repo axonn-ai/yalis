@@ -12,6 +12,7 @@ from yalis.attention.backends import AttentionBackend
 def get_model(
     litgpt_checkpoint_directory,
     model_dtype,
+    inference_config,
     max_sequence_length=None,
     random_init=False,
     device="cuda",
@@ -36,6 +37,8 @@ def get_model(
     config.use_paged_kv_caching = use_paged_kv_caching
     config.prestore_kv_cache = prestore_kv_cache
     config.init_device = device if random_init else "meta"
+    config.threshold_percentile = inference_config.threshold_percentile
+    config.num_warmup_steps = inference_config.num_warmup_steps
 
     with _EmptyInit(enabled=(not random_init)):
         model = GPT(config).to(model_dtype)

@@ -36,8 +36,6 @@ from yalis import print_rank0
 # todo: these should be dynamically set during engine initialization
 NUM_BLOCKS, PAGE_BLOCK_SIZE = 1024, 256
 
-NUM_WARMUP_STEPS = 64
-
 # switch sequential norm classes to TP norm classes if needed
 def get_norm_class(config):
     if not config.tensor_parallel or ax.config.G_intra_c == 1:
@@ -152,8 +150,12 @@ class GPT(nn.Module):
             if self.config.attention_backend == AttentionBackend.FLEX else None
         )
 
+        retain_perc_g = torch.zeros(1, dtype=torch.float32, device=x.device)
         for block in self.transformer.h:
-            x = block(x, self.cos, self.sin, self.token_counter, block_table, flex_attention_block_mask, self.generation_counter, warmup=warmup)
+            x, retain_perc = block(x, self.cos, self.sin, self.token_counter, block_table, flex_attention_block_mask, self.generation_counter, warmup=warmup)
+            retain_perc_g += retain_perc
+        retain_perc_mean = retain_perc_g / len(self.transformer.h)
+
         if self.config.tensor_parallel:
             x = Gather.apply(x, ax.comm_handle.inner_intra_layer_parallel_group)
         x = self.transformer.ln_f(x)
@@ -171,7 +173,7 @@ class GPT(nn.Module):
             # readjusting the token counters of the block table to exclude padded tokens.
             # we can exclude this for generation
             self.kv_cache_manager.force_update_tokens_assigned(self.token_counter)
-        return {"logits": x}
+        return {"logits": x, "retain_perc": retain_perc_mean}
 
     @classmethod
     def from_name(cls, name: str, **kwargs: Any) -> Self:
@@ -264,7 +266,7 @@ class GPT(nn.Module):
             block.attn.warmup_quantiles = torch.zeros(
                 batch_size,
                 self.config.n_head,
-                NUM_WARMUP_STEPS,
+                self.config.num_warmup_steps,
                 dtype=dtype, 
                 device=device,
             )
@@ -352,7 +354,7 @@ class Block(nn.Module):
         """
 
         x_normed = self.norm_1(x)
-        attention_output = self.attn(x_normed, cos, sin, token_counter, block_table, flex_attention_block_mask, generation_counter, warmup=warmup)
+        attention_output, retain_perc = self.attn(x_normed, cos, sin, token_counter, block_table, flex_attention_block_mask, generation_counter, warmup=warmup)
         attention_output = self.post_attention_norm(attention_output)
 
         if self.config.parallel_residual:
@@ -361,7 +363,7 @@ class Block(nn.Module):
         else:
             x = attention_output + x
             x = self.post_mlp_norm(self.mlp(self.norm_2(x))) + x
-        return x
+        return x, retain_perc
 
 
 class CausalSelfAttention(nn.Module):
@@ -397,6 +399,8 @@ class CausalSelfAttention(nn.Module):
 
         # Used by thresh attention
         self.warmup_quantiles = None
+        self.threshold_percentile = config.threshold_percentile
+        self.num_warmup_steps = config.num_warmup_steps
 
         self.config = config
         if config.tensor_parallel:
@@ -409,11 +413,11 @@ class CausalSelfAttention(nn.Module):
             assert self.config.n_query_groups % attention_world_size == 0
             self.config.n_query_groups //= attention_world_size
 
-
     def fit_power_law(self):
         if self.config.attention_backend == AttentionBackend.THRESH:
-            x = torch.arange(0, NUM_WARMUP_STEPS, dtype=self.warmup_quantiles.dtype, device=self.warmup_quantiles.device).unsqueeze(0).unsqueeze(0)
-            x = x.expand(self.warmup_quantiles.size(0), self.warmup_quantiles.size(1), NUM_WARMUP_STEPS)
+            x = torch.arange(0, self.num_warmup_steps, dtype=self.warmup_quantiles.dtype, device=self.warmup_quantiles.device).unsqueeze(0).unsqueeze(0)
+            x = x.expand(self.warmup_quantiles.size(0), self.warmup_quantiles.size(1), self.num_warmup_steps)
+            #print_rank0(f"Fitting power law for block {self.config.block_idx}")
             self.powerlaw_a, self.powerlaw_b, r2 = fit_powerlaw_linreg_torch(
                 x,
                 self.warmup_quantiles,
@@ -476,7 +480,12 @@ class CausalSelfAttention(nn.Module):
             q = q.transpose(1, 2).contiguous()
             k = k.transpose(1, 2).contiguous()
             v = v.transpose(1, 2).contiguous()
-             
+        
+
+
+        # TODO: Should not generate this every time
+        retain_perc = torch.zeros(1, device=x.device, dtype=torch.float32)
+
         y = attention_wrapper(
             q=q,
             k_cache=k_cache,
@@ -494,6 +503,8 @@ class CausalSelfAttention(nn.Module):
             generation_counter=generation_counter,
             warmup_quantiles=self.warmup_quantiles,
             warmup=warmup,
+            threshold_percentile=self.threshold_percentile,
+            retain_perc=retain_perc,
         )
         
         if not self.config.attention_backend == AttentionBackend.FLASH:
@@ -505,7 +516,7 @@ class CausalSelfAttention(nn.Module):
         )  # re-assemble all head outputs side by side
 
         # output projection
-        return self.proj(y)
+        return self.proj(y), retain_perc
 
     def build_kv_cache(
         self,

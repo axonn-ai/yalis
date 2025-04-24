@@ -30,8 +30,10 @@ def lit_rotary_kv_update_gen(
     token_counter: torch.Tensor,  # B,1
     k_cache: torch.Tensor,  # B,nh,t_max,hs
     v_cache: torch.Tensor,  # B,nh,t_max,hs,
+    threshold_percentile: float,
     generation_counter: torch.Tensor, # B,1
     warmup_quantiles: torch.Tensor, # B,nh,64
+    retain_perc: torch.Tensor, # B,nh,64
     warmup: bool = False,
 ) -> torch.Tensor:
     cos = self.index_into_rope_cache_gen(cos, token_counter)
@@ -66,15 +68,16 @@ def lit_rotary_kv_update_gen(
     
     enable_gqa = q.size(1) != k.size(1)
     if warmup:
-        out, quantiles = thresh_attention_warmup_forward(self, q, k_cache, v_cache, attn_mask=mask[:, None, None, :], enable_gqa=enable_gqa)
+        out, quantiles = thresh_attention_warmup_forward(self, q, k_cache, v_cache, threshold_percentile, attn_mask=mask[:, None, None, :], enable_gqa=enable_gqa)
         g_indices = generation_counter.view(-1)
-        warmup_quantiles[b_indices, :, g_indices] = quantiles[b_indices, :, 0]
+        warmup_quantiles[b_indices, :, g_indices - 1] = quantiles[b_indices, :, 0]
         return out
     else:
         #out = torch.nn.functional.scaled_dot_product_attention(
         #    q, k_cache, v_cache, attn_mask=mask[:, None, None, :], enable_gqa=enable_gqa
         #)
-        out = thresh_attention_forward(self, q, k_cache, v_cache, generation_counter, attn_mask=mask[:, None, None, :], enable_gqa=enable_gqa)
+        out, retain_ = thresh_attention_forward(self, q, k_cache, v_cache, generation_counter, token_counter, attn_mask=mask[:, None, None, :], enable_gqa=enable_gqa)
+        retain_perc.add_(retain_)
         return out
 
 
@@ -123,6 +126,7 @@ def threshold_attention(q: torch.Tensor,
               cache_seqlens: Optional[torch.Tensor] = None,  
               rotary_cos: Optional[torch.Tensor] = None,
               rotary_sin: Optional[torch.Tensor] = None,
+              threshold_percentile: float = 0.0,
               generation_counter: Optional[torch.Tensor] = None,
               warmup_quantiles: Optional[torch.Tensor] = None,
               warmup: bool = False,
@@ -144,7 +148,9 @@ def threshold_attention(q: torch.Tensor,
             v_cache,  # B,nh,t_max,hs
             generation_counter,
             warmup_quantiles,
+            retain_perc,
             warmup=True,
+
         )
     else:
         # prefill
@@ -173,6 +179,8 @@ def thresh_attn(q: torch.Tensor,
     assert "generation_counter" in kwargs, "thresh attention requires a generation counter"
     assert "warmup_quantiles" in kwargs, "thresh attention requires warmup quantiles"
     assert "warmup" in kwargs, "thresh attention requires warmup flag"
+    assert "threshold_percentile" in kwargs, "thresh attention requires a threshold percentile"
+    assert "retain_perc" in kwargs, "thresh attention requires a retain percentage"
     return threshold_attention(q=q,
                             k=k,
                             v=v,

@@ -111,6 +111,8 @@ class InferenceConfig:
         use_intra_head_parallelism: bool = False,
         use_paged_kv_caching: bool = False,
         prestore_kv_cache: bool = True,
+        threshold_percentile: Optional[float] = 0.0,
+        num_warmup_steps: Optional[int] = 64
     ):
         """
         Initialize the inference configuration.
@@ -135,10 +137,11 @@ class InferenceConfig:
         # from the model config
         # anyway this arg isn't being used right now. KV Cache is defaulting to the model
         # max sequence length
-        self.max_length = self.get_next_power_of_2(max_length_of_generated_sequences)
-        print (
-            f"[DEBUG] InferenceConfig: max_length = {self.max_length} (next power of 2)"
-        ) 
+        #self.max_length = self.get_next_power_of_2(max_length_of_generated_sequences)
+        #print (
+        #    f"[DEBUG] InferenceConfig: max_length = {self.max_length} (next power of 2)"
+        #) 
+        self.max_length = max_length_of_generated_sequences
         self.temperature = temperature
         self.top_k = top_k
         self.top_p = top_p
@@ -152,6 +155,8 @@ class InferenceConfig:
                 f"Invalid attention backend: {attention_backend}. Supported values are 'flash', 'sdpa', 'flex'."
             )
         self.attention_backend = AttentionBackend(attention_backend)
+        self.threshold_percentile = threshold_percentile
+        self.num_warmup_steps = num_warmup_steps
         try:
             pkg_ver = version("torch")
         except PackageNotFoundError:
