@@ -79,8 +79,8 @@ def flash_attention(q: torch.Tensor,
                                    k_cache=k_cache, 
                                    v_cache=v_cache)     
         # since the kv-cache has been updated, we need to update the cache_seqlens
-        # note: do not update this in-place as the original cache_seqlens is used by 
-        # subsequent layers 
+        # note: do not update this in-place as the original tensor is needed by 
+        # subsequent layers to update their kv-caches.
         cache_seqlens = cache_seqlens + T
 
         k, v = None, None
