@@ -26,6 +26,7 @@ from axonn import axonn as ax
 from axonn.intra_layer.communication import Drop, Gather
 from kvcache_manager import KVCacheManager
 from flash_attn.ops.triton.rotary import apply_rotary
+from yalis.attention.backends import AttentionBackend
 
 from yalis import print_rank0
 
@@ -135,7 +136,7 @@ class GPT(nn.Module):
         # flash attention wants the rope cache to be
         # in the same dtype as the query
         # ToDO: confirm if this is okay, or if we should do rope in fp32?
-        if self.config.explicitly_use_flash_kernel:
+        if self.config.attention_backend == AttentionBackend.FLASH:
             self.cos = self.cos.to(x.dtype)
             self.sin = self.sin.to(x.dtype)
 
@@ -218,7 +219,7 @@ class GPT(nn.Module):
             condense_ratio=self.config.rope_condense_ratio,
             base=self.config.rope_base,
             extra_config=extra_config,
-            explicitly_use_flash_kernel=self.config.explicitly_use_flash_kernel,
+            is_attention_backend_flash=(self.config.attention_backend == AttentionBackend.FLASH),
         )
 
     def set_kv_cache(
@@ -231,7 +232,7 @@ class GPT(nn.Module):
     ) -> None:
         if rope_cache_length is None:
             rope_cache_length = self.cos.size(-1)
-            if self.config.explicitly_use_flash_kernel:
+            if self.config.attention_backend == AttentionBackend.FLASH:
                 rope_cache_length *= 2
 
         if max_seq_length is None:
@@ -343,7 +344,7 @@ class CausalSelfAttention(nn.Module):
             self.attn = TPLinear(config.n_embd, shape, bias=config.bias)
 
         # output projection
-        # if `head_size` is explicitly specified in the config, `n_emd` might not be equal to `head_size * n_head`
+        # if `head_size` is explicitly specified in the config, `n_embd` might not be equal to `head_size * n_head`
         if not config.tensor_parallel:
             self.proj = nn.Linear(
                 config.head_size * config.n_head, config.n_embd, bias=config.bias
@@ -372,8 +373,6 @@ class CausalSelfAttention(nn.Module):
             self.config.n_head //= attention_world_size
             assert self.config.n_query_groups % attention_world_size == 0
             self.config.n_query_groups //= attention_world_size
-
-    
 
     def forward(
         self,
@@ -409,11 +408,10 @@ class CausalSelfAttention(nn.Module):
 
         k_cache, v_cache = self.kv_cache.k, self.kv_cache.v
 
-        if self.config.explicitly_use_flash_kernel:
+        if self.config.attention_backend == AttentionBackend.FLASH:
             q = q.contiguous()
             k = k.contiguous()
             v = v.contiguous()
-
             q = apply_rotary(q, 
                             cos, 
                             sin, 
@@ -424,12 +422,10 @@ class CausalSelfAttention(nn.Module):
                             token_counter)
             
             cos, sin = None, None
-            backend = "flash"
         else:
             q = q.transpose(1, 2).contiguous()
             k = k.transpose(1, 2).contiguous()
             v = v.transpose(1, 2).contiguous()
-            backend = "sdpa"
 
         y = attention(
             q=q,
@@ -441,12 +437,12 @@ class CausalSelfAttention(nn.Module):
             block_table=block_table,
             rotary_cos=cos,
             rotary_sin=sin,
-            backend=backend,
+            backend=self.config.attention_backend,
             use_intra_head_parallelism=self.config.use_intra_head_parallelism,
             prestore_kv_cache=self.config.prestore_kv_cache
         )
         
-        if not self.config.explicitly_use_flash_kernel:
+        if not self.config.attention_backend == AttentionBackend.FLASH:
             y = y.transpose(1, 2).contiguous()
 
         y = y.reshape(
@@ -455,49 +451,6 @@ class CausalSelfAttention(nn.Module):
 
         # output projection
         return self.proj(y)
-
-    def scaled_dot_product_attention(
-        self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        mask: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        scale = 1.0 / math.sqrt(
-            self.config.attention_scores_scalar or self.config.head_size
-        )
-
-        # with softcapping we cannot use SDPA
-        if self.config.attention_logit_softcapping is not None:
-            scale = 1.0 / math.sqrt(
-                self.config.attention_scores_scalar or self.config.head_size
-            )
-            scores = q @ k.mT * scale
-            scores = (
-                torch.tanh(scores / self.config.attention_logit_softcapping)
-                * self.config.attention_logit_softcapping
-            )
-            if mask is None:
-                mask = torch.ones(
-                    q.size(2), q.size(2), dtype=q.dtype, device=q.device
-                ).triu(diagonal=1)
-                mask.masked_fill_(mask.bool(), torch.finfo(q.dtype).min)
-            scores = scores + mask
-            scores = torch.nn.functional.softmax(scores, dim=-1, dtype=torch.float).to(
-                dtype=q.dtype
-            )
-            y = scores @ v
-        else:
-            y = torch.nn.functional.scaled_dot_product_attention(
-                q,
-                k,
-                v,
-                attn_mask=mask,
-                dropout_p=0.0,
-                scale=scale,
-                is_causal=mask is None,
-            )
-        return y.transpose(1, 2)
 
     def build_kv_cache(
         self,
@@ -509,7 +462,7 @@ class CausalSelfAttention(nn.Module):
     ) -> "KVCache":
 
         heads = self.config.n_query_groups
-        if self.config.explicitly_use_flash_kernel:
+        if self.config.attention_backend == AttentionBackend.FLASH:
             if self.config.use_paged_kv_caching:
                 v_shape = (NUM_BLOCKS, PAGE_BLOCK_SIZE, heads, self.config.head_size)
             else:      
@@ -525,7 +478,7 @@ class CausalSelfAttention(nn.Module):
                 )
             k_shape = v_shape
         else:
-            if self.config.explicitly_use_flash_kernel:
+            if self.config.attention_backend == AttentionBackend.FLASH:
                 if self.config.use_paged_kv_caching:
                     k_shape = (
                         NUM_BLOCKS,
@@ -654,7 +607,7 @@ def build_rope_cache(
     base: int = 10000,
     condense_ratio: int = 1,
     extra_config: Optional[dict] = None,
-    explicitly_use_flash_kernel: bool = False,
+    is_attention_backend_flash: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Enhanced Transformer with Rotary Position Embedding.
@@ -666,7 +619,7 @@ def build_rope_cache(
         base (int, optional): Base for computing inverse frequencies.
         condense_ratio (int, optional): Ratio to condense the position indices.
         extra_config (dict, optional): Configuration parameters for frequency adjustments (used by Llama 3.1 and 3.2)
-        explicitly_use_flash_kernel (bool, optional): Use the flash attention kernel for rope, kv-cache update and attention compute
+        is_attention_backend_flash (bool, optional): If we are using the flash attention backend
     Returns:
         Tuple[torch.Tensor, torch.Tensor]: Cosine and sine caches for RoPE.
     """
@@ -697,7 +650,7 @@ def build_rope_cache(
         seq_idx, theta
     )  # .repeat(1, 2) repeat is not needed for flash attention
 
-    if not explicitly_use_flash_kernel:
+    if not is_attention_backend_flash:
         idx_theta = idx_theta.repeat(1, 2)
 
     return torch.cos(idx_theta), torch.sin(idx_theta)

@@ -42,7 +42,7 @@ if __name__ == "__main__":
     #user_prompts = user_prompts[:num_prompts]
     # user_prompts has 16 prompts 
     # mul by 8 to make batch size 128 
-    user_prompts = user_prompts[:16]
+    user_prompts = user_prompts[:8]
     print(f"Number of prompts = {len(user_prompts)}")
 
 
@@ -75,9 +75,9 @@ if __name__ == "__main__":
                                        top_p=0.80,
                                        temperature=1.0, 
                                        tp_dims=None,
-                                       explicitly_use_flash_kernel=True,
-                                       use_paged_kv_caching=False,
-                                       prestore_kv_cache=True)
+                                       attention_backend="flash",
+                                       use_paged_kv_caching=True,
+                                       prestore_kv_cache=False)
 
     engine = LLMEngine(model_config=model_config, inference_config=inference_config)
 
@@ -108,8 +108,8 @@ if __name__ == "__main__":
         print_rank0(f"prompt = {prompt}")
         print_rank0(f"output = {output}")
         print_rank0("==========================\n\n")
+        break 
              
-
     if enable_profiling:
         print_rank0(
             prof.key_averages().table(sort_by="self_cuda_time_total", row_limit=10)

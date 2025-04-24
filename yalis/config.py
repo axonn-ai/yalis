@@ -2,6 +2,7 @@ from typing import Optional, Literal, Tuple
 import os
 from packaging.version import Version
 from importlib.metadata import version, PackageNotFoundError
+from yalis.attention.backends import AttentionBackend
 
 class ModelConfig:
     """
@@ -91,8 +92,8 @@ class InferenceConfig:
         temperature: Optional[float] = 1.0,
         metrics: bool = False,
         tp_dims: Optional[Tuple[int, int, int]] = None,
+        attention_backend: str = "flash",
         use_intra_head_parallelism: bool = False,
-        explicitly_use_flash_kernel: bool = False,
         use_paged_kv_caching: bool = False,
         prestore_kv_cache: bool = True,
     ):
@@ -107,9 +108,10 @@ class InferenceConfig:
             temperature (Optional[float]): Sampling temperature.
             top_k (Optional[int]): Top-k sampling limit.
             top_p (Optional[float]): Nucleus sampling probability.
+            tp_dims (Optional[Tuple[int, int, int]]): Tensor parallelism dimensions. If None, all GPUs are used in the first dimension
             metrics (bool): Enable real-time metrics collection.
+            attention_backend (str): Attention backend to use. Options are 'flash', 'flex', or 'sdpa'.
             use_intra_head_parallelism (bool): Use intra-head parallelism for attention. 
-            explicitly_use_flash_kernel (bool): Use the flash attention kernel directly instead of via torch.sdpa.
             use_paged_kv_caching (bool): Use paged k/v caching for attention. 
             prestore_kv_cache (bool): Pre-store k/v in cache before calling attention.
         """ 
@@ -125,10 +127,13 @@ class InferenceConfig:
         self.metrics = metrics
         self.tp_dims = tp_dims
         self.use_intra_head_parallelism = use_intra_head_parallelism
-        self.explicitly_use_flash_kernel = explicitly_use_flash_kernel
         self.use_paged_kv_caching = use_paged_kv_caching
         self.prestore_kv_cache = prestore_kv_cache
-        
+        if attention_backend not in ["flash", "sdpa", "flex"]:
+            raise ValueError(
+                f"Invalid attention backend: {attention_backend}. Supported values are 'flash', 'sdpa', 'flex'."
+            )
+        self.attention_backend = AttentionBackend(attention_backend)
         try:
             pkg_ver = version("torch")
         except PackageNotFoundError:
@@ -161,8 +166,8 @@ class InferenceConfig:
         if self.tp_dims is not None and (type(self.tp_dims) != tuple or len(self.tp_dims) != 3):
             raise ValueError("tp_dims must be a 3-dimensional tuple.")
 
-        if self.use_paged_kv_caching and not self.explicitly_use_flash_kernel:
-            raise ValueError("use_paged_kv_caching requires explicitly_use_flash_kernel=True")
+        if self.use_paged_kv_caching and not self.attention_backend == AttentionBackend.FLASH:
+            raise ValueError("use_paged_kv_caching requires attention_backend=flash")
 
         if self.use_paged_kv_caching and self.prestore_kv_cache:
             raise ValueError("use_paged_kv_caching and prestore_kv_cache cannot be used together.")    
@@ -179,7 +184,7 @@ class InferenceConfig:
             f"  metrics={self.metrics},\n"
             f"  tp_dims={self.tp_dims},\n"
             f"  use_intra_head_parallelism={self.use_intra_head_parallelism},\n"
-            f"  explicitly_use_flash_kernel={self.explicitly_use_flash_kernel},\n"
+            f"  attention_backend={self.attention_backend.value},\n"
             f"  use_paged_kv_caching={self.use_paged_kv_caching},\n"
             f"  prestore_kv_cache={self.prestore_kv_cache}\n"
             f")"

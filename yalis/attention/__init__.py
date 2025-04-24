@@ -2,7 +2,7 @@ import torch
 from typing import Optional 
 
 from .registry import get_attention
-from . import backends 
+from .backends import AttentionBackend
 
 def attention(q: torch.Tensor, 
               k: torch.Tensor, 
@@ -15,8 +15,8 @@ def attention(q: torch.Tensor,
               rotary_sin: Optional[torch.Tensor] = None,
               use_intra_head_parallelism: bool = False,
               prestore_kv_cache: bool = True,
-              backend="sdpa") -> torch.Tensor:
-    fn = get_attention(backend)
+              backend: AttentionBackend = AttentionBackend.FLASH) -> torch.Tensor:
+    fn = get_attention(backend.value)
     return fn(q=q, 
               k=k, 
               v=v, 

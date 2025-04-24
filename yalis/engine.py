@@ -162,7 +162,7 @@ class LLMEngine:
             max_sequence_length=self.inference_config.max_length,
             random_init=False,
             use_intra_head_parallelism=self.inference_config.use_intra_head_parallelism,
-            explicitly_use_flash_kernel=self.inference_config.explicitly_use_flash_kernel,
+            attention_backend=self.inference_config.attention_backend,
             use_paged_kv_caching=self.inference_config.use_paged_kv_caching,
             prestore_kv_cache=self.inference_config.prestore_kv_cache,
         )

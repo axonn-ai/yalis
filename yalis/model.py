@@ -6,6 +6,7 @@ from yalis.external.litgpt_utils import load_checkpoint, _EmptyInit
 from yalis.external.model import GPT
 import torch.distributed as dist
 import time
+from yalis.attention.backends import AttentionBackend
 
 
 def get_model(
@@ -15,7 +16,7 @@ def get_model(
     random_init=False,
     device="cuda",
     use_intra_head_parallelism=False,
-    explicitly_use_flash_kernel=False,
+    attention_backend=AttentionBackend.FLASH,
     use_paged_kv_caching=False,
     prestore_kv_cache=True
 ):
@@ -31,7 +32,7 @@ def get_model(
         config.block_size = max_sequence_length
     config.tensor_parallel = tensor_parallel
     config.use_intra_head_parallelism = use_intra_head_parallelism
-    config.explicitly_use_flash_kernel = explicitly_use_flash_kernel
+    config.attention_backend = attention_backend
     config.use_paged_kv_caching = use_paged_kv_caching
     config.prestore_kv_cache = prestore_kv_cache
 

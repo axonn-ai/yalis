@@ -2,3 +2,9 @@
 from . import sdpa
 from . import flash
 
+from enum import Enum
+
+class AttentionBackend(str, Enum):
+    SDPA = "sdpa"
+    FLASH = "flash"
+    FLEX = "flex"
