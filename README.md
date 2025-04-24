@@ -1,49 +1,93 @@
-# yalis
-YALIS stands for Yet Another LLM Inference System. It is what it is. 
-On Perlmutter, please clone this repo in `${SCRATCH}`
+# YALIS
 
-## Installing Dependencies
-Go to `scripts` and run:
+**YALIS** stands for **Yet Another LLM Inference System**.  
+It is what it is.
+
+YALIS is a modular, high-performance, research-friendly inference system built to plug into LLM training and deployment pipelines. It supports attention backend switching, paged KV caching, intra-head parallelism, and more — with clean APIs and fast execution.
+
+---
+
+## 🚀 Features
+
+- 🔁 **Pluggable attention backends** (`flash`, `sdpa`, `flex`) via a unified API
+- 🧠 **Paged KV caching** support for efficient generation
+- ⚙️ **Intra-head parallelism** and tensor parallelism
+- 📦 Clean Python/C++ extension integration
+- 🔍 TorchDynamo/`torch.compile` friendly design
+
+---
+
+## 🛠️ Installing Dependencies
+
+
+Before installing YALIS, ensure you have **PyTorch (>=2.6)** installed.  
+Please refer to [https://pytorch.org/get-started/locally/](https://pytorch.org/get-started/locally/) for installation instructions tailored to your environment.
+
+Once PyTorch is installed, run the following commands in your Python environment to install other dependencies:
+
 ```bash
-bash create_python_env_perlmutter.sh
+pip install litgpt --no-deps
+pip install lightning
+pip install transformers
+pip install datasets
+pip install flash-attn --no-build-isolation
+pip install axonn
 ```
-This should create a python environment for you with all dependencies. 
 
-## Building Yalis
-The following build the paged kv caching C++ extension in yalis.
+## 🛠️ Building YALIS
+
+To build YALIS (including its C++ extensions) in editable mode, run the following command in your terminal:
+
 ```bash
-CC=cc CXX=CC pip install -e .
+pip install -e .
 ```
 
-## Important Environment Variables for YALIS
-Before running anything with yalis, please ensure that the following environment variables are set.
+On some systems, however, you might need to set the compilers explicitly via the CC and CXX environment variables. For example, on Cray systems like Perlmutter and Frontier, the default compilers may not be gcc; in those cases, run:
+
+```bash
+CC=cc CXX=CXX pip install -e .
+```
+
+## 📁 Important Environment Variables for YALIS
+
+Before running anything with YALIS, please ensure the following environment variables are set.
+
+> **Note:**  
+> Your `SCRATCH` directory should point to a filesystem with **plenty of space** and **fast I/O**, as model checkpoints can be extremely large.  
+> For example, **LLaMA 3 70B requires ~140GB** just for weights. If you're working on an HPC cluster, make sure you're using a burst buffer or high-throughput scratch space — **not your home directory**.
 
 ```bash
 export HF_HOME="${SCRATCH}/.cache/huggingface"
 export HF_TRANSFORMERS_CACHE="${HF_HOME}"
 export HF_DATASETS_CACHE="${HF_HOME}/datasets"
 export YALIS_CACHE="${SCRATCH}/yalis/yalis/external"
-
 ```
 
-All env variables prefixed by HF are used by huggingface to store it's model checkpoints. `YALIS_CACHE` is where 
-YALIS stores it's checkpoints. If you do not set `YALIS_CACHE`, models will be downloaded to your home directory.
-This can be undesirable if you have limited storage in your home directory, which is often the case on HPC clusters.
 
-## Downloading Model Checkpoints
-First, ensure the environment variables discussed in the previous section are set appropriately. 
-Then, go to `yalis/external`. Run the following to get a list of supported models:
+## 💾 Downloading Model Checkpoints
 
+First, ensure the environment variables discussed in the [previous section](#important-environment-variables-for-yalis) are set appropriately — especially `HF_HOME` and `YALIS_CACHE`.
+
+Then, navigate to the `yalis/external/` directory:
+
+```bash
+cd yalis/external
+```
+
+To see a list of supported model
 ```bash
 python download.py list
 ```
 
-Now say you want to download Meta Llama-3 8B Instruct. Run:
-
+### 📥 Downloading a Specific Model
+For example, to download Meta Llama-3 8B Instruct:
 ```bash
-export HF_TOKEN=".." # for models that require authorization. See huggingface docs for more info.
+export HF_TOKEN="..."  # Required for gated models (e.g. Meta models). See Hugging Face docs.
 python download.py meta-llama/Meta-Llama-3-8B-Instruct
 ```
+
+> 🔑 **Note:** Some models like LLaMA require a Hugging Face token. You can generate one at https://huggingface.co/settings/tokens
+
 
 ## Running 
 Let's say we want to run Llama-3 8B Instruct on a single node of Perlmutter. First request an interactive session - 
