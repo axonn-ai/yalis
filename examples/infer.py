@@ -38,11 +38,7 @@ if __name__ == "__main__":
         "What is the easiest way to learn a new language?",
     ]
 
-    # take num_prompts prompts from this dataset
-    #num_prompts = 8
-    #user_prompts = user_prompts[:num_prompts]
-    # user_prompts has 16 prompts 
-    # mul by 8 to make batch size 128 
+    # take 16 prompts from this dataset
     user_prompts = user_prompts[:16]
     print(f"Number of prompts = {len(user_prompts)}")
 
@@ -77,8 +73,8 @@ if __name__ == "__main__":
                                        temperature=1.0, 
                                        tp_dims=None,
                                        attention_backend="flash",
-                                       use_paged_kv_caching=False,
-                                       prestore_kv_cache=True)
+                                       use_paged_kv_caching=False)
+
 
     engine = LLMEngine(model_config=model_config, inference_config=inference_config)
 
@@ -90,25 +86,14 @@ if __name__ == "__main__":
     else:
         profiler_context = nullcontext()
 
-    batch_sizes = [len(input_prompts)]
-
     with profiler_context as prof:
-        for batch_size in batch_sizes:
-            print_rank0(f"Running BatchSize - {batch_size}")
-
-            prompts = input_prompts[:batch_size]
-            engine.reset_kv_cache(batch_size)
-
+        for iter in range(10):
+            output_tokens, metrics = engine.generate(
+                input_prompts, report_throughput=True, tokens_to_generate=tokens_to_gen
+            )
+            if enable_profiling:
+                prof.step()
             dist.barrier()
-            torch.cuda.synchronize()
-
-            for iter in range(10):
-                output_tokens = engine.generate(
-                    prompts, report_throughput=True, tokens_to_generate=tokens_to_gen
-                )
-                if enable_profiling:
-                    prof.step()
-                dist.barrier()
 
     output_tokens = output_tokens.cpu()
 
@@ -126,3 +111,4 @@ if __name__ == "__main__":
         print_rank0(
             prof.key_averages().table(sort_by="self_cuda_time_total", row_limit=10)
         )
+        

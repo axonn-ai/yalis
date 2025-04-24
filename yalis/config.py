@@ -168,9 +168,6 @@ class InferenceConfig:
         if self.use_paged_kv_caching and not self.attention_backend == AttentionBackend.FLASH:
             raise ValueError("use_paged_kv_caching requires attention_backend=flash")
 
-        if self.use_paged_kv_caching and self.prestore_kv_cache:
-            raise ValueError("use_paged_kv_caching and prestore_kv_cache cannot be used together.")   
-
         if self.use_intra_head_parallelism and not self.attention_backend == AttentionBackend.SDPA:
             raise ValueError("use_intra_head_parallelism requires attention_backend=sdpa") 
     

@@ -27,7 +27,7 @@ from axonn.intra_layer.communication import Drop, Gather
 from kvcache_manager import KVCacheManager
 from flash_attn.ops.triton.rotary import apply_rotary
 from yalis.attention.backends import AttentionBackend
-from yalis.attention.utils import create_causal_block_mask_for_flex_attention
+from yalis.attention.masking import create_causal_block_mask_for_flex_attention
 
 from yalis import print_rank0
 
@@ -257,7 +257,7 @@ class GPT(nn.Module):
             )
         if self.config.use_paged_kv_caching:
             self.kv_cache_manager = KVCacheManager(batch_size, 
-                                                16384//PAGE_BLOCK_SIZE, 
+                                                16384//PAGE_BLOCK_SIZE, # ToDo: set these dynamically 
                                                 NUM_BLOCKS, 
                                                 PAGE_BLOCK_SIZE)
 
