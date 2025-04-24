@@ -159,8 +159,8 @@ class InferenceConfig:
         if self.top_k is not None and self.top_k <= 0:
             raise ValueError("top_k must be a positive integer.")
 
-        if self.top_p is not None and (self.top_p <= 0.0 or self.top_p > 1.0):
-            raise ValueError("top_p must be in the range (0.0, 1.0].")
+        if self.top_p is not None and (self.top_p < 0.0 or self.top_p > 1.0):
+            raise ValueError("top_p must be in the range [0.0, 1.0].")
 
         if self.tp_dims is not None and (type(self.tp_dims) != tuple or len(self.tp_dims) != 3):
             raise ValueError("tp_dims must be a 3-dimensional tuple.")
