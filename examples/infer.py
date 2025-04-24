@@ -72,7 +72,7 @@ if __name__ == "__main__":
                                        top_p=0.80,
                                        temperature=1.0, 
                                        tp_dims=None,
-                                       attention_backend="sdpa",
+                                       attention_backend="flash",
                                        use_paged_kv_caching=False)
 
 
@@ -111,3 +111,4 @@ if __name__ == "__main__":
         print_rank0(
             prof.key_averages().table(sort_by="self_cuda_time_total", row_limit=10)
         )
+        
