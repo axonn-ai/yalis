@@ -144,8 +144,8 @@ class GPT(nn.Module):
         block_table=self.kv_cache_manager.block_table() if self.config.use_paged_kv_caching else None
 
         flex_attention_block_mask = (
-            create_causal_block_mask_for_flex_attention(self.token_counter, self.kv_length, self.batch_size)
-            if self.config.attention_backend == AttentionBackend.FLEX else None
+            create_causal_block_mask_for_flex_attention(T, self.token_counter, self.kv_length, self.batch_size)
+            if (self.config.attention_backend == AttentionBackend.FLEX or self.config.attention_backend == AttentionBackend.SDPA_AND_FLEX) else None
         )
 
         for block in self.transformer.h:
@@ -421,6 +421,7 @@ class CausalSelfAttention(nn.Module):
 
         k_cache, v_cache = self.kv_cache.k, self.kv_cache.v
         
+        # TODO: Maybe rotary should be a part of the attention backend itself
         if self.config.attention_backend == AttentionBackend.FLASH:
             q = q.contiguous()
             k = k.contiguous()
