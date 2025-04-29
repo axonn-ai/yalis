@@ -29,6 +29,7 @@ def fit_powerlaw_linreg_torch(x: torch.Tensor, y: torch.Tensor):
         b (torch.Tensor): Parameter 'b' of the power-law (the slope).
         r2 (torch.Tensor): R² score of the regression fit.
     """
+    x_dtype = x.dtype
     x = x.to(torch.float32)  # Ensure x is float32
     y = y.to(torch.float32)  # Ensure y is float32
     epsilon = 1e-8
@@ -79,4 +80,4 @@ def fit_powerlaw_linreg_torch(x: torch.Tensor, y: torch.Tensor):
     a = torch.exp(intercept)  # Shape: [B, H]
     b = slope                 # Shape: [B, H]
 
-    return a.to(torch.float16), b.to(torch.float16), r2.to(torch.float16)
+    return a.to(x_dtype), b.to(x_dtype), r2.to(x_dtype)

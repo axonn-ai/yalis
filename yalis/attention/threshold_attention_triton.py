@@ -6,41 +6,43 @@ import math
 import random
 from torch.library import triton_op, wrap_triton
 
-# DEVICE = triton.runtime.driver.active.get_active_torch_device()
-
-# def is_hip():
-#    return triton.runtime.driver.active.get_current_target().backend == "hip"
+#DEVICE = triton.runtime.driver.active.get_active_torch_device()
 #
-# configs = [
-#    triton.Config({'BLOCK_N': BN}, num_stages=s, num_warps=w) \
-#    #for BN in [16, 32, 64, 128, 256, 512]\
-#    #for BN in [16, 32, 64, 128, 256, 512]\
-#    #for BN in [16, 32, 64, 128, 256, 512]\
-#    for BN in [64]
-#    for s in ([1] if is_hip() else [3, 4, 7])\
-#    for w in [4]\
-# ]
+#def is_hip():
+#   return triton.runtime.driver.active.get_current_target().backend == "hip"
 #
-# def keep(conf):
+#configs = [
+#   triton.Config({'BLOCK_N': BN, 'BLOCK_M': BM}, num_stages=s, num_warps=w) \
+#   #for BN in [16, 32, 64, 128, 256, 512]\
+#   #for BN in [16, 32, 64, 128, 256, 512]\
+#   #for BN in [16, 32, 64, 128, 256, 512]\
+#   for BN in [64]
+#   for BM in [16]
+#   for s in ([1] if is_hip() else [3, 4, 7])\
+#   for w in [4]\
+#]
+#
+#def keep(conf):
 #    BLOCK_N = conf.kwargs["BLOCK_N"]
+#    BLOCK_M = conf.kwargs["BLOCK_M"]
 #    return True
 #
 #
-# def is_hip():
-#    return triton.runtime.driver.active.get_current_target().backend == "hip"
+#def is_hip():
+#   return triton.runtime.driver.active.get_current_target().backend == "hip"
 #
-# def get_next_power_of_2(x):
-#  # If x is already a power of 2, return it
-#  if (x & (x - 1)) == 0:
-#    return x
-#  else:
-#    return 1 << (x - 1).bit_length()
+#def get_next_power_of_2(x):
+# # If x is already a power of 2, return it
+# if (x & (x - 1)) == 0:
+#   return x
+# else:
+#   return 1 << (x - 1).bit_length()
 #
 #
 #
-# @triton.autotune(list(filter(keep, configs)), key=["T", "HEAD_DIM"])
-# @triton.jit
-# def decode_attn_fwd(
+#@triton.autotune(list(filter(keep, configs)), key=["T", "HEAD_DIM"])
+#@triton.jit
+#def decode_attn_fwd(
 #    # data pointers
 #    Q,            # [B, H, 1, D]
 #    K_cache,      # [B, H, T, D]
@@ -63,22 +65,33 @@ from torch.library import triton_op, wrap_triton
 #    B, H,
 #    T: tl.constexpr,
 #    HEAD_DIM: tl.constexpr,
+#    BLOCK_M: tl.constexpr,
 #    BLOCK_N: tl.constexpr
-# ):
+#):
 #    batch_id = tl.program_id(0)
 #    head_id = tl.program_id(1)
 #
 #    q_base = Q + batch_id*stride_qb + head_id*stride_qh
-#    o_base = Out + batch_id*stride_ob + head_id*stride_oh
 #    k_base = K_cache + batch_id*stride_kb + head_id*stride_kh
 #    v_base = V_cache + batch_id*stride_vb + head_id*stride_vh
+#    o_base = Out + batch_id*stride_ob + head_id*stride_oh
 #    scores_base = scores + batch_id*stride_sb + head_id*stride_sh
 #    valid_indices_base = valid_indices + batch_id*stride_vib + head_id*stride_vih
 #    thresh_base = thresholds + batch_id*stride_tb + head_id*stride_th
 #
+#    q_ptr = ( 
+#        q_base
+#        + tl.zeros((BLOCK_M,), tl.int32)[:, None] * stride_qm 
+#        + tl.arange(0, HEAD_DIM)[None, :] * stride_qk 
+#    )
+#
+#    o_ptr = (
+#        o_base
+#        + tl.zeros((BLOCK_M,), tl.int32)[:, None] * stride_om
+#        + tl.arange(0, HEAD_DIM)[None, :] * stride_ok
+#    )
+#
 #    # pointers for Q and outputs: one vector of length HEAD_DIM
-#    q_ptr = tl.make_block_ptr(base=q_base, shape=(1, HEAD_DIM), strides=(stride_qm, stride_qk), offsets=(0, 0), block_shape=(1, HEAD_DIM), order=(1,0))
-#    o_ptr = tl.make_block_ptr(base=o_base, shape=(1, HEAD_DIM), strides=(stride_om, stride_ok), offsets=(0, 0), block_shape=(1, HEAD_DIM), order=(1,0))
 #    k_ptr = tl.make_block_ptr(base=k_base, shape=(T, HEAD_DIM), strides=(stride_kn, stride_kk), offsets=(0, 0), block_shape=(HEAD_DIM, BLOCK_N), order=(0,1))
 #    attn_bias_ptr = tl.make_block_ptr(base=attn_bias, shape=(1, T), strides=(stride_sm, stride_sn), offsets=(0, 0), block_shape=(1, BLOCK_N), order=(1,0))
 #    scores_ptr = tl.make_block_ptr(base=scores_base, shape=(1, T), strides=(stride_sm, stride_sn), offsets=(0,0), block_shape=(1, BLOCK_N), order=(1,0))
@@ -92,7 +105,7 @@ from torch.library import triton_op, wrap_triton
 #    threshold = tl.load(thresh_base)
 #
 #    # load the single query vector
-#    q = tl.load(q_ptr)  # shape [1, HEAD_DIM]
+#    q = tl.load(q_ptr)  # shape [BLOCK_M, HEAD_DIM]
 #    scale = sm_scale
 #
 #    lo, hi = 0, T
@@ -171,12 +184,12 @@ from torch.library import triton_op, wrap_triton
 #            acc = tl.dot(probs_l, v, acc)
 #
 #    tl.store(o_ptr, acc.to(tl.float16))  # [1, HEAD_DIM]
-#    #tl.store(o_ptr, acc)  # [1, HEAD_DIM]
+#   #tl.store(o_ptr, acc)  # [1, HEAD_DIM]
 #
 #
 #
-# @triton_op("thresh_attn::thresh_attn_fused", mutates_args={})
-# def thresh_attn_fused(
+#@triton_op("thresh_attn::thresh_attn_fused", mutates_args={})
+#def thresh_attn_fused(
 #    query: torch.Tensor,
 #    key: torch.Tensor,
 #    value: torch.Tensor,
@@ -282,19 +295,11 @@ def thresh_attn_reference(
     attn_weight = torch.softmax(attn_weight, dim=-1)
 
     thresh_mask = attn_weight >= threshold
-    # thresh_mask[..., -1] = False
 
     attn_weight = attn_weight.masked_fill_(thresh_mask.logical_not(), 0.0)
 
-    #print (f"Thresh Mask : {thresh_mask}")
-
-    #thresh_mask = thresh_mask.masked_fill_(attn_mask.logical_not(), torch.nan)
-    #print (f"Thresh mask: {thresh_mask}")
-    #count_nonzero = thresh_mask.nansum(dim=-1)
-
     count_nonzero = thresh_mask.count_nonzero(dim=-1)
 
-    # attn_weight = torch.dropout(attn_weight, dropout_p, train=True)
     return attn_weight @ value, count_nonzero 
 
 
@@ -328,91 +333,91 @@ def get_threshold(query, key, value, percentile=0.5, attn_mask=None):
     return threshold
 
 
-def test():
-    B, H, T, D = 16, 32, 8192, 128
-    query = torch.randn((B, H, 1, D), device=DEVICE).half()
-    key = torch.randn((B, H, T, D), device=DEVICE).half()
-    value = torch.randn((B, H, T, D), device=DEVICE).half()
-
-    attn_mask = (
-        torch.arange(0, T, device=DEVICE).unsqueeze(0).unsqueeze(0) < 1051
-    )
-    # print (f"Value: {value} \n\n")
-    threshold = (
-        get_threshold(query, key, value, attn_mask=attn_mask)
-        .to(device=DEVICE, dtype=torch.float16)
-        .reshape((B, H))
-    )
-    # print (f"Threshold: {threshold} \n\n")
-
-    # Run the reference implementation
-    ref_out = thresh_attn_reference(
-        query, key, value, threshold, attn_mask=attn_mask
-    )
-    print(ref_out.shape, ref_out.dtype)
-
-    # Run the Triton implementation
-    triton_out = thresh_attn_fused(
-        query, key, value, threshold, attn_mask=attn_mask
-    )
-    print(triton_out.shape, triton_out.dtype)
-
-    # Compare the outputs
-    rtol = 0.0
-    if (
-        torch.version.hip is not None
-        and triton.runtime.driver.active.get_current_target().arch == "gfx90a"
-    ):
-        rtol = 1e-2
-    assert torch.allclose(
-        ref_out, triton_out, atol=1e-2, rtol=rtol
-    ), f"Outputs do not match! {ref_out} vs {triton_out}"
-
-
-@torch.compile()
-def sdpa_attn(
-    query, key, value, attn_mask=None, enable_gqa=False
-) -> torch.Tensor:
-    return torch.nn.functional.scaled_dot_product_attention(
-        query=query,
-        key=key,
-        value=value,
-        attn_mask=attn_mask,
-        enable_gqa=enable_gqa,
-    )
-
-
-# Triton benchmarking to compare performance
-BATCH, N_HEADS, HEAD_DIM = 32, 32, 128
-
-# vary seq length for fixed head and batch=4
-config = triton.testing.Benchmark(
-    x_names=["N_CTX"],
-    x_vals=[512, 1024, 2048, 4096, 8192],
-    line_arg="mode",
-    line_vals=[0, 0.5, 0.75, 0.875, -1],
-    line_names=[
-        "Triton (Percentile: 0)",
-        "Triton (Percentile: 0.5)",
-        "Triton (Percentile: 0.75)",
-        "Triton (Percentile: 0.875)",
-        "Torch",
-    ],
-    styles=[
-        ("red", "-"),
-        ("blue", "-"),
-        ("green", "-"),
-        ("orange", "-"),
-        ("black", "--"),
-    ],
-    ylabel="Time (ms)",
-    plot_name=f"fused-attention-batch{BATCH}-head{N_HEADS}-d{HEAD_DIM}",
-    args={
-        "H": N_HEADS,
-        "BATCH": BATCH,
-        "HEAD_DIM": HEAD_DIM,
-    },
-)
+#def test():
+#    B, H, T, D = 16, 32, 8192, 128
+#    query = torch.randn((B, H, 1, D), device=DEVICE).half()
+#    key = torch.randn((B, H, T, D), device=DEVICE).half()
+#    value = torch.randn((B, H, T, D), device=DEVICE).half()
+#
+#    attn_mask = (
+#        torch.arange(0, T, device=DEVICE).unsqueeze(0).unsqueeze(0) < 1051
+#    )
+#    # print (f"Value: {value} \n\n")
+#    threshold = (
+#        get_threshold(query, key, value, attn_mask=attn_mask)
+#        .to(device=DEVICE, dtype=torch.float16)
+#        .reshape((B, H))
+#    )
+#    # print (f"Threshold: {threshold} \n\n")
+#
+#    # Run the reference implementation
+#    ref_out = thresh_attn_reference(
+#        query, key, value, threshold, attn_mask=attn_mask
+#    )
+#    print(ref_out.shape, ref_out.dtype)
+#
+#    # Run the Triton implementation
+#    triton_out = thresh_attn_fused(
+#        query, key, value, threshold, attn_mask=attn_mask
+#    )
+#    print(triton_out.shape, triton_out.dtype)
+#
+#    # Compare the outputs
+#    rtol = 0.0
+#    if (
+#        torch.version.hip is not None
+#        and triton.runtime.driver.active.get_current_target().arch == "gfx90a"
+#    ):
+#        rtol = 1e-2
+#    assert torch.allclose(
+#        ref_out, triton_out, atol=1e-2, rtol=rtol
+#    ), f"Outputs do not match! {ref_out} vs {triton_out}"
+#
+#
+#@torch.compile()
+#def sdpa_attn(
+#    query, key, value, attn_mask=None, enable_gqa=False
+#) -> torch.Tensor:
+#    return torch.nn.functional.scaled_dot_product_attention(
+#        query=query,
+#        key=key,
+#        value=value,
+#        attn_mask=attn_mask,
+#        enable_gqa=enable_gqa,
+#    )
+#
+#
+## Triton benchmarking to compare performance
+#BATCH, N_HEADS, HEAD_DIM = 32, 32, 128
+#
+## vary seq length for fixed head and batch=4
+#config = triton.testing.Benchmark(
+#    x_names=["N_CTX"],
+#    x_vals=[512, 1024, 2048, 4096, 8192],
+#    line_arg="mode",
+#    line_vals=[0, 0.5, 0.75, 0.875, -1],
+#    line_names=[
+#        "Triton (Percentile: 0)",
+#        "Triton (Percentile: 0.5)",
+#        "Triton (Percentile: 0.75)",
+#        "Triton (Percentile: 0.875)",
+#        "Torch",
+#    ],
+#    styles=[
+#        ("red", "-"),
+#        ("blue", "-"),
+#        ("green", "-"),
+#        ("orange", "-"),
+#        ("black", "--"),
+#    ],
+#    ylabel="Time (ms)",
+#    plot_name=f"fused-attention-batch{BATCH}-head{N_HEADS}-d{HEAD_DIM}",
+#    args={
+#        "H": N_HEADS,
+#        "BATCH": BATCH,
+#        "HEAD_DIM": HEAD_DIM,
+#    },
+#)
 
 
 # @triton.testing.perf_report(config)
