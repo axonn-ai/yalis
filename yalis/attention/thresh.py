@@ -6,14 +6,14 @@ import torch.distributed as dist
 from typing import Optional
 from yalis.attention.threshold_attention import thresh_attention_forward, thresh_attention_warmup_forward
 
-def build_mask_from_index(self, index, t_max):
+def build_mask_from_index(index, t_max):
     B = index.size(0)
     # Create a range [0, 1, 2, ..., t_max-1] and reshape to [1, t_max] so it can broadcast.
     arange_t = torch.arange(t_max, device=index.device).unsqueeze(0)
     # Compare to index[:, None]: [B, 1] which will broadcast to [B, t_max]
     return arange_t <= index.unsqueeze(1)
 
-def index_into_rope_cache_gen(self, cache, index):
+def index_into_rope_cache_gen(cache, index):
     # index - [B, T]
     assert index.dim() == 1, "this method is only for the generation phase"
     return torch.index_select(cache, 0, index.view(-1)).reshape(
@@ -21,7 +21,6 @@ def index_into_rope_cache_gen(self, cache, index):
     )    
 
 def lit_rotary_kv_update_gen(
-    self,
     q: torch.Tensor,  # B,nh,1,hs
     k: torch.Tensor,  # B,nh,1,hs
     v: torch.Tensor,  # B,nh,1,hs
@@ -32,12 +31,14 @@ def lit_rotary_kv_update_gen(
     v_cache: torch.Tensor,  # B,nh,t_max,hs,
     threshold_percentile: float,
     generation_counter: torch.Tensor, # B,1
-    warmup_quantiles: torch.Tensor, # B,nh,64
-    retain_perc: torch.Tensor, # B,nh,64
+    warmup_quantiles: torch.Tensor, # B,nh, num_warmups
+    retain_perc: torch.Tensor, # B,nh, num_warmups
+    powerlaw_a: torch.Tensor, # B,nh, num_warmups
+    powerlaw_b: torch.Tensor, # B,nh, num_warmups
     warmup: bool = False,
 ) -> torch.Tensor:
-    cos = self.index_into_rope_cache_gen(cos, token_counter)
-    sin = self.index_into_rope_cache_gen(sin, token_counter)
+    cos = index_into_rope_cache_gen(cos, token_counter)
+    sin = index_into_rope_cache_gen(sin, token_counter)
 
     if cos.dim() > 1:
         # batch dimensions must align
@@ -63,12 +64,12 @@ def lit_rotary_kv_update_gen(
 
     k_cache[b_indices, :, t_indices, :] = k[:, :, 0, :]
     v_cache[b_indices, :, t_indices, :] = v[:, :, 0, :]
-    mask = self.build_mask_from_index(token_counter, t_max=k_cache.size(-2))
+    mask = build_mask_from_index(token_counter, t_max=k_cache.size(-2))
     #[:, None, None, :]
     
     enable_gqa = q.size(1) != k.size(1)
     if warmup:
-        out, quantiles = thresh_attention_warmup_forward(self, q, k_cache, v_cache, threshold_percentile, attn_mask=mask[:, None, None, :], enable_gqa=enable_gqa)
+        out, quantiles = thresh_attention_warmup_forward(q, k_cache, v_cache, threshold_percentile, attn_mask=mask[:, None, None, :], enable_gqa=enable_gqa)
         g_indices = generation_counter.view(-1)
         warmup_quantiles[b_indices, :, g_indices - 1] = quantiles[b_indices, :, 0]
         return out
@@ -76,13 +77,12 @@ def lit_rotary_kv_update_gen(
         #out = torch.nn.functional.scaled_dot_product_attention(
         #    q, k_cache, v_cache, attn_mask=mask[:, None, None, :], enable_gqa=enable_gqa
         #)
-        out, retain_ = thresh_attention_forward(self, q, k_cache, v_cache, generation_counter, token_counter, attn_mask=mask[:, None, None, :], enable_gqa=enable_gqa)
+        out, retain_ = thresh_attention_forward(q, k_cache, v_cache, generation_counter, token_counter, powerlaw_a, powerlaw_b, attn_mask=mask[:, None, None, :], enable_gqa=enable_gqa)
         retain_perc.add_(retain_)
         return out
 
 
 def lit_rotary_kv_update_prefill(
-    self,
     q: torch.Tensor,  # B,nh,T,hs
     k: torch.Tensor,  # B,nh,T,hs
     v: torch.Tensor,  # B,nh,T,hs
@@ -126,10 +126,13 @@ def threshold_attention(q: torch.Tensor,
               cache_seqlens: Optional[torch.Tensor] = None,  
               rotary_cos: Optional[torch.Tensor] = None,
               rotary_sin: Optional[torch.Tensor] = None,
-              threshold_percentile: float = 0.0,
               generation_counter: Optional[torch.Tensor] = None,
               warmup_quantiles: Optional[torch.Tensor] = None,
               warmup: bool = False,
+              threshold_percentile: float = 0.0,
+              retain_perc: Optional[torch.Tensor] = None,
+              powerlaw_a: Optional[torch.Tensor] = None,
+              powerlaw_b: Optional[torch.Tensor] = None,
               **kwargs) -> torch.Tensor:
     if "block_table" in kwargs and kwargs["block_table"] is not None:
         raise ValueError("'block_table' or paged kv-caching is not compatible with Threshold attention.")
@@ -137,32 +140,37 @@ def threshold_attention(q: torch.Tensor,
 
     if T == 1:
         # generative phase
-        y = self.lit_rotary_kv_update_gen_warmup(
+        y = lit_rotary_kv_update_gen(
             q,
             k,
             v,
-            cos,
-            sin,
-            token_counter,  # B,1
+            rotary_cos,
+            rotary_sin,
+            cache_seqlens,  # B,1
             k_cache,  # B,nh,t_max,hs
             v_cache,  # B,nh,t_max,hs
+            threshold_percentile,
             generation_counter,
             warmup_quantiles,
             retain_perc,
-            warmup=True,
+            powerlaw_a,
+            powerlaw_b,
+            warmup=warmup,
 
         )
     else:
         # prefill
-        y = self.lit_rotary_kv_update_prefill(
+        y = lit_rotary_kv_update_prefill(
             q,
             k,
             v,
-            cos,
-            sin,
+            rotary_cos,
+            rotary_sin,
             k_cache,  # B,nh,t_max,hs
             v_cache,  # B,nh,t_max,hs
         )
+    
+    return y
 
 
 @register_attention("thresh")

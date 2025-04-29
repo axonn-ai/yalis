@@ -59,7 +59,6 @@ def thresh_warmup(query, key, value, percentile, attn_mask=None, enable_gqa=Fals
 
 
 def thresh_attention_warmup_forward(
-    module: torch.nn.Module,
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
@@ -81,35 +80,25 @@ def thresh_attention_warmup_forward(
 # This function has been modified from HuggingFace's SPDA implementation: https://github.com/huggingface/transformers/blob/main/src/transformers/integrations/sdpa_attention.py
 #@torch.compiler.disable()
 def thresh_attention_forward(
-    module: torch.nn.Module,
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
     generation_counter: torch.Tensor,
     token_counter: torch.Tensor,
+    powerlaw_a: torch.Tensor,
+    powerlaw_b: torch.Tensor,
     attn_mask: Optional[torch.Tensor],
     enable_gqa: Optional[bool] = False,
     **kwargs,
 ) -> Tuple[torch.Tensor, None]:
-    #attn_output = thresh_attn(
-    #    query, key, value, attn_mask=attn_mask, enable_gqa=enable_gqa
-    #)
-    # Upcast
-    #query = query.to(dtype=torch.float32)
-    #key = key.to(dtype=torch.float32)
-    #value = value.to(dtype=torch.float32)
-
     #print ("[DEBUG] Executing generation stage")
     #print ("[DEBUG] Generation step: ", generation_counter.shape)
     #print ("[DEBUG] Power law a:", module.powerlaw_a.shape)
     #print ("[DEBUG] Power law b:", module.powerlaw_b.shape)
-    threshold = module.powerlaw_a * (generation_counter.unsqueeze(-1) ** module.powerlaw_b) + 1e-9
+    threshold = powerlaw_a * (generation_counter.unsqueeze(-1) ** powerlaw_b) + 1e-9
     #threshold = threshold.to(dtype=torch.float32)
     #print ("[DEBUG] Threshold: ", threshold)
 
-    #threshold = threshold.unsqueeze(-1).unsqueeze(-1)
-    #assert threshold.shape == (query.shape[0], query.shape[1], 1, 1)  
-    
     attn_output, count_nonzero = thresh_attn_reference(
         query,
         key,
@@ -134,16 +123,4 @@ def thresh_attention_forward(
 
     #rtol = 1e-2
     #assert torch.allclose(attn_output, attn_output_fused, atol=1e-2, rtol=rtol), f"Outputs do not match! {attn_output} vs {attn_output_fused}"
-
-    #attn_output = thresh_attn_fused(
-    #    query,
-    #    key,
-    #    value,
-    #    threshold,
-    #    attn_mask=attn_mask,
-    #    enable_gqa=enable_gqa,
-    #)
-    #attn_output = torch.nn.functional.scaled_dot_product_attention(
-    #    query, key, value, attn_mask=attn_mask, enable_gqa=enable_gqa
-    #)
     return attn_output, mean_retain_perc 

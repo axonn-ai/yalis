@@ -401,6 +401,8 @@ class CausalSelfAttention(nn.Module):
         self.warmup_quantiles = None
         self.threshold_percentile = config.threshold_percentile
         self.num_warmup_steps = config.num_warmup_steps
+        self.powerlaw_a = None
+        self.powerlaw_b = None
 
         self.config = config
         if config.tensor_parallel:
@@ -423,7 +425,8 @@ class CausalSelfAttention(nn.Module):
                 self.warmup_quantiles,
             )
         else:
-            raise NotImplementedError("Power law fitting is only supported for THRESH attention backend")
+            pass
+            #raise NotImplementedError("Power law fitting is only supported for THRESH attention backend")
 
     def forward(
         self,
@@ -505,6 +508,8 @@ class CausalSelfAttention(nn.Module):
             warmup=warmup,
             threshold_percentile=self.threshold_percentile,
             retain_perc=retain_perc,
+            powerlaw_a=self.powerlaw_a,
+            powerlaw_b=self.powerlaw_b,
         )
         
         if not self.config.attention_backend == AttentionBackend.FLASH:
