@@ -41,7 +41,7 @@ if enable_profiling:
 else:
     profiler_context = nullcontext()
 system_prompt = "You are a helpful chatbot. Answer the following question.\n"
-model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
+model_id = "meta-llama/Meta-Llama-3-8B-Instruct" # NOTE: HARD SET
 global_tokenizer = AutoTokenizer.from_pretrained(model_id)
 
 model_config = ModelConfig(model_name=model_id, precision="bf16")
@@ -50,7 +50,7 @@ inference_config = InferenceConfig(
     max_length_of_generated_sequences=1024,
     top_p=0.80,
     temperature=1.0,
-    tp_dims=(1,1,1)
+    tp_dims=None
 )
 global_engine = LLMEngine(model_config=model_config, inference_config=inference_config)
 
@@ -94,7 +94,7 @@ def infer_endpoint():
 
     if data["model"] != model_id:
         # NOTE: only support "Meta-Llama-3-8B-Instruct" model for now
-        return jsonify({"error": "Not meta-llama/Meta-Llama-3-8B-Instruct model."}), 400
+        return jsonify({"error": f"Model {data['model']} not supported, use {model_id} instead."}), 400
 
     # Default value
     tokens_to_gen = 512
@@ -172,9 +172,9 @@ def infer_endpoint():
 
         # NOTE: Chat completition object, refer to the link @ top of the file:
         response = {
-            "id": "TEMP_ID",
+            "id": f"yalis-{int(time.time()*1e3)}",
             "object": "chat.completion",
-            "created": "TEMP_TIMESTAMP",
+            "created": int(time.time()),
             "model": model_id,
             "choices": choices,
             "usage": usage,
