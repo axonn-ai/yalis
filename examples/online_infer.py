@@ -1,14 +1,16 @@
+# Imports:
 try:
     from mpi4py import MPI
 except ImportError:
     pass
 
-from yalis import ModelConfig, InferenceConfig, print_rank0, LLMEngine
+from yalis import ModelConfig, InferenceConfig, LLMEngine
 from transformers import AutoTokenizer
+import logging
 import torch
 import torch.distributed as dist
 
-# needed to work with pytorch 2.3
+# Needed to work with pytorch 2.3
 from torch.profiler import _KinetoProfile
 _KinetoProfile._get_distributed_info = lambda self: None
 
@@ -16,14 +18,21 @@ from contextlib import nullcontext
 from flask import Flask, request, jsonify
 import time
 
+# Refer to this for API Reference:
+# https://platform.openai.com/docs/api-reference/chat
+
+# Configure python logging
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
+
 app = Flask(__name__)
-# Keep structure for output
+
+# Keep structure of output
 app.json.sort_keys = False
 
 # Global configs
 enable_profiling = False
-tokens_to_gen = 512
-system_prompt = "You are a helpful chatbot. Answer the following question.\n"
 if enable_profiling:
     profiler_context = torch.profiler.profile(
         activities=[torch.profiler.ProfilerActivity.CUDA],
@@ -31,69 +40,73 @@ if enable_profiling:
     )
 else:
     profiler_context = nullcontext()
-
-# Global caches
-global_tokenizers = {}
-global_engines = {}
-
-# Global configs
+system_prompt = "You are a helpful chatbot. Answer the following question.\n"
 model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
 global_tokenizer = AutoTokenizer.from_pretrained(model_id)
 
 model_config = ModelConfig(model_name=model_id, precision="bf16")
 inference_config = InferenceConfig(
-    batch_size=2, # HARD SET FOR NOW
+    batch_size=1, # NOTE: HARD SET
     max_length_of_generated_sequences=1024,
     top_p=0.80,
     temperature=1.0,
-    tp_dims=(2,1,1)
+    tp_dims=(1,1,1)
 )
 global_engine = LLMEngine(model_config=model_config, inference_config=inference_config)
 
+
 @app.route("/v1/completions", methods=["POST"])
 def infer_endpoint():
-    print(f"==> Hi, I am process rank {dist.get_rank()} :)")
-    # Only rank 0 gets the data, even though all other processes are triggered
-    # Assumption: Data is not chunked, all the data is sent because yalis deals 
-    # with distribution of compute
+    logging.info(f"Process rank {dist.get_rank()}.")
 
+    # Rank 0, only, receives the data
     if dist.get_rank() == 0:
         data = request.json
-        print("==> Request received on rank 0:")
-        print(data)
+        logging.info(f"Request received on rank {dist.get_rank()}.")
     else:
         data = None
 
+    # Rank 0 distributes the data to other ranks
+    data_list = [data]
     # Collective broadcast call
-    if dist.is_initialized():
-        data_list = [data]
-        # src=0 ensures that only rank 0's data values are being stored
-        dist.broadcast_object_list(data_list, src=0)
-        data = data_list[0]
+    # src=0 ensures that only rank 0's data values are being stored
+    dist.broadcast_object_list(data_list, src=0)
+    data = data_list[0]
 
-    print("==> All processes should now have data!")
-    print(f"==> Process rank {dist.get_rank()}'s data: {data}")
+    logging.info("All processes have data.")
     
-    # Arg checking in data
+    # Parsing data from request:
+
     if "prompt" not in data:
-        return jsonify({"error": "No prompt provided"}), 400
+        # Required
+        return jsonify({"error": "No prompt provided."}), 400
+    else:
+        user_prompts = data["prompt"]
+        # Wrap single prompt in a list for parsing later
+        if not isinstance(user_prompts, list):
+            user_prompts = [user_prompts]
 
     if "model" not in data:
-        return jsonify({"error": "No model provided"}), 400
+        # Required
+        return jsonify({"error": "No model provided."}), 400
+    else:
+        model_id = data["model"]
+
+    if data["model"] != model_id:
+        # NOTE: only support "Meta-Llama-3-8B-Instruct" model for now
+        return jsonify({"error": "Not meta-llama/Meta-Llama-3-8B-Instruct model."}), 400
+
+    # Default value
+    tokens_to_gen = 512
+    if "max_completion_tokens" in data:
+        tokens_to_gen = data["max_completion_tokens"]
     
-    if data["model"] != "meta-llama/Meta-Llama-3-8B-Instruct":
-        return jsonify({"error": "Not meta-llama/Meta-Llama-3-8B-Instruct model"}), 400
-    
+    # Default value
     n = 1
-    if "n" in data:
-        n = data["n"]
+    if "n" in data and data["n"] != 1:
+        return jsonify({"error": "YALIS only supports n=1 completion choices."}), 400
 
-    user_prompts = data["prompt"]
-    if not isinstance(user_prompts, list):
-        user_prompts = [user_prompts]
-    model_id = data["model"]
-
-    print(f"Number of prompts = {len(user_prompts)}")
+    logging.info(f"Number of prompts: {len(user_prompts)}.")
 
     input_prompts = []
     for user_prompt in user_prompts:
@@ -104,74 +117,81 @@ def infer_endpoint():
         formatted_prompt = global_tokenizer.apply_chat_template(
             conversation, add_generation_prompt=True, tokenize=False
         )
-        # Added support for "n"
+        # NOTE: Future support for n:
         input_prompts.extend([formatted_prompt] * n)
     
-    print("==> Starting time for tok gen")
+    logging.info("Starting time for tok gen.")
     req_start_time = time.time()
 
     with profiler_context as prof:
-        for _ in range(10):
-            output_tokens = global_engine.generate(
-                input_prompts, report_throughput=True, tokens_to_generate=tokens_to_gen
-            )
-            if enable_profiling:
-                prof.step()
-            print("==> Checking which process hits this:")
-            print(dist.get_rank())
-            dist.barrier()
+        output_tokens = global_engine.generate(
+            input_prompts, report_throughput=True, tokens_to_generate=tokens_to_gen
+        )
+        if enable_profiling:
+            prof.step()
     
-    print("==> Ending time after tok gen")
+    logging.info("Ending time after tok gen.")
     req_end_time = time.time()
-    print(f"==> Time taken: {req_end_time - req_start_time:.2f} seconds")
+    logging.info(f"Time taken for tok gen: {req_end_time - req_start_time:.2f} seconds.")
 
     output_tokens = output_tokens.cpu()
     detokenized_text = global_tokenizer.batch_decode(output_tokens, skip_special_tokens=True)
-    
-    print("==> Detokenized text done.")
 
+    # Rank 0 process sends back response to user
     if dist.get_rank() == 0:
-        print(f"==> Rank {dist.get_rank()} process here, done work now sending to client :)")
+        # Choices json object:
         choices = []
         for i in range(0, len(input_prompts)):
-            json_obj = {
-                    "text": detokenized_text[i],
+            choices_obj = {
                     "index": i,
+                    "message": detokenized_text[i],
                     "logprobs": None,
-                    "finish_reason": "TEMP"
+                    "finish_reason": "length"
                 }
-            choices.append(json_obj)
+            choices.append(choices_obj)
         
+        # Usage json object:
         prompt_tokens = sum(len(global_tokenizer(prompt)["input_ids"]) for prompt in user_prompts)
         completion_tokens = sum(len(global_tokenizer(text)["input_ids"]) for text in detokenized_text)
         total_tokens = prompt_tokens + completion_tokens
         usage = {
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
-            "total_tokens": total_tokens
+            "total_tokens": total_tokens,
+            "prompt_tokens_details": {
+                "cached_tokens": 0,
+                "audio_tokens": 0
+            },
+            "completion_tokens_details": {
+                "reasoning_tokens": 0,
+                "audio_tokens": 0,
+                "accepted_prediction_tokens": 0,
+                "rejected_prediction_tokens": 0
+            }
         }
 
+        # NOTE: Chat completition object, refer to the link @ top of the file:
         response = {
-            "id": "TEMP",
-            "object": "text_completion",
-            "created": int(time.time()),
+            "id": "TEMP_ID",
+            "object": "chat.completion",
+            "created": "TEMP_TIMESTAMP",
             "model": model_id,
             "choices": choices,
-            "usage": usage
+            "usage": usage,
+            "service_tier": "default",
+            "system_fingerprint": "TEMP_FINGERPRINT"
         }
-
-        print("==> Json being sent back to client :)")
+        logging.info("Json being sent back to client.")
         return jsonify(response)
     else:
-        print(f"==> Rank {dist.get_rank()} process here, done work now shutting down.")
+        # Loop back and wait for rank 0 to distribute data.
         infer_endpoint()
 
 
 if __name__ == "__main__":
-    # Rank 0 process is the only one that has external access
-    # Other ranks aren't accessible but still get triggered upon request
+    # Rank 0 process is the only one that has external access to requests from user
     if dist.get_rank() == 0:
-        print("Starting Flask server on rank 0 process. Listening on port 5000...")
+        logging.info("Starting Flask server on rank 0 process. Listening on port 5000...")
         app.run(host="0.0.0.0", port=5000)
     else:
         infer_endpoint()
