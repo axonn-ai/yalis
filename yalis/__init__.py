@@ -1,4 +1,4 @@
-# Import configurations
+# Import modules
 from .config import ModelConfig, InferenceConfig
 from .utils import print_rank0
 from .engine import LLMEngine
