@@ -248,10 +248,22 @@ class LLMEngine:
             raise TypeError(
                 "prompts must be either a list of strings or a list of lists of integers"
             )
+
+        if prompt_sequence_lengths.max() > self.model.max_seq_length:
+            raise ValueError(
+                f"The prompt sequence length ({prompt_sequence_lengths.max()}) exceeds the model's maximum sequence length "
+                f"({self.model.max_seq_length}). Unable to proceed."
+            )
+
+        if prompt_sequence_lengths.max() + tokens_to_generate > self.model.max_seq_length:
+            tokens_to_generate = self.model.max_seq_length - prompt_sequence_lengths.max()
+            print_rank0(f"tokens_to_generate has been adjusted to {tokens_to_generate}")
+
         timers.stop("tokenize")
         print_rank0(
             f"Tokenization took {timers.get_times()[0][('tokenize',)]} ms"
         )
+
         output_tokens = []
         # Start timing the operations
         timers.start("generate")
