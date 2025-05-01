@@ -287,6 +287,7 @@ class LLMEngine:
         # Initialize done mask for multiple batches
         if batch_size > 1 and not ignore_eos:
             done_mask = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
+        finished_reason = "Max Token Length"
         output_tokens = []
         # Start timing the operations
         timers.start("generate")
@@ -339,6 +340,7 @@ class LLMEngine:
                     # Single and Multi-batch (if every batch hits EOS) support
                     if done_mask.all():
                         print_rank0(f"Sample of batch size: {batch_size} reached EOS, stopping.")
+                        finished_reason = "EOS"
                         break
 
         output_tensor = torch.cat(output_tokens, dim=1)
@@ -361,6 +363,8 @@ class LLMEngine:
             "TBT": tbt,
             "E2E": times[('generate',)],
             "TokenizationTime": times[('tokenize',)],
+            "Finished Reason": finished_reason  # NOTE: This should be a list containing reasons for each batch but 
+                                                # our EOS stopping currently is all-or-nothing.
         }
         if dist.get_rank() == 0 and report_throughput:
             print (f"[Metrics] BatchSize = {prompt_tokens.shape[0]}, PromptLength = {prompt_tokens.shape[1]}, DecodeLength = {tokens_to_generate}, Throughput = {tput:.2f} tok/s, TTFT = {ttft:.4f} ms, TBT = {tbt:.4f} ms, E2E = {times[('generate',)]:.4f} ms")
