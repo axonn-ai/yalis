@@ -3,6 +3,7 @@ from yalis import ModelConfig, InferenceConfig, print_rank0, LLMEngine
 from transformers import AutoTokenizer
 import torch
 import torch.distributed as dist
+import os
 
 # needed to work with pytorch 2.3
 from torch.profiler import _KinetoProfile
@@ -17,7 +18,7 @@ except ImportError:
 
 if __name__ == "__main__":
     # Model ID from Hugging Face
-    model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
+    model_id = "meta-llama/Meta-Llama-3.1-8B-Instruct"
     
     user_prompts = [
         "How to bake a cake?",
@@ -39,14 +40,14 @@ if __name__ == "__main__":
     ]
 
     # take 16 prompts from this dataset
-    user_prompts = user_prompts[:16]
+    user_prompts = user_prompts[:4]
     print(f"Number of prompts = {len(user_prompts)}")
 
 
     system_prompt = "You are a helpful chatbot. Answer the following question.\n"
 
     # profile the run or not
-    enable_profiling = False
+    enable_profiling = True
 
     # Tokenizer for encoding the prompt
     tokenizer = AutoTokenizer.from_pretrained(model_id)
@@ -80,8 +81,11 @@ if __name__ == "__main__":
 
     if enable_profiling:
         profiler_context = torch.profiler.profile(
-            activities=[torch.profiler.ProfilerActivity.CUDA],
-            schedule=torch.profiler.schedule(wait=5, warmup=2, active=1),
+            activities=[
+                torch.profiler.ProfilerActivity.CUDA,
+                torch.profiler.ProfilerActivity.CPU
+            ],
+            schedule=torch.profiler.schedule(wait=1, warmup=1, active=3),
         )
     else:
         profiler_context = nullcontext()
@@ -105,10 +109,11 @@ if __name__ == "__main__":
         print_rank0(f"prompt = {prompt}")
         print_rank0(f"output = {output}")
         print_rank0("==========================\n\n")
-        
+
+    prof.export_chrome_trace("trace" + os.environ["RANK"] + ".json")
              
-    if enable_profiling:
-        print_rank0(
-            prof.key_averages().table(sort_by="self_cuda_time_total", row_limit=10)
-        )
+#     if enable_profiling:
+#         print_rank0(
+#             prof.key_averages().table(sort_by="self_cuda_time_total", row_limit=10)
+#         )
         

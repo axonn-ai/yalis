@@ -6,6 +6,7 @@
 import torch.distributed as dist
 import torch
 import torch.nn.functional as F
+from torch.profiler import profile, record_function, ProfilerActivity
 
 from torch.autograd import Function
 
@@ -103,12 +104,14 @@ class TPLinear(torch.nn.Module):
         expert_mode=True,
         tensor_parallel_dims: Optional[Sequence[int]] = None,
         init_device="cuda",
+        profiler_tag="yalis_linear",
         **kwargs,
     ):
         super(TPLinear, self).__init__()
         assert expert_mode, "Only expert mode allowed in inference"
 
         self.init_device = init_device
+        self.profiler_tag = profiler_tag
         # weights are shaped [out_features, in_features]
         # in_features are distributed across self.inner_group (X tensor parallel group)
         # out_features are distributed across self.inner_group (Y tensor parallel group)
@@ -220,18 +223,20 @@ class TPLinear(torch.nn.Module):
         self,
         x
     ):
+        with record_function(self.profiler_tag):
+            with record_function(self.profiler_tag + "_compute"):
+                x = self.matmul(self.weight, x)
+            with record_function(self.profiler_tag + "_communicate"):
+                x = self.all_reduce(x)
 
-        x = self.matmul(self.weight, x)
-        x = self.all_reduce(x)
-
-        if self.bias is None:
-            return x
-        else:
-            bias = self.bias
-            if self.skip_bias_add:
-                return x, bias
+            if self.bias is None:
+                return x
             else:
-                return x + bias
+                bias = self.bias
+                if self.skip_bias_add:
+                    return x, bias
+                else:
+                    return x + bias
 
     def _is_full_weight_matrix(self, weight):
         return (

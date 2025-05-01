@@ -8,6 +8,7 @@ from .external.sampling import sample
 import logging
 import torch.distributed as dist
 from transformers import AutoTokenizer
+from torch.profiler import profile, record_function, ProfilerActivity
 from torch.nn.attention import SDPBackend, sdpa_kernel
 import time
 import gc
@@ -280,31 +281,33 @@ class LLMEngine:
             for step in range(tokens_to_generate):
                 timer_key = None
                 if step == 0:  # Prefill step
-                    timer_key = "prefill"
-                    timers.start(timer_key)
-                    # print_rank0(f"mem before prefill = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
-                    next_token = prefill(
-                        self.model, current_input_to_model, prompt_sequence_lengths, 
-                        temperature=self.inference_config.temperature, 
-                        top_k=self.inference_config.top_k, 
-                        top_p=self.inference_config.top_p
-                    )  # Call prefill function
-                    # print_rank0(f"mem after prefill = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
-                    current_input_to_model = next_token.clone()
-                else:  # Generation step
-                    timer_key = "decode"
-                    timers.start(timer_key)
-                    with sdpa_kernel(SDPBackend.MATH):
-                        next_token = generate(
-                            self.model, current_input_to_model, 
+                    with record_function("yalis_prefill"):
+                        timer_key = "prefill"
+                        timers.start(timer_key)
+                        # print_rank0(f"mem before prefill = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
+                        next_token = prefill(
+                            self.model, current_input_to_model, prompt_sequence_lengths, 
                             temperature=self.inference_config.temperature, 
                             top_k=self.inference_config.top_k, 
                             top_p=self.inference_config.top_p
-                        )  # Call generate function
-                    # print_rank0(f"mem after generate {step} = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
-                    current_input_to_model.copy_(
-                        next_token
-                    )  # Copy the new token into tokens
+                        )  # Call prefill function
+                        # print_rank0(f"mem after prefill = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
+                        current_input_to_model = next_token.clone()
+                else:  # Generation step
+                    with record_function("yalis_generate"):
+                        timer_key = "decode"
+                        timers.start(timer_key)
+                        with sdpa_kernel(SDPBackend.MATH):
+                            next_token = generate(
+                                self.model, current_input_to_model, 
+                                temperature=self.inference_config.temperature, 
+                                top_k=self.inference_config.top_k, 
+                                top_p=self.inference_config.top_p
+                            )  # Call generate function
+                        # print_rank0(f"mem after generate {step} = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
+                        current_input_to_model.copy_(
+                            next_token
+                        )  # Copy the new token into tokens
 
                 output_tokens.append(next_token.clone())
                 timers.stop(timer_key)

@@ -12,6 +12,7 @@ from typing import Any, Optional, Tuple
 import torch
 import torch.nn as nn
 import torch.distributed as dist
+from torch.profiler import profile, record_function, ProfilerActivity
 from typing_extensions import Self
 
 from yalis.attention import attention_wrapper 
@@ -438,22 +439,23 @@ class CausalSelfAttention(nn.Module):
             q = q.transpose(1, 2).contiguous()
             k = k.transpose(1, 2).contiguous()
             v = v.transpose(1, 2).contiguous()
-             
-        y = attention_wrapper(
-            q=q,
-            k_cache=k_cache,
-            v_cache=v_cache,
-            k=k,
-            v=v,
-            cache_seqlens=token_counter,
-            block_table=block_table,
-            rotary_cos=cos,
-            rotary_sin=sin,
-            backend=self.config.attention_backend,
-            use_intra_head_parallelism=self.config.use_intra_head_parallelism,
-            prestore_kv_cache=self.config.prestore_kv_cache,
-            flex_attention_block_mask=flex_attention_block_mask,
-        )
+            
+        with record_function("yalis_attention"):
+            y = attention_wrapper(
+                q=q,
+                k_cache=k_cache,
+                v_cache=v_cache,
+                k=k,
+                v=v,
+                cache_seqlens=token_counter,
+                block_table=block_table,
+                rotary_cos=cos,
+                rotary_sin=sin,
+                backend=self.config.attention_backend,
+                use_intra_head_parallelism=self.config.use_intra_head_parallelism,
+                prestore_kv_cache=self.config.prestore_kv_cache,
+                flex_attention_block_mask=flex_attention_block_mask,
+            )
         
         if not self.config.attention_backend == AttentionBackend.FLASH:
             y = y.transpose(1, 2).contiguous()
