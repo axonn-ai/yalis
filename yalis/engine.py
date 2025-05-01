@@ -330,18 +330,23 @@ class LLMEngine:
                         next_token
                     )  # Copy the new token into tokens
 
-                output_tokens.append(next_token.clone())
-                timers.stop(timer_key)
-
                 # EOS Support:
-                if not ignore_eos:
-                    # Flatten to shape (batch_size,) for element wise comparison
-                    done_mask |= (next_token.view(-1) == self.eos_token_id)
-                    # Single and Multi-batch (if every batch hits EOS) support
-                    if done_mask.all():
-                        print_rank0(f"Sample of batch size: {batch_size} reached EOS, stopping.")
-                        finished_reason = "EOS"
-                        break
+                # Flatten to shape (batch_size,) for element wise comparison
+                done_mask |= (next_token.view(-1) == self.eos_token_id)
+                # Reshape to match next_token's shape for masked_fill()
+                mask = done_mask.view(-1, 1)
+                # Force EOS prompts to stay EOS
+                next_token.masked_fill_(mask, self.eos_token_id)
+
+                output_tokens.append(next_token.clone())
+
+                # Break only if every sequence is done
+                if done_mask.all():
+                    print_rank0(f"All batch samples reached EOS at step {step}, stopping.")
+                    timers.stop(timer_key)
+                    break
+
+                timers.stop(timer_key)
 
         output_tensor = torch.cat(output_tokens, dim=1)
         # End timing and calculate elapsed time
