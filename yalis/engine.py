@@ -332,15 +332,11 @@ class LLMEngine:
                 output_tokens.append(next_token.clone())
                 timers.stop(timer_key)
 
-
-                eos_tokens_tensor = torch.tensor(self.eos_token_id, device=self.device)
-                # Check ignore_eos tag
+                # EOS Support:
                 if not ignore_eos:
                     # Flatten to shape (batch_size,) for element wise comparison
-                    next_token_flatten = next_token.view(-1)
-                    # Update done mask
-                    done_mask |= (next_token_flatten == self.eos_token_id)
-                    # Single and Multi batch (if every batch hits EOS) support
+                    done_mask |= (next_token.view(-1) == self.eos_token_id)
+                    # Single and Multi-batch (if every batch hits EOS) support
                     if done_mask.all():
                         print_rank0(f"Sample of batch size: {batch_size} reached EOS, stopping.")
                         break
