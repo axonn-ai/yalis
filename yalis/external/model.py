@@ -137,7 +137,7 @@ class GPT(nn.Module):
         # flash attention wants the rope cache to be
         # in the same dtype as the query
         # ToDO: confirm if this is okay, or if we should do rope in fp32?
-        if self.config.attention_backend == AttentionBackend.FLASH:
+        if self.config.attention_backend == AttentionBackend.FLASH or self.config.attention_backend == AttentionBackend.FA3:
             self.cos = self.cos.to(x.dtype)
             self.sin = self.sin.to(x.dtype)
 
@@ -225,7 +225,7 @@ class GPT(nn.Module):
             condense_ratio=self.config.rope_condense_ratio,
             base=self.config.rope_base,
             extra_config=extra_config,
-            is_attention_backend_flash=(self.config.attention_backend == AttentionBackend.FLASH),
+            is_attention_backend_flash=(self.config.attention_backend == AttentionBackend.FLASH or self.config.attention_backend == AttentionBackend.FA3),
         )
 
     def set_kv_cache(
@@ -238,7 +238,7 @@ class GPT(nn.Module):
     ) -> None:
         if rope_cache_length is None:
             rope_cache_length = self.cos.size(-1)
-            if self.config.attention_backend == AttentionBackend.FLASH:
+            if self.config.attention_backend == AttentionBackend.FLASH or self.config.attention_backend == AttentionBackend.FA3:
                 rope_cache_length *= 2
 
         if max_seq_length is None:
@@ -420,7 +420,7 @@ class CausalSelfAttention(nn.Module):
 
         k_cache, v_cache = self.kv_cache.k, self.kv_cache.v
         
-        if self.config.attention_backend == AttentionBackend.FLASH:
+        if self.config.attention_backend == AttentionBackend.FLASH or self.config.attention_backend == AttentionBackend.FA3:
             q = q.contiguous()
             k = k.contiguous()
             v = v.contiguous()
@@ -455,7 +455,7 @@ class CausalSelfAttention(nn.Module):
             flex_attention_block_mask=flex_attention_block_mask,
         )
         
-        if not self.config.attention_backend == AttentionBackend.FLASH:
+        if not self.config.attention_backend == AttentionBackend.FLASH or self.config.attention_backend == AttentionBackend.FA3:
             y = y.transpose(1, 2).contiguous()
 
         y = y.reshape(
@@ -475,7 +475,7 @@ class CausalSelfAttention(nn.Module):
     ) -> "KVCache":
 
         heads = self.config.n_query_groups
-        if self.config.attention_backend == AttentionBackend.FLASH:
+        if self.config.attention_backend == AttentionBackend.FLASH or self.config.attention_backend == AttentionBackend.FA3:
             if self.config.use_paged_kv_caching:
                 v_shape = (NUM_BLOCKS, PAGE_BLOCK_SIZE, heads, self.config.head_size)
             else:      
@@ -491,7 +491,7 @@ class CausalSelfAttention(nn.Module):
                 )
             k_shape = v_shape
         else:
-            if self.config.attention_backend == AttentionBackend.FLASH:
+            if self.config.attention_backend == AttentionBackend.FLASH or self.config.attention_backend == AttentionBackend.FA3:
                 if self.config.use_paged_kv_caching:
                     k_shape = (
                         NUM_BLOCKS,
