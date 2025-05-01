@@ -56,11 +56,12 @@ def divide(a, b):
 
 @torch.no_grad()
 def extract_local_params_from_full_params(
-    params, out_features_group, in_features_group, asym_split = [0.5, 0.5]
+    params, out_features_group, in_features_group, asym_split=None, transpose=False
 ):
     #params = Drop.apply(params, in_features_group)
     params = yalis_drop(params, -1, in_features_group, asym_split)
-    params = Drop.apply(torch.t(params).contiguous(), out_features_group)
+    params = yalis_drop(torch.t(params).contiguous(), -1, out_features_group, asym_split)
+    #params = Drop.apply(torch.t(params).contiguous(), out_features_group)
     params = torch.t(params).contiguous()
     return params
 
@@ -73,12 +74,13 @@ def initialize_params(
     in_features_group,
     init_method,
     init_device="cuda",
-    asym_split = [0.5, 0.5]
+    asym_split=None,
+    transpose=False
 ):
     params = torch.empty((out_features, in_features), device=init_device)
     init_method(params)
     params = extract_local_params_from_full_params(
-        params, out_features_group, in_features_group
+        params, out_features_group, in_features_group, asym_split=asym_split, transpose=transpose
     )
 
     # This line is important within this function as placing outside leads to pytorch not deleting the reserved memory
@@ -107,7 +109,7 @@ class TPLinear(torch.nn.Module):
         expert_mode=True,
         tensor_parallel_dims: Optional[Sequence[int]] = None,
         init_device="cuda",
-        asym_split = [0.5, 0.5],
+        asym_split = None,
         **kwargs,
     ):
         super(TPLinear, self).__init__()
@@ -130,6 +132,8 @@ class TPLinear(torch.nn.Module):
         )
         if transpose:
             self.inner_group, self.outer_group = self.outer_group, self.inner_group
+        else:
+            print("NOT TRANSPOSE, inner_size: ", dist.get_world_size(self.inner_group), " outer_size: ", dist.get_world_size(self.outer_group))
 
         # depth_group is the Z tensor parallel group (akin to FSDP)
         self.depth_group = ax.comm_handle.depth_intra_layer_parallel_group
@@ -173,7 +177,8 @@ class TPLinear(torch.nn.Module):
             self.inner_group,
             init_method,
             init_device=self.init_device,
-            asym_split=self.asym_split
+            asym_split=self.asym_split,
+            transpose=self.transpose
         )
         # register the weight matrix as a trainable parameter.
         self.weight = torch.nn.Parameter(initial_params, requires_grad=True)
@@ -230,8 +235,8 @@ class TPLinear(torch.nn.Module):
         self,
         x
     ):
-        if self.asym_split != [0.5, 0.5]:
-            x = yalis_drop(x, -1, self.inner_group, self.asym_split)
+        #if self.asym_split != None:
+        #    x = yalis_drop(x, -1, self.inner_group, self.asym_split)
         x = self.matmul(self.weight, x)
         x = self.all_reduce(x)
 
@@ -283,7 +288,8 @@ class TPLinear(torch.nn.Module):
                     self.inner_group,
                 )
                 weight = extract_local_params_from_full_params(
-                    weight, out_features_group, in_features_group
+                    weight, out_features_group, in_features_group,
+                    asym_split=self.asym_split
                 )
 
             state_dict[prefix + "weight"] = weight
