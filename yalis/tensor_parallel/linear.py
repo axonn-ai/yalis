@@ -20,6 +20,8 @@ from axonn.intra_layer.communication import (
 from typing import Optional, Sequence
 import gc
 
+from yalis.communication.communication import yalis_drop
+
 
 # Wrapper for custom_fwd to handle different versions of PyTorch
 def version_aware_custom_fwd(*args, **kwargs):
@@ -54,9 +56,10 @@ def divide(a, b):
 
 @torch.no_grad()
 def extract_local_params_from_full_params(
-    params, out_features_group, in_features_group
+    params, out_features_group, in_features_group, asym_split = [0.5, 0.5]
 ):
-    params = Drop.apply(params, in_features_group)
+    #params = Drop.apply(params, in_features_group)
+    params = yalis_drop(params, -1, in_features_group, asym_split)
     params = Drop.apply(torch.t(params).contiguous(), out_features_group)
     params = torch.t(params).contiguous()
     return params
@@ -70,6 +73,7 @@ def initialize_params(
     in_features_group,
     init_method,
     init_device="cuda",
+    asym_split = [0.5, 0.5]
 ):
     params = torch.empty((out_features, in_features), device=init_device)
     init_method(params)
@@ -103,9 +107,11 @@ class TPLinear(torch.nn.Module):
         expert_mode=True,
         tensor_parallel_dims: Optional[Sequence[int]] = None,
         init_device="cuda",
+        asym_split = [0.5, 0.5],
         **kwargs,
     ):
         super(TPLinear, self).__init__()
+        self.asym_split = asym_split
         assert expert_mode, "Only expert mode allowed in inference"
 
         self.init_device = init_device
@@ -113,6 +119,7 @@ class TPLinear(torch.nn.Module):
         # in_features are distributed across self.inner_group (X tensor parallel group)
         # out_features are distributed across self.inner_group (Y tensor parallel group)
         # if transpose is true then X and Y are swapped
+        self.transpose = transpose
         if tensor_parallel_dims is not None and torch.distributed.get_rank() == 0:
             print(
                 "Manually setting TP dims for a layer with shape",
@@ -151,9 +158,9 @@ class TPLinear(torch.nn.Module):
             init_method = default_init_method
 
         # in_features should be divisible by inner_group_size
-        assert in_features % self.inner_group_size == 0
+        #assert in_features % self.inner_group_size == 0
         # in_features should be divisible by inner_group_size
-        assert out_features % self.outer_group_size == 0
+        #assert out_features % self.outer_group_size == 0
         # local_in_features - this is the number of in_features on each GPU
         self.local_in_features = divide(in_features, self.inner_group_size)
         # local_out_features - this is the number of out_features on each GPU
@@ -166,9 +173,12 @@ class TPLinear(torch.nn.Module):
             self.inner_group,
             init_method,
             init_device=self.init_device,
+            asym_split=self.asym_split
         )
         # register the weight matrix as a trainable parameter.
         self.weight = torch.nn.Parameter(initial_params, requires_grad=True)
+        self.local_out_features = self.weight.size(0)
+        self.local_in_features  = self.weight.size(1) 
 
         # extra book-keeping for the weight tensor.
         # this is needed by AxoNN layer in the sync_gradients and
@@ -220,7 +230,8 @@ class TPLinear(torch.nn.Module):
         self,
         x
     ):
-
+        if self.asym_split != [0.5, 0.5]:
+            x = yalis_drop(x, -1, self.inner_group, self.asym_split)
         x = self.matmul(self.weight, x)
         x = self.all_reduce(x)
 

@@ -351,7 +351,7 @@ class CausalSelfAttention(nn.Module):
         if not config.tensor_parallel:
             self.attn = nn.Linear(config.n_embd, shape, bias=config.bias)
         else:
-            self.attn = TPLinear(config.n_embd, shape, bias=config.bias, init_device=config.init_device)
+            self.attn = TPLinear(config.n_embd, shape, bias=config.bias, init_device=config.init_device, asym_split=[0.75, 0.25])
 
         # output projection
         # if `head_size` is explicitly specified in the config, `n_embd` might not be equal to `head_size * n_head`
@@ -550,7 +550,7 @@ class LLaMAMLP(nn.Module):
             )
         else:
             self.gate_up_proj = TPLinear(
-                config.n_embd, 2 * config.intermediate_size, bias=config.bias, init_device=config.init_device
+                config.n_embd, 2 * config.intermediate_size, bias=config.bias, init_device=config.init_device, asym_split=[0.75, 0.25]
             )
             self.proj = TPLinear(
                 config.intermediate_size,
