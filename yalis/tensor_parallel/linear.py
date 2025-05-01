@@ -226,7 +226,7 @@ class TPLinear(torch.nn.Module):
         with record_function(self.profiler_tag):
             with record_function(self.profiler_tag + "_compute"):
                 x = self.matmul(self.weight, x)
-            with record_function(self.profiler_tag + "_communicate"):
+            with record_function(self.profiler_tag + "_all_reduce"):
                 x = self.all_reduce(x)
 
             if self.bias is None:

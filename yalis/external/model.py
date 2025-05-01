@@ -352,7 +352,10 @@ class CausalSelfAttention(nn.Module):
         if not config.tensor_parallel:
             self.attn = nn.Linear(config.n_embd, shape, bias=config.bias)
         else:
-            self.attn = TPLinear(config.n_embd, shape, bias=config.bias, init_device=config.init_device)
+            self.attn = TPLinear(
+                config.n_embd, shape, bias=config.bias, init_device=config.init_device,
+                profiler_tag="yalis_attn_qkv_linear"
+            )
 
         # output projection
         # if `head_size` is explicitly specified in the config, `n_embd` might not be equal to `head_size * n_head`
@@ -367,6 +370,7 @@ class CausalSelfAttention(nn.Module):
                 bias=config.bias,
                 transpose=True,
                 init_device=config.init_device,
+                profiler_tag="yalis_attn_proj_linear"
             )
         # disabled by default
         self.kv_cache: Optional[KVCache] = None
@@ -401,46 +405,46 @@ class CausalSelfAttention(nn.Module):
 
         qkv = self.attn(x)
 
-        # assemble into a number of query groups to support MHA, MQA and GQA together (see `config.n_query_groups`)
-        q_per_kv = self.config.n_head // self.config.n_query_groups
-        total_qkv = q_per_kv + 2  # each group has 1+ queries, 1 key, and 1 value
-        qkv = qkv.view(
-            B, T, self.config.n_query_groups, total_qkv, self.config.head_size
-        )
-
-        # split batched computation into three
-        q, k, v = qkv.split((q_per_kv, 1, 1), dim=3)
-
-        q = q.reshape(B, T, -1, self.config.head_size)  # (B, T, nh_q, hs)
-        k = k.reshape(B, T, -1, self.config.head_size)  # (B, T, nh_k, hs)
-        v = v.reshape(B, T, -1, self.config.head_size)  # (B, T, nh_v, hs)
-
-        assert (
-            self.config.rope_n_elem == self.config.head_size
-        ), "partial rope is not supported yet"
-
-        k_cache, v_cache = self.kv_cache.k, self.kv_cache.v
-        
-        if self.config.attention_backend == AttentionBackend.FLASH:
-            q = q.contiguous()
-            k = k.contiguous()
-            v = v.contiguous()
-            q = apply_rotary(q, 
-                            cos, 
-                            sin, 
-                            token_counter)
-            k = apply_rotary(k, 
-                            cos, 
-                            sin, 
-                            token_counter)
-            
-            cos, sin = None, None
-        else:
-            q = q.transpose(1, 2).contiguous()
-            k = k.transpose(1, 2).contiguous()
-            v = v.transpose(1, 2).contiguous()
-            
         with record_function("yalis_attention"):
+            # assemble into a number of query groups to support MHA, MQA and GQA together (see `config.n_query_groups`)
+            q_per_kv = self.config.n_head // self.config.n_query_groups
+            total_qkv = q_per_kv + 2  # each group has 1+ queries, 1 key, and 1 value
+            qkv = qkv.view(
+                B, T, self.config.n_query_groups, total_qkv, self.config.head_size
+            )
+
+            # split batched computation into three
+            q, k, v = qkv.split((q_per_kv, 1, 1), dim=3)
+
+            q = q.reshape(B, T, -1, self.config.head_size)  # (B, T, nh_q, hs)
+            k = k.reshape(B, T, -1, self.config.head_size)  # (B, T, nh_k, hs)
+            v = v.reshape(B, T, -1, self.config.head_size)  # (B, T, nh_v, hs)
+
+            assert (
+                self.config.rope_n_elem == self.config.head_size
+            ), "partial rope is not supported yet"
+
+            k_cache, v_cache = self.kv_cache.k, self.kv_cache.v
+            
+            if self.config.attention_backend == AttentionBackend.FLASH:
+                q = q.contiguous()
+                k = k.contiguous()
+                v = v.contiguous()
+                q = apply_rotary(q, 
+                                cos, 
+                                sin, 
+                                token_counter)
+                k = apply_rotary(k, 
+                                cos, 
+                                sin, 
+                                token_counter)
+                
+                cos, sin = None, None
+            else:
+                q = q.transpose(1, 2).contiguous()
+                k = k.transpose(1, 2).contiguous()
+                v = v.transpose(1, 2).contiguous()
+                
             y = attention_wrapper(
                 q=q,
                 k_cache=k_cache,
@@ -456,13 +460,13 @@ class CausalSelfAttention(nn.Module):
                 prestore_kv_cache=self.config.prestore_kv_cache,
                 flex_attention_block_mask=flex_attention_block_mask,
             )
-        
-        if not self.config.attention_backend == AttentionBackend.FLASH:
-            y = y.transpose(1, 2).contiguous()
+            
+            if not self.config.attention_backend == AttentionBackend.FLASH:
+                y = y.transpose(1, 2).contiguous()
 
-        y = y.reshape(
-            B, T, self.config.head_size * self.config.n_head
-        )  # re-assemble all head outputs side by side
+            y = y.reshape(
+                B, T, self.config.head_size * self.config.n_head
+            )  # re-assemble all head outputs side by side
 
         # output projection
         return self.proj(y)
@@ -552,7 +556,8 @@ class LLaMAMLP(nn.Module):
             )
         else:
             self.gate_up_proj = TPLinear(
-                config.n_embd, 2 * config.intermediate_size, bias=config.bias, init_device=config.init_device
+                config.n_embd, 2 * config.intermediate_size, bias=config.bias, init_device=config.init_device,
+                profiler_tag="yalis_mlp_gate_up_proj_linear"
             )
             self.proj = TPLinear(
                 config.intermediate_size,
@@ -560,6 +565,7 @@ class LLaMAMLP(nn.Module):
                 bias=config.bias,
                 transpose=True,
                 init_device=config.init_device,
+                profiler_tag="yalis_mlp_proj_linear"
             )
 
         self.config = config
