@@ -340,7 +340,7 @@ class LLMEngine:
                     next_token_flatten = next_token.view(-1)
                     # Update done mask
                     done_mask |= (next_token_flatten == self.eos_token_id)
-                    # Single and Multi batch (if every prompt hits EOS) support
+                    # Single and Multi batch (if every batch hits EOS) support
                     if done_mask.all():
                         print_rank0(f"Sample of batch size: {batch_size} reached EOS, stopping.")
                         break
