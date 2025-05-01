@@ -363,7 +363,7 @@ class LLMEngine:
             "TBT": tbt,
             "E2E": times[('generate',)],
             "TokenizationTime": times[('tokenize',)],
-            "FinishedReason": finished_reason  # NOTE: This should be a list containing reasons for each batch but 
+            "FinishedReason": finished_reason   # NOTE: This should be a list containing reasons for each batch but 
                                                 # our EOS stopping currently is all-or-nothing.
         }
         if dist.get_rank() == 0 and report_throughput:
