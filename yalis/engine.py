@@ -7,7 +7,7 @@ from .utils import print_rank0, get_gpu_memory_info
 from .external.sampling import sample
 import logging
 import torch.distributed as dist
-from transformers import AutoTokenizer, GenerationConfig
+from transformers import AutoTokenizer
 from torch.nn.attention import SDPBackend, sdpa_kernel
 import time
 import gc
@@ -91,7 +91,6 @@ class LLMEngine:
         """
         self.model_config = model_config
         self.inference_config = inference_config
-        self.generation_config = GenerationConfig.from_pretrained(model_config.model_name)
         self.model = None  # Placeholder for the loaded model
         self.device = device
         self.dtype = precision_to_dtype[self.model_config.precision]
@@ -181,6 +180,7 @@ class LLMEngine:
             print_rank0(
                 "Pad token not found in the tokenizer. Using eos_token as pad token."
             )
+        self.eos_token_id = self.tokenizer.eos_token_id
         print_rank0(f"Initializing Model took {time.time() - t0} seconds")
     
     def reset_kv_cache(self, batch_size):
@@ -286,7 +286,7 @@ class LLMEngine:
         ignore_eos = self.inference_config.ignore_eos
         # Initialize done mask for multiple batches
         if batch_size > 1 and not ignore_eos:
-            raise AttributeError('EOS detection not supported for batch size greater than 1.') 
+            done_mask = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
         output_tokens = []
         # Start timing the operations
         timers.start("generate")
@@ -333,15 +333,16 @@ class LLMEngine:
                 timers.stop(timer_key)
 
 
-                eos_tokens_tensor = torch.tensor(self.generation_config.eos_token_id, device="cuda")
+                eos_tokens_tensor = torch.tensor(self.eos_token_id, device=self.device)
                 # Check ignore_eos tag
                 if not ignore_eos:
-                    # Using the view function to flatten the array because next_token is a 2D tensor.
+                    # Flatten to shape (batch_size,) for element wise comparison
                     next_token_flatten = next_token.view(-1)
-                    temp_mask = torch.isin(next_token_flatten, eos_tokens_tensor)
-                    # Single-batch stop
-                    if temp_mask[0].item():
-                        print_rank0("Single sample reached EOS, stopping.")
+                    # Update done mask
+                    done_mask |= (next_token_flatten == self.eos_token_id)
+                    # Single and Multi batch (if every prompt hits EOS) support
+                    if done_mask.all():
+                        print_rank0(f"Sample of batch size: {batch_size} reached EOS, stopping.")
                         break
 
         output_tensor = torch.cat(output_tokens, dim=1)

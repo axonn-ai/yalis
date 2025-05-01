@@ -96,7 +96,7 @@ class InferenceConfig:
         use_intra_head_parallelism: bool = False,
         use_paged_kv_caching: bool = False,
         prestore_kv_cache: bool = True,
-        ignore_eos: Optional[bool] = False
+        ignore_eos: Optional[bool] = True
     ):
         """
         Initialize the inference configuration.
@@ -115,7 +115,7 @@ class InferenceConfig:
             use_intra_head_parallelism (bool): Use intra-head parallelism for attention. 
             use_paged_kv_caching (bool): Use paged k/v caching for attention. 
             prestore_kv_cache (bool): Pre-store k/v in cache before calling attention.
-            ignore_eos (Optional[bool]): Ignore EOS stopping, default is False.
+            ignore_eos (Optional[bool]): Ignore EOS stopping, default is True.
         """ 
         self.batch_size = batch_size
         # ToDo - default max_length should be none. If it is none, we should set it
@@ -131,6 +131,7 @@ class InferenceConfig:
         self.use_intra_head_parallelism = use_intra_head_parallelism
         self.use_paged_kv_caching = use_paged_kv_caching
         self.prestore_kv_cache = prestore_kv_cache
+        self.ignore_eos = ignore_eos
         if attention_backend not in ["flash", "sdpa", "flex"]:
             raise ValueError(
                 f"Invalid attention backend: {attention_backend}. Supported values are 'flash', 'sdpa', 'flex'."
@@ -142,7 +143,6 @@ class InferenceConfig:
             raise RuntimeError("torch isn’t installed")
         if Version(pkg_ver) < Version("2.6.0"):
             raise RuntimeError(f"torch >= 2.6.0 required (found {pkg_ver})")
-        self.ignore_eos = ignore_eos
 
         self._validate()
 
