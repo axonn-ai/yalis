@@ -23,6 +23,18 @@ def compute_offset(tensor_dim, asymmetric_map, rank):
         offset += (tensor_dim * num) // den
     return offset
 
+def compute_all_shapes(full_shape, asymmetric_map):
+    shapes = []
+    for i in range(len(asymmetric_map)):
+        pct = asymmetric_map[i]
+        check, num, den = can_divide(full_shape[0], pct)
+        assert check
+        new_shape = list(full_shape)
+        new_shape[0] = (full_shape[0] * num) // den
+        new_shape = torch.Size(new_shape)
+        shapes.append(new_shape)
+    return shapes
+
 def yalis_all_reduce(input_tensor, process_group=None):
     input_tensor = input_tensor.contiguous()
     if not dist.get_world_size(process_group) > 1:
@@ -35,8 +47,31 @@ To use w/ asymmetric tensors, pass a list of fractions of the tensor
 that each rank should handle, rank is implicitly the position in the list
 """
 
-def yalis_all_gather(input_tensor, dim, process_group=None, asymmetric=False):
-    pass
+def yalis_all_gather(input_tensor, dim, process_group=None, asymmetric=None, original_shape=(0, 0)):
+    input_tensor = input_tensor.contiguous()
+    world_size = dist.get_world_size(process_group)
+    if not world_size > 1:
+        return input_tensor
+    rank = dist.get_rank(process_group)
+    if asymmetric == None:
+        tensor_list = [
+            torch.empty_like(input_tensor) for _ in range(dist.get_world_size(process_group))
+        ]
+        tensor_list[rank] = input_tensor
+        dist.all_gather(tensor_list, input_tensor, group=process_group)
+        output = torch.cat(tensor_list, dim=dim).contiguous()
+        return output
+    else:
+        shape_list = compute_all_shapes(original_shape, asymmetric)
+        #print(shape_list)
+        #print(input_tensor.shape)
+        tensor_list = [
+            input_tensor.new_empty(shape) for shape in shape_list
+        ]
+        dist.all_gather(tensor_list, input_tensor, group=process_group)
+        output = torch.cat(tensor_list, dim=dim).contiguous()
+        return output
+
 
 def yalis_drop(input_tensor, dim, process_group=None, asymmetric=None):
     input_tensor = input_tensor.contiguous()
@@ -87,14 +122,21 @@ def test():
     if rank == "0":
         print("ORIGINAL TENSORS: ")
     x = torch.full((8, 8), float(rank) + 1.0, device=DEVICE)
+    original_shape = x.shape
     #print("Can divide?: ", can_divide(x.shape[0], 0.25))
     print(x)
 
     dist.barrier()
     if rank == "0":
         print("NEW TENSORS: ")
-    #x = yalis_drop(x, 0, process_group=pg, asymmetric=asymmetric_map)
-    yalis_all_reduce(x, process_group=pg)
+    x = yalis_drop(x, 0, process_group=pg, asymmetric=asymmetric_map)
+    #yalis_all_reduce(x, process_group=pg)
+    print(x)
+    
+    dist.barrier()
+    if rank == "0":
+        print("NEW NEW TENSORS: ")
+    x = yalis_all_gather(x, 0, process_group=pg, asymmetric=asymmetric_map, original_shape=original_shape)
     print(x)
 
     # check tensors
