@@ -10,7 +10,7 @@ import sys
 import torch
 from lightning_utilities.core.imports import RequirementCache
 
-from litgpt.config import configs
+from config import configs
 from convert_hf_checkpoint import convert_hf_checkpoint
 
 _SAFETENSORS_AVAILABLE = RequirementCache("safetensors")

@@ -2,9 +2,11 @@ import torch
 from litgpt.model import Config
 from pathlib import Path
 import sys
-from yalis.external.litgpt_utils import load_checkpoint
+from yalis.external.litgpt_utils import load_checkpoint, _EmptyInit
 from yalis.external.model import GPT
 import torch.distributed as dist
+import time
+from yalis.attention.backends import AttentionBackend
 
 
 def get_model(
@@ -13,6 +15,10 @@ def get_model(
     max_sequence_length=None,
     random_init=False,
     device="cuda",
+    use_intra_head_parallelism=False,
+    attention_backend=AttentionBackend.FLASH,
+    use_paged_kv_caching=False,
+    prestore_kv_cache=True
 ):
     tensor_parallel = dist.get_world_size() > 1
     if tensor_parallel and dist.get_rank() == 0:
@@ -25,7 +31,15 @@ def get_model(
         ), f"Maximum sequence length for this model is {config.block_size}"
         config.block_size = max_sequence_length
     config.tensor_parallel = tensor_parallel
-    model = GPT(config).to(model_dtype)
+    config.use_intra_head_parallelism = use_intra_head_parallelism
+    config.attention_backend = attention_backend
+    config.use_paged_kv_caching = use_paged_kv_caching
+    config.prestore_kv_cache = prestore_kv_cache
+    config.init_device = device if random_init else "meta"
+
+    with _EmptyInit(enabled=(not random_init)):
+        model = GPT(config).to(model_dtype)
+
     if not random_init:
         checkpoint_path = checkpoint_dir / "lit_model.pth"
         load_checkpoint(model, checkpoint_path)

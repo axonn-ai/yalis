@@ -34,10 +34,10 @@ export NCCL_SOCKET_IFNAME=hsn
 export MPICH_GPU_SUPPORT_ENABLED=0
 
 
-SCRIPT="examples/infer.py"
+SCRIPT="examples/online_infer.py"
 export PYTHONPATH="$PYTHONPATH:."
 chmod +x scripts/get_rank.sh
-run_cmd="NCCL_CUMEM_ENABLE=0 TORCH_NCCL_AVOID_RECORD_STREAMS=1 srun -C gpu -N $NNODES -n $GPUS -c 32 --cpu-bind=cores --gpus-per-node=4 ./scripts/get_rank.sh python -u $SCRIPT"
+run_cmd="NCCL_CUMEM_ENABLE=0 TORCH_NCCL_AVOID_RECORD_STREAMS=1 srun -C gpu -N $NNODES -n $GPUS -c 32 --cpu-bind=cores --gpus-per-node=4 ./scripts/get_rank.sh python -u $SCRIPT &> server_output.log &"
 
 echo $run_cmd
 eval $run_cmd

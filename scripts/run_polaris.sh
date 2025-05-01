@@ -11,16 +11,6 @@ export HF_DATASETS_CACHE="${HF_HOME}/datasets"
 export TORCHINDUCTOR_CACHE_DIR="${SCRATCH}/.cache/torch_inductor"
 export YALIS_CACHE="${SCRATCH}/yalis/yalis/external"
 
-module load cudatoolkit/12.4
-module load nccl
-. $SCRATCH/yalis_venv/bin/activate
-
-NNODES=$SLURM_JOB_NUM_NODES
-GPUS=$(( NNODES * 4 ))
-## master addr and port
-#NNODES=1
-#GPUS=1
-
 export MASTER_ADDR=$(hostname)
 export MASTER_PORT=29500
 export WORLD_SIZE=${GPUS}
@@ -37,7 +27,8 @@ export MPICH_GPU_SUPPORT_ENABLED=0
 SCRIPT="examples/infer.py"
 export PYTHONPATH="$PYTHONPATH:."
 chmod +x scripts/get_rank.sh
-run_cmd="NCCL_CUMEM_ENABLE=0 TORCH_NCCL_AVOID_RECORD_STREAMS=1 srun -C gpu -N $NNODES -n $GPUS -c 32 --cpu-bind=cores --gpus-per-node=4 ./scripts/get_rank.sh python -u $SCRIPT"
+run_cmd="mpiexec -n 8 --ppn 4 --depth=1 --cpu-bind depth --env NCCL_CUMEM_ENABLE=0 -env TORCH_NCCL_AVOID_RECORD_STREAMS=1 ./scripts/get_rank_polaris.sh python -u $SCRIPT"
+
 
 echo $run_cmd
 eval $run_cmd

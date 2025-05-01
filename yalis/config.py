@@ -1,6 +1,8 @@
-from typing import Optional, Literal
+from typing import Optional, Literal, Tuple
 import os
-
+from packaging.version import Version
+from importlib.metadata import version, PackageNotFoundError
+from yalis.attention.backends import AttentionBackend
 
 class ModelConfig:
     """
@@ -89,6 +91,11 @@ class InferenceConfig:
         top_p: Optional[float] = 1.0,
         temperature: Optional[float] = 1.0,
         metrics: bool = False,
+        tp_dims: Optional[Tuple[int, int, int]] = None,
+        attention_backend: str = "flash",
+        use_intra_head_parallelism: bool = False,
+        use_paged_kv_caching: bool = False,
+        prestore_kv_cache: bool = True,
         ignore_eos: Optional[bool] = False
     ):
         """
@@ -102,9 +109,14 @@ class InferenceConfig:
             temperature (Optional[float]): Sampling temperature.
             top_k (Optional[int]): Top-k sampling limit.
             top_p (Optional[float]): Nucleus sampling probability.
+            tp_dims (Optional[Tuple[int, int, int]]): Tensor parallelism dimensions. If None, all GPUs are used in the first dimension
             metrics (bool): Enable real-time metrics collection.
+            attention_backend (str): Attention backend to use. Options are 'flash', 'flex', or 'sdpa'.
+            use_intra_head_parallelism (bool): Use intra-head parallelism for attention. 
+            use_paged_kv_caching (bool): Use paged k/v caching for attention. 
+            prestore_kv_cache (bool): Pre-store k/v in cache before calling attention.
             ignore_eos (Optional[bool]): Ignore EOS stopping, default is False.
-        """
+        """ 
         self.batch_size = batch_size
         # ToDo - default max_length should be none. If it is none, we should set it
         # from the model config
@@ -115,6 +127,21 @@ class InferenceConfig:
         self.top_k = top_k
         self.top_p = top_p
         self.metrics = metrics
+        self.tp_dims = tp_dims
+        self.use_intra_head_parallelism = use_intra_head_parallelism
+        self.use_paged_kv_caching = use_paged_kv_caching
+        self.prestore_kv_cache = prestore_kv_cache
+        if attention_backend not in ["flash", "sdpa", "flex"]:
+            raise ValueError(
+                f"Invalid attention backend: {attention_backend}. Supported values are 'flash', 'sdpa', 'flex'."
+            )
+        self.attention_backend = AttentionBackend(attention_backend)
+        try:
+            pkg_ver = version("torch")
+        except PackageNotFoundError:
+            raise RuntimeError("torch isn’t installed")
+        if Version(pkg_ver) < Version("2.6.0"):
+            raise RuntimeError(f"torch >= 2.6.0 required (found {pkg_ver})")
         self.ignore_eos = ignore_eos
 
         self._validate()
@@ -129,19 +156,38 @@ class InferenceConfig:
         if self.max_length <= 0:
             raise ValueError("max_length must be a positive integer.")
 
-
         if self.temperature is not None and (self.temperature < 0.0):
             raise ValueError("temperature must be >=0.0.")
 
         if self.top_k is not None and self.top_k <= 0:
             raise ValueError("top_k must be a positive integer.")
 
-        if self.top_p is not None and (self.top_p <= 0.0 or self.top_p > 1.0):
-            raise ValueError("top_p must be in the range (0.0, 1.0].")
+        if self.top_p is not None and (self.top_p < 0.0 or self.top_p > 1.0):
+            raise ValueError("top_p must be in the range [0.0, 1.0].")
+
+        if self.tp_dims is not None and (type(self.tp_dims) != tuple or len(self.tp_dims) != 3):
+            raise ValueError("tp_dims must be a 3-dimensional tuple.")
+
+        if self.use_paged_kv_caching and not self.attention_backend == AttentionBackend.FLASH:
+            raise ValueError("use_paged_kv_caching requires attention_backend=flash")
+
+        if self.use_intra_head_parallelism and not self.attention_backend == AttentionBackend.SDPA:
+            raise ValueError("use_intra_head_parallelism requires attention_backend=sdpa") 
+    
 
     def __repr__(self):
         return (
-            f"InferenceConfig(batch_size={self.batch_size}, max_length={self.max_length}, "
-            f"decoding_strategy={self.decoding_strategy}, num_beams={self.num_beams}, "
-            f"temperature={self.temperature}, top_k={self.top_k}, top_p={self.top_p}, metrics={self.metrics})"
+            f"{self.__class__.__name__}(\n"
+            f"  batch_size={self.batch_size},\n"
+            f"  max_length_of_generated_sequences={self.max_length},\n"
+            f"  top_k={self.top_k},\n"
+            f"  top_p={self.top_p},\n"
+            f"  temperature={self.temperature},\n"
+            f"  metrics={self.metrics},\n"
+            f"  tp_dims={self.tp_dims},\n"
+            f"  use_intra_head_parallelism={self.use_intra_head_parallelism},\n"
+            f"  attention_backend={self.attention_backend.value},\n"
+            f"  use_paged_kv_caching={self.use_paged_kv_caching},\n"
+            f"  prestore_kv_cache={self.prestore_kv_cache}\n"
+            f")"
         )
