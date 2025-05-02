@@ -28,7 +28,7 @@ from kvcache_manager import KVCacheManager
 from flash_attn.ops.triton.rotary import apply_rotary
 from yalis.attention.backends import AttentionBackend
 from yalis.attention.masking import create_causal_block_mask_for_flex_attention
-
+from yalis.communication.communication import yalis_drop, yalis_all_gather, compute_offset, can_divide
 from yalis import print_rank0
 
 # todo: these should be dynamically set during engine initialization
@@ -346,6 +346,7 @@ class Block(nn.Module):
 class CausalSelfAttention(nn.Module):
     def __init__(self, config: Config, block_idx: int) -> None:
         super().__init__()
+        self.original_n_query_groups = config.n_query_groups # Store original value
         shape = (config.n_head + 2 * config.n_query_groups) * config.head_size
         # key, query, value projections for all heads, but in a batch
         if not config.tensor_parallel:
@@ -485,7 +486,34 @@ class CausalSelfAttention(nn.Module):
         dtype: Optional[torch.dtype] = None,
     ) -> "KVCache":
 
-        heads = self.config.n_query_groups
+        global_n_query_groups = self.original_n_query_groups # Use the stored original value
+        local_n_query_groups = global_n_query_groups # Default if no TP
+        if self.config.tensor_parallel and hasattr(self, 'attn') and isinstance(self.attn, TPLinear):
+             # Get the group that splits the head dimension (outer_group for QKV projection)
+             shard_group = self.attn.outer_group # Group splitting output features / heads
+             rank_in_group = dist.get_rank(shard_group)
+             world_size_group = dist.get_world_size(shard_group)
+
+             asym_split = self.attn.asym_split # Get asym_split from the layer
+             if asym_split:
+                 check, num, den = can_divide(global_n_query_groups, asym_split[rank_in_group])
+                 if not check:
+                     raise ValueError(f"Cannot divide heads {global_n_query_groups} for rank {rank_in_group} with split {asym_split[rank_in_group]}")
+                 local_n_query_groups = (global_n_query_groups * num) // den
+             else: # Symmetric TP
+                 if global_n_query_groups % world_size_group != 0:
+                     raise ValueError(f"Cannot divide heads {global_n_query_groups} symmetrically by group size {world_size_group}")
+                 local_n_query_groups = global_n_query_groups // world_size_group
+        elif self.config.tensor_parallel:
+             # Fallback or warning if TP is enabled but layer setup is unexpected
+             print_rank0("Warning: Could not determine asymmetric head split during KV cache build. Assuming symmetric split.")
+             attention_world_size = ax.config.G_intra_r # Assuming this is the relevant group size
+             if global_n_query_groups % attention_world_size != 0:
+                 raise ValueError(f"Cannot divide heads {global_n_query_groups} symmetrically by TP size {attention_world_size}")
+             local_n_query_groups = global_n_query_groups // attention_world_size
+
+        heads = local_n_query_groups
+
         if self.config.attention_backend == AttentionBackend.FLASH:
             if self.config.use_paged_kv_caching:
                 v_shape = (NUM_BLOCKS, PAGE_BLOCK_SIZE, heads, self.config.head_size)
@@ -569,7 +597,7 @@ class LLaMAMLP(nn.Module):
                 bias=config.bias,
                 transpose=True,
                 init_device=config.init_device,
-                #asym_split=[0.75, 0.25]
+                asym_split=[0.75, 0.25]
             )
 
         self.config = config

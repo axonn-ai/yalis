@@ -20,7 +20,7 @@ from axonn.intra_layer.communication import (
 from typing import Optional, Sequence
 import gc
 
-from yalis.communication.communication import yalis_drop
+from yalis.communication.communication import yalis_drop, yalis_all_gather, compute_offset, can_divide
 
 
 # Wrapper for custom_fwd to handle different versions of PyTorch
@@ -79,9 +79,45 @@ def initialize_params(
 ):
     params = torch.empty((out_features, in_features), device=init_device)
     init_method(params)
-    params = extract_local_params_from_full_params(
-        params, out_features_group, in_features_group, asym_split=asym_split, transpose=transpose
-    )
+
+    # params = extract_local_params_from_full_params(
+    #     params, out_features_group, in_features_group, asym_split=asym_split, transpose=transpose
+    # )
+    rank = dist.get_rank()
+    world_size = dist.get_world_size() # Assuming default group for rank/world_size determination
+
+    if transpose:
+        # print_rank0(f"Initializing RowParallel weight: ({out_features}, {in_features}) with asym_split={asym_split}")
+        shard_group = in_features_group
+        shard_dim_size = in_features
+        shard_torch_dim = 1
+        if asym_split:
+            group_rank = dist.get_rank(shard_group)
+            check, num, den = can_divide(shard_dim_size, asym_split[group_rank])
+            if not check:
+                raise ValueError(f"Cannot divide in_features {shard_dim_size} for rank {group_rank} with split {asym_split[group_rank]}")
+            local_shard_size = (shard_dim_size * num) // den
+            # print(f"[Rank {rank}] RowParallel: Sharding dim {shard_torch_dim} ({shard_dim_size}) using group {shard_group}. My rank {group_rank}, target size {local_shard_size}, split {asym_split[group_rank]}")
+        else:
+            pass
+        params = yalis_drop(params, shard_torch_dim, process_group=shard_group, asymmetric=asym_split)
+
+    else:
+        # print_rank0(f"Initializing ColumnParallel weight: ({out_features}, {in_features}) with asym_split={asym_split}")
+        shard_group = out_features_group
+        shard_dim_size = out_features
+        shard_torch_dim = 0
+        if asym_split:
+            group_rank = dist.get_rank(shard_group)
+            check, num, den = can_divide(shard_dim_size, asym_split[group_rank])
+            if not check:
+                raise ValueError(f"Cannot divide out_features {shard_dim_size} for rank {group_rank} with split {asym_split[group_rank]}")
+            local_shard_size = (shard_dim_size * num) // den
+            # print(f"[Rank {rank}] ColParallel: Sharding dim {shard_torch_dim} ({shard_dim_size}) using group {shard_group}. My rank {group_rank}, target size {local_shard_size}, split {asym_split[group_rank]}")
+        else:
+            pass
+        # Drop rows
+        params = yalis_drop(params, shard_torch_dim, process_group=shard_group, asymmetric=asym_split)
 
     # This line is important within this function as placing outside leads to pytorch not deleting the reserved memory
     torch.cuda.empty_cache()
@@ -132,11 +168,11 @@ class TPLinear(torch.nn.Module):
         )
         if transpose:
             self.inner_group, self.outer_group = self.outer_group, self.inner_group
-        else:
-            print("NOT TRANSPOSE, inner_size: ", dist.get_world_size(self.inner_group), " outer_size: ", dist.get_world_size(self.outer_group))
+        # else:
+        #     print("NOT TRANSPOSE, inner_size: ", dist.get_world_size(self.inner_group), " outer_size: ", dist.get_world_size(self.outer_group))
 
         # depth_group is the Z tensor parallel group (akin to FSDP)
-        self.depth_group = ax.comm_handle.depth_intra_layer_parallel_group
+        # self.depth_group = ax.comm_handle.depth_intra_layer_parallel_group
 
         # calculating the sizes of each tensor parallel process group
         self.inner_group_size = dist.get_world_size(self.inner_group)
@@ -166,9 +202,39 @@ class TPLinear(torch.nn.Module):
         # in_features should be divisible by inner_group_size
         #assert out_features % self.outer_group_size == 0
         # local_in_features - this is the number of in_features on each GPU
-        self.local_in_features = divide(in_features, self.inner_group_size)
+        # self.local_in_features = divide(in_features, self.inner_group_size)
         # local_out_features - this is the number of out_features on each GPU
-        self.local_out_features = divide(out_features, self.outer_group_size)
+        # self.local_out_features = divide(out_features, self.outer_group_size)
+        
+        rank = dist.get_rank()
+        if self.transpose: # Row Parallel
+            shard_group = self.inner_group
+            full_dim_size = self.in_features
+            if asym_split:
+                group_rank = dist.get_rank(shard_group)
+                check, num, den = can_divide(full_dim_size, asym_split[group_rank])
+                if not check: raise ValueError("Asymmetric split error for in_features")
+                self.local_in_features = (full_dim_size * num) // den
+            else:
+                if full_dim_size % self.inner_group_size != 0: raise ValueError("in_features not divisible by inner_group_size")
+                self.local_in_features = full_dim_size // self.inner_group_size
+            self.local_out_features = self.out_features # Not sharded
+            # print(f"[Rank {rank}] TPLinear RowParallel Init: local_in={self.local_in_features}, local_out={self.local_out_features}")
+        else: # Column Parallel
+            shard_group = self.outer_group
+            full_dim_size = self.out_features
+            if asym_split:
+                group_rank = dist.get_rank(shard_group)
+                check, num, den = can_divide(full_dim_size, asym_split[group_rank])
+                if not check: raise ValueError("Asymmetric split error for out_features")
+                self.local_out_features = (full_dim_size * num) // den
+            else:
+                if full_dim_size % self.outer_group_size != 0: raise ValueError("out_features not divisible by outer_group_size")
+                self.local_out_features = full_dim_size // self.outer_group_size
+            self.local_in_features = self.in_features # Not sharded
+            # print(f"[Rank {rank}] TPLinear ColParallel Init: local_in={self.local_in_features}, local_out={self.local_out_features}")
+
+
         # initialize the weight matrix and grab the local slice for each GPU
         initial_params = initialize_params(
             out_features,
@@ -182,8 +248,13 @@ class TPLinear(torch.nn.Module):
         )
         # register the weight matrix as a trainable parameter.
         self.weight = torch.nn.Parameter(initial_params, requires_grad=True)
-        self.local_out_features = self.weight.size(0)
-        self.local_in_features  = self.weight.size(1) 
+
+        # Note: weight shape is (local_out_features, local_in_features) after sharding
+        if self.weight.size(0) != self.local_out_features or self.weight.size(1) != self.local_in_features:
+             print(f"[Rank {rank}] WARNING: Initialized weight shape {self.weight.shape} mismatch! Expected ({self.local_out_features}, {self.local_in_features}). Transpose={self.transpose}, AsymSplit={self.asym_split}")
+             # Override calculated features with actual shape from initialized weight
+             self.local_out_features = self.weight.size(0)
+             self.local_in_features  = self.weight.size(1)
 
         # extra book-keeping for the weight tensor.
         # this is needed by AxoNN layer in the sync_gradients and
@@ -236,9 +307,12 @@ class TPLinear(torch.nn.Module):
         x
     ):
         #if self.asym_split != None:
-        #    x = yalis_drop(x, -1, self.inner_group, self.asym_split)
+        #    x = yalis_drop(x, -1, self.inner_group, self.asym_split) 
+        # print(f"[Rank {dist.get_rank()}] Forward Matmul: Input Shape {x.shape}, Weight Shape {self.weight.shape}, Transpose {self.transpose}")
         x = self.matmul(self.weight, x)
+        # print(f"[Rank {dist.get_rank()}] After Matmul Shape: {x.shape}")
         x = self.all_reduce(x)
+        # print(f"[Rank {dist.get_rank()}] After AllReduce Shape: {x.shape}")
 
         if self.bias is None:
             return x
