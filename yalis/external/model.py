@@ -116,6 +116,7 @@ class GPT(nn.Module):
     ) -> torch.Tensor:
         idx = input_ids
         T = idx.size(1)
+        B = idx.size(0)
         if self.max_seq_length < T:
             raise ValueError(
                 f"Cannot forward sequence of length {T}, max seq length is only {self.max_seq_length}."
@@ -150,10 +151,12 @@ class GPT(nn.Module):
             if self.config.attention_backend == AttentionBackend.FLEX else None
         )
 
-        retain_perc_g = torch.zeros(1, dtype=torch.float32, device=x.device)
+        retain_perc_g = torch.zeros((B, 1), dtype=torch.float32, device=x.device)
         for block in self.transformer.h:
             x, retain_perc = block(x, self.cos, self.sin, self.token_counter, block_table, flex_attention_block_mask, self.generation_counter, warmup=warmup)
             retain_perc_g += retain_perc
+        
+        # Average the retain percentage across all blocks
         retain_perc_mean = retain_perc_g / len(self.transformer.h)
 
         if self.config.tensor_parallel:
@@ -262,6 +265,8 @@ class GPT(nn.Module):
                 device,
                 dtype,
             )
+
+            #print_rank0(f"{batch_size}, {self.config.n_head}, {self.config.num_warmup_steps}")
 
             block.attn.warmup_quantiles = torch.zeros(
                 batch_size,
@@ -487,7 +492,7 @@ class CausalSelfAttention(nn.Module):
 
 
         # TODO: Should not generate this every time
-        retain_perc = torch.zeros(1, device=x.device, dtype=torch.float32)
+        retain_perc = torch.zeros((B, 1), device=x.device, dtype=torch.float32)
 
         y = attention_wrapper(
             q=q,

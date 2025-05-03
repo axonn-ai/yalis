@@ -240,6 +240,7 @@ class LLMEngine:
         prompts: Union[list[str], list[list[int]]],
         tokens_to_generate: int = 50,
         report_throughput: bool = False,
+        stop=None,
     ) -> torch.Tensor:
         """
         Generate tokens based on input prompts, which can either be a list of strings or a list of token ID lists.
@@ -295,18 +296,27 @@ class LLMEngine:
                 "prompts must be either a list of strings or a list of lists of integers"
             )
         timers.stop("tokenize")
-        print_rank0(
-            f"Tokenization took {timers.get_times()[0][('tokenize',)]} ms"
+
+        eos_token_id = self.tokenizer.eos_token_id
+        B = prompt_tokens.size(0)
+        done_mask = torch.zeros(
+            (B, 1), dtype=torch.bool, device=self.device
         )
+        eos_step_index = torch.full(
+            (B, 1), tokens_to_generate - 1, dtype=torch.long, device=self.device
+        )
+        #print_rank0(
+        #    f"Tokenization took {timers.get_times()[0][('tokenize',)]} ms"
+        #)
         output_tokens = []
         # Start timing the operations
         timers.start("generate")
 
         ## Changes for Thresh
         num_generation_step = 0
-        num_retain_steps = 0
         self.model.generation_counter.zero_() 
-        global_retain_perc = torch.zeros(1, device=self.device, dtype=torch.float32)
+        global_retain_perc = torch.full((B, 1), -1, device=self.device, dtype=torch.float32)
+        num_retain_steps = torch.zeros((B, 1), device=self.device, dtype=torch.int32)
 
         self.model.token_counter.zero_()
         if self.inference_config.use_paged_kv_caching:
@@ -356,20 +366,61 @@ class LLMEngine:
                         )  # Call generate function
                     # print_rank0(f"mem after generate {step} = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
                     if not warmup:
-                        global_retain_perc += retain_perc
-                        num_retain_steps += 1
+                        #print (
+                        #    f"Generation step {num_generation_step} - retain percentage: {retain_perc.view(-1).cpu().numpy().tolist()}"
+                        #)
+                        global_retain_perc += torch.where(
+                            done_mask.logical_not(),
+                            retain_perc,
+                            0,
+                        )
+                        num_retain_steps += torch.where(
+                            done_mask.logical_not(),
+                            1,
+                            0,
+                        )
 
                     current_input_to_model.copy_(
                         next_token
                     )  # Copy the new token into tokens
 
-                    if num_generation_step == self.inference_config.num_warmup_steps:
-                        # print (f"[DEBUG] Fitting Power Law")
-                        self.model.fit_powerlaw()
+
+                # Check if all the next tokens are EOS tokens
+                old_done_mask = done_mask.clone() 
+                done_mask = done_mask | (next_token == eos_token_id)
+
+                # We also need to store the step number in the model when we first get done_mask = True for that prompt
+                eos_step_index = torch.where(
+                    done_mask & (~old_done_mask), step, eos_step_index
+                )
+
+                # If done mask is True, we need to replace that next token with the eos token
+                next_token.masked_fill_(done_mask, eos_token_id)
+
+                if done_mask.all():
+                    # If all tokens are done, we can stop the generation
+                    print_rank0(f"All tokens are done. Stopping generation at step {step}.")
+                    break
+
+                if num_generation_step == self.inference_config.num_warmup_steps:
+                    # End of warmup
+
+                    # Fit the powerlaw distribution
+                    self.model.fit_powerlaw()
+
+                    # For batch ids that have not generated EOS yet, we start tracking the retain percentage
+                    global_retain_perc = torch.where(
+                        done_mask.logical_not(),
+                        0,
+                        global_retain_perc,
+                    )
 
                 num_generation_step += 1
+
+
                 output_tokens.append(next_token.clone())
                 timers.stop(timer_key)
+
 
         output_tensor = torch.cat(output_tokens, dim=1)
         # End timing and calculate elapsed time
@@ -385,9 +436,21 @@ class LLMEngine:
         warmup_time = (
             times[("generate", "warmup")] / events[("generate", "warmup")]
         )
+
+        epsilon = 1e-9
         global_retain_perc = (
-            global_retain_perc / num_retain_steps
-        ).item()
+            global_retain_perc / (num_retain_steps + epsilon)
+        )
+
+        #print (
+        #    f"Global retain percentage: {global_retain_perc}"
+        #)
+
+        # Average the positive retain percentage across the batch
+        mask = global_retain_perc > 0
+        batch_retain_perc = global_retain_perc[mask].mean(dim=0).item()
+
+
         # warmup_end_time = times[('generate', 'warmup_end')] / events[('generate', 'warmup_end')]
         metrics = {
             "BatchSize": prompt_tokens.shape[0],
@@ -398,11 +461,13 @@ class LLMEngine:
             "TBT": tbt,
             "E2E": times[("generate",)],
             "TokenizationTime": times[("tokenize",)],
-            "RetainPercentage": global_retain_perc,
+            "RetainPercentage": global_retain_perc.view(-1).cpu().numpy().tolist(),
         }
         if dist.get_rank() == 0 and report_throughput:
             print(
-                f"[Metrics] BatchSize = {prompt_tokens.shape[0]}, PromptLength = {prompt_tokens.shape[1]}, DecodeLength = {tokens_to_generate}, Throughput = {tput:.2f} tok/s, TTFT = {ttft:.4f} ms, TBT = {tbt:.4f} ms, E2E = {times[('generate',)]:.4f} ms, WarmupTime = {warmup_time:.4f} ms, GlobalRetainPerc = {global_retain_perc:.4f}"
+                f"[Metrics] BatchSize = {prompt_tokens.shape[0]}, PromptLength = {prompt_tokens.shape[1]}, DecodeLength = {tokens_to_generate}, Throughput = {tput:.2f} tok/s, TTFT = {ttft:.4f} ms, TBT = {tbt:.4f} ms, E2E = {times[('generate',)]:.4f} ms, WarmupTime = {warmup_time:.4f} ms, BatchRetainPerc = {batch_retain_perc:.4f}"
             )
-
-        return output_tensor, metrics
+        
+        #print("Eos step index: ", eos_step_index)
+        
+        return output_tensor, metrics, eos_step_index

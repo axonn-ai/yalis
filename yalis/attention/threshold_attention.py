@@ -55,6 +55,9 @@ def thresh_warmup(query, key, value, percentile, attn_mask=None, enable_gqa=Fals
     attn_weight_nan = attn_weight.masked_fill(attn_mask.logical_not(), torch.nan).to(dtype=torch.float32)
     quantiles = torch.nanquantile(attn_weight_nan, percentile, dim=-1)
 
+    #thresh_mask = attn_weight >= quantiles.unsqueeze(-1)
+
+
     return attn_weight @ value, quantiles
 
 
@@ -107,9 +110,12 @@ def thresh_attention_forward(
         attn_mask=attn_mask,
         enable_gqa=enable_gqa,
     )
-    retain_perc = count_nonzero / token_counter.unsqueeze(-1).unsqueeze(-1) * 100
-    mean_retain_perc = torch.mean(retain_perc)
-    #print ("[DEBUG] Retain percentage: ", mean_retain_perc)
+    retain_perc = count_nonzero / (token_counter.unsqueeze(-1).unsqueeze(-1) + 1) * 100
+    retain_perc = retain_perc.squeeze().mean(dim=-1, keepdim=True) # B, 1
+    #print ("[DEBUG] Retain percentage: ", retain_perc)
+    #mean_retain_perc = torch.mean(retain_perc)
+    #print ("[DEBUG] Mean retain percentage: ", mean_retain_perc)
+    
 
 
     #attn_output = thresh_attn_reference(
@@ -123,4 +129,4 @@ def thresh_attention_forward(
 
     #rtol = 1e-2
     #assert torch.allclose(attn_output, attn_output_fused, atol=1e-2, rtol=rtol), f"Outputs do not match! {attn_output} vs {attn_output_fused}"
-    return attn_output, mean_retain_perc 
+    return attn_output, retain_perc

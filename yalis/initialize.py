@@ -16,6 +16,6 @@ def init_distributed(
         tp_dims = (dist.get_world_size(), 1, 1)
     ax.init(G_intra_r=tp_dims[0], G_intra_c=tp_dims[1], G_intra_d=tp_dims[2])
     # this is very important to ensure that the same token is sampled on each TP rank!
-    # todo: seed should be set from InferenceConfig
-    seed_everything(1234)
+    # todo: seed should be set from InferenceConfig -> This will override the seed set by the user in their application code
+    #seed_everything(1234)
     
