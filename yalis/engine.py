@@ -448,7 +448,7 @@ class LLMEngine:
 
         # Average the positive retain percentage across the batch
         mask = global_retain_perc > 0
-        batch_retain_perc = global_retain_perc[mask].mean(dim=0).item()
+        batch_retain_perc = global_retain_perc[mask].nanmean(dim=0).item()
 
 
         # warmup_end_time = times[('generate', 'warmup_end')] / events[('generate', 'warmup_end')]
@@ -462,6 +462,7 @@ class LLMEngine:
             "E2E": times[("generate",)],
             "TokenizationTime": times[("tokenize",)],
             "RetainPercentage": global_retain_perc.view(-1).cpu().numpy().tolist(),
+            "BatchRetainPercentage": batch_retain_perc,
         }
         if dist.get_rank() == 0 and report_throughput:
             print(
