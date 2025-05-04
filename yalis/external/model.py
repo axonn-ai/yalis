@@ -18,6 +18,8 @@ from yalis.attention import attention_wrapper
 
 from yalis.external.config import Config
 import sys
+import os
+import ast
 
 from torch.utils import checkpoint
 from yalis.tensor_parallel import TPLinear
@@ -46,7 +48,29 @@ def get_norm_class(config):
         return TPRMSNorm 
     else:
         raise NotImplementedError(f"TP version of {config.norm_class_name} not implemented")
-        
+
+def get_asym_split(config):
+    attention_world_size = ax.config.G_intra_r
+    default_asym_split = [1/attention_world_size] * attention_world_size
+    asym_split = default_asym_split
+    asym_split_str = os.getenv('ASYM_SPLIT')
+    if asym_split_str:
+        try:
+            parsed_split = ast.literal_eval(asym_split_str)
+            if isinstance(parsed_split, list) and all(isinstance(x, (int, float)) for x in parsed_split):
+                    if abs(sum(parsed_split) - 1.0) < 1e-6:
+                        asym_split = parsed_split
+                        print(f"Using ASYM_SPLIT from environment variable: {asym_split}")
+                    else:
+                        print(f"Warning: ASYM_SPLIT '{asym_split_str}' from environment does not sum to 1. Using default: {default_asym_split}")
+            else:
+                print(f"Warning: Could not parse ASYM_SPLIT '{asym_split_str}' as a list of numbers. Using default: {default_asym_split}")
+
+        except (ValueError, SyntaxError, TypeError) as e:
+            print(f"Warning: Error parsing ASYM_SPLIT environment variable '{asym_split_str}': {e}. Using default: {default_asym_split}")
+    else:
+         print(f"ASYM_SPLIT environment variable not set. Using default: {default_asym_split}")
+    return asym_split
 
 
 class GPT(nn.Module):
@@ -352,7 +376,8 @@ class CausalSelfAttention(nn.Module):
         if not config.tensor_parallel:
             self.attn = nn.Linear(config.n_embd, shape, bias=config.bias)
         else:
-            self.attn = TPLinear(config.n_embd, shape, bias=config.bias, init_device=config.init_device, asym_split=[0.75, 0.25]
+            asym_split = get_asym_split(config)
+            self.attn = TPLinear(config.n_embd, shape, bias=config.bias, init_device=config.init_device, asym_split=asym_split
                     )
 
         # output projection
@@ -368,7 +393,7 @@ class CausalSelfAttention(nn.Module):
                 bias=config.bias,
                 transpose=True,
                 init_device=config.init_device,
-                asym_split=[0.75, 0.25]
+                asym_split=asym_split
             )
         # disabled by default
         self.kv_cache: Optional[KVCache] = None
@@ -588,8 +613,9 @@ class LLaMAMLP(nn.Module):
                 config.intermediate_size, config.n_embd, bias=config.bias
             )
         else:
+            asym_split = get_asym_split(config)
             self.gate_up_proj = TPLinear(
-                config.n_embd, 2 * config.intermediate_size, bias=config.bias, init_device=config.init_device, asym_split=[0.75, 0.25]
+                config.n_embd, 2 * config.intermediate_size, bias=config.bias, init_device=config.init_device, asym_split=asym_split
             )
             self.proj = TPLinear(
                 config.intermediate_size,
@@ -597,7 +623,7 @@ class LLaMAMLP(nn.Module):
                 bias=config.bias,
                 transpose=True,
                 init_device=config.init_device,
-                asym_split=[0.75, 0.25]
+                asym_split=asym_split
             )
 
         self.config = config
