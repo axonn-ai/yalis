@@ -615,7 +615,8 @@ class LLaMAMLP(nn.Module):
         else:
             asym_split = get_asym_split(config)
             self.gate_up_proj = TPLinear(
-                config.n_embd, 2 * config.intermediate_size, bias=config.bias, init_device=config.init_device, asym_split=asym_split
+                config.n_embd, 2 * config.intermediate_size, bias=config.bias, init_device=config.init_device,
+                asym_split=list(reversed(asym_split))
             )
             self.proj = TPLinear(
                 config.intermediate_size,
@@ -623,7 +624,7 @@ class LLaMAMLP(nn.Module):
                 bias=config.bias,
                 transpose=True,
                 init_device=config.init_device,
-                asym_split=asym_split
+                asym_split=list(reversed(asym_split))
             )
 
         self.config = config

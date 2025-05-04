@@ -2,6 +2,7 @@
 from yalis import ModelConfig, InferenceConfig, print_rank0, LLMEngine
 from transformers import AutoTokenizer
 import torch
+import os
 import torch.distributed as dist
 
 # needed to work with pytorch 2.3
@@ -17,7 +18,7 @@ except ImportError:
 
 if __name__ == "__main__":
     # Model ID from Hugging Face
-    model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
+    model_id = "meta-llama/Meta-Llama-3.1-8B-Instruct"
     
     user_prompts = [
         "How to bake a cake?",
@@ -39,7 +40,7 @@ if __name__ == "__main__":
     ]
 
     # take 16 prompts from this dataset
-    user_prompts = user_prompts[:16]
+    user_prompts = user_prompts[:4]
     print(f"Number of prompts = {len(user_prompts)}")
 
 
@@ -71,7 +72,7 @@ if __name__ == "__main__":
                                        max_length_of_generated_sequences=1024,
                                        top_p=0.80,
                                        temperature=1.0, 
-                                       tp_dims=None,
+                                       #tp_dims=(4, 1, 1),
                                        attention_backend="flash",
                                        use_paged_kv_caching=False)
 
@@ -86,8 +87,13 @@ if __name__ == "__main__":
     else:
         profiler_context = nullcontext()
 
+    #rank = dist.get_rank()
+    rank = os.environ["RANK"]
+    device = torch.cuda.current_device() #torch.device("cuda", int(os.environ.get("RANK")))
+    torch.cuda.reset_peak_memory_stats(device)
+
     with profiler_context as prof:
-        for iter in range(10):
+        for iter in range(3):
             output_tokens, metrics = engine.generate(
                 input_prompts, report_throughput=True, tokens_to_generate=tokens_to_gen
             )
@@ -105,6 +111,11 @@ if __name__ == "__main__":
         print_rank0(f"prompt = {prompt}")
         print_rank0(f"output = {output}")
         print_rank0("==========================\n\n")
+
+    peak_bytes = torch.cuda.max_memory_allocated(device)
+    peak_mb = peak_bytes / 1024**2
+    print("Device properties: ", torch.cuda.get_device_properties(device))
+    print(f"[rank {rank} on {device}] peak = {peak_mb:.1f} MB")
         
              
     if enable_profiling:
