@@ -216,7 +216,10 @@ class LLMEngine:
         )
         # Check if the tokenizer has a pad token, otherwise use eos_token
         if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
+            if "Mistral" in self.model_config.model_name:
+                self.tokenizer.pad_token = self.tokenizer.unk_token
+            else:
+                self.tokenizer.pad_token = self.tokenizer.eos_token
             print_rank0(
                 "Pad token not found in the tokenizer. Using eos_token as pad token."
             )
@@ -265,6 +268,8 @@ class LLMEngine:
         if isinstance(prompts, list) and all(
             isinstance(p, str) for p in prompts
         ):
+            old_padding = self.tokenizer.padding_side
+            self.tokenizer.padding_side = "right"
             prompt_tokens_and_mask = self.tokenizer(
                 prompts, return_tensors="pt", padding=True
             )
@@ -295,6 +300,7 @@ class LLMEngine:
             raise TypeError(
                 "prompts must be either a list of strings or a list of lists of integers"
             )
+        #print("Prompt tokens: ", prompt_tokens)
         timers.stop("tokenize")
 
         eos_token_id = self.tokenizer.eos_token_id
@@ -397,10 +403,6 @@ class LLMEngine:
                 # If done mask is True, we need to replace that next token with the eos token
                 next_token.masked_fill_(done_mask, eos_token_id)
 
-                if done_mask.all():
-                    # If all tokens are done, we can stop the generation
-                    print_rank0(f"All tokens are done. Stopping generation at step {step}.")
-                    break
 
                 if num_generation_step == self.inference_config.num_warmup_steps:
                     # End of warmup
@@ -420,6 +422,11 @@ class LLMEngine:
 
                 output_tokens.append(next_token.clone())
                 timers.stop(timer_key)
+                
+                if done_mask.all():
+                    # If all tokens are done, we can stop the generation
+                    print_rank0(f"All tokens are done. Stopping generation at step {step}.")
+                    break
 
 
         output_tensor = torch.cat(output_tokens, dim=1)
