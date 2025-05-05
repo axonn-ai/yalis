@@ -111,7 +111,7 @@ class GPT(nn.Module):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def forward(
-        self, input_ids: torch.Tensor, actual_sequence_lengths: torch.Tensor = None
+        self, input_ids: torch.Tensor, actual_sequence_lengths: torch.Tensor = None, profiler_phase_tag = ""
     ) -> torch.Tensor:
         idx = input_ids
         T = idx.size(1)
@@ -150,7 +150,10 @@ class GPT(nn.Module):
         )
 
         for block in self.transformer.h:
-            x = block(x, self.cos, self.sin, self.token_counter, block_table, flex_attention_block_mask)
+            x = block(
+                x, self.cos, self.sin, self.token_counter, block_table, flex_attention_block_mask,
+                profiler_phase_tag=profiler_phase_tag
+            )
         if self.config.tensor_parallel:
             x = Gather.apply(x, ax.comm_handle.inner_intra_layer_parallel_group)
         x = self.transformer.ln_f(x)
@@ -309,6 +312,7 @@ class Block(nn.Module):
         token_counter: Optional[torch.Tensor] = None,
         block_table: Optional[torch.Tensor] = None,
         flex_attention_block_mask = None,
+        profiler_phase_tag = ""
     ) -> torch.Tensor:
         """
         Non-parallel residual       Parallel residual
@@ -332,15 +336,24 @@ class Block(nn.Module):
         """
 
         x_normed = self.norm_1(x)
-        attention_output = self.attn(x_normed, cos, sin, token_counter, block_table, flex_attention_block_mask)
+        attention_output = self.attn(
+            x_normed, cos, sin, token_counter, block_table, flex_attention_block_mask,
+            profiler_phase_tag=profiler_phase_tag
+        )
         attention_output = self.post_attention_norm(attention_output)
 
         if self.config.parallel_residual:
             x_normed = x_normed if self.config.shared_attention_norm else self.norm_2(x)
-            x = self.mlp(x_normed) + attention_output + x
+            x = self.mlp(
+                x_normed,
+                profiler_phase_tag=profiler_phase_tag
+            ) + attention_output + x
         else:
             x = attention_output + x
-            x = self.post_mlp_norm(self.mlp(self.norm_2(x))) + x
+            x = self.post_mlp_norm(self.mlp(
+                self.norm_2(x),
+                profiler_phase_tag=profiler_phase_tag
+            )) + x
         return x
 
 
@@ -398,14 +411,15 @@ class CausalSelfAttention(nn.Module):
         token_counter: torch.Tensor,
         block_table: torch.Tensor = None,
         flex_attention_block_mask = None,
+        profiler_phase_tag = ""
     ) -> torch.Tensor:
         B, T, C = (
             x.size()
         )  # batch size, sequence length, embedding dimensionality (n_embd)
 
-        qkv = self.attn(x)
+        qkv = self.attn(x, profiler_phase_tag=profiler_phase_tag)
 
-        with record_function("yalis_attention"):
+        with record_function(profiler_phase_tag + "yalis_attention"):
             # assemble into a number of query groups to support MHA, MQA and GQA together (see `config.n_query_groups`)
             q_per_kv = self.config.n_head // self.config.n_query_groups
             total_qkv = q_per_kv + 2  # each group has 1+ queries, 1 key, and 1 value
@@ -469,7 +483,7 @@ class CausalSelfAttention(nn.Module):
             )  # re-assemble all head outputs side by side
 
         # output projection
-        return self.proj(y)
+        return self.proj(y, profiler_phase_tag=profiler_phase_tag)
 
     def build_kv_cache(
         self,
@@ -570,11 +584,11 @@ class LLaMAMLP(nn.Module):
 
         self.config = config
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.gate_up_proj(x)
+    def forward(self, x: torch.Tensor, profiler_phase_tag = "") -> torch.Tensor:
+        x = self.gate_up_proj(x, profiler_phase_tag=profiler_phase_tag)
         x_fc_1, x_fc_2 = x[..., ::2], x[..., 1::2]
         x = torch.nn.functional.silu(x_fc_1) * x_fc_2
-        return self.proj(x)
+        return self.proj(x, profiler_phase_tag=profiler_phase_tag)
 
 
 class GemmaMLP(LLaMAMLP):

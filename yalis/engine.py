@@ -42,7 +42,7 @@ def prefill(model, tokens, unpadded_prompt_lengths, temperature=1.0, top_k=None,
         token_id: The next predicted token.
     """
 
-    logits = model(tokens, unpadded_prompt_lengths)["logits"]
+    logits = model(tokens, unpadded_prompt_lengths, profiler_phase_tag="prefill_")["logits"]
     logits = logits[torch.arange(logits.size(0)), unpadded_prompt_lengths - 1]
     token_id = sample(logits=logits, temperature=temperature, top_k=top_k, top_p=top_p)
     return token_id
@@ -64,7 +64,7 @@ def generate(model, tokens, get_probs=False, temperature=1.0, top_k=None, top_p=
         token_id: The next predicted token.
         logits: (Optional) The raw logits from the model.
     """
-    logits = model(tokens)["logits"]
+    logits = model(tokens, profiler_phase_tag="decode_")["logits"]
     token_id = sample(logits=logits[:, -1], temperature=temperature, top_k=top_k, top_p=top_p)
     if get_probs:
         return token_id, logits
@@ -294,7 +294,7 @@ class LLMEngine:
                         # print_rank0(f"mem after prefill = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
                         current_input_to_model = next_token.clone()
                 else:  # Generation step
-                    with record_function("yalis_generate"):
+                    with record_function("yalis_decode"):
                         timer_key = "decode"
                         timers.start(timer_key)
                         with sdpa_kernel(SDPBackend.MATH):

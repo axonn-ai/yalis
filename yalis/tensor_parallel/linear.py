@@ -221,12 +221,13 @@ class TPLinear(torch.nn.Module):
 
     def forward(
         self,
-        x
+        x,
+        profiler_phase_tag = ""
     ):
-        with record_function(self.profiler_tag):
-            with record_function(self.profiler_tag + "_compute"):
+        with record_function(profiler_phase_tag + self.profiler_tag):
+            with record_function(profiler_phase_tag + self.profiler_tag + "_compute"):
                 x = self.matmul(self.weight, x)
-            with record_function(self.profiler_tag + "_all_reduce"):
+            with record_function(profiler_phase_tag + self.profiler_tag + "_all_reduce"):
                 x = self.all_reduce(x)
 
             if self.bias is None:
