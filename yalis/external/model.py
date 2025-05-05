@@ -34,18 +34,11 @@ from yalis import print_rank0
 # todo: these should be dynamically set during engine initialization
 MAX_CONTEXT_LENGTH = 16384
 
-def get_dynamic_num_blocks(page_block_size, n_embd,  n_layer, dtype):
-    rank = dist.get_rank()
-    total = torch.cuda.get_device_properties(rank).total_memory
-    reserved = torch.cuda.memory_reserved(rank)
-    allocated = torch.cuda.memory_allocated(rank)
+def get_dynamic_num_blocks(page_block_size, n_embd,  n_layer, dtype):    
     free, total_bytes = torch.cuda.mem_get_info()
-
-    free = 0.95*free
-    print(f"-------------------Free memory = {free} -------------------------")
+    free = 0.98*free
     dtype_num_bits = torch.tensor([], dtype = dtype, device = "cuda").element_size()
     num_blocks = math.floor(free/(page_block_size*n_embd * n_layer * dtype_num_bits))
-    print(f"-------------------Num Blocks = {num_blocks} -------------------------")
     return num_blocks
 # switch sequential norm classes to TP norm classes if needed
 def get_norm_class(config):
