@@ -18,6 +18,7 @@ def get_model(
     use_intra_head_parallelism=False,
     attention_backend=AttentionBackend.FLASH,
     use_paged_kv_caching=False,
+    paged_kv_cache_block_size=256,
     prestore_kv_cache=True
 ):
     tensor_parallel = dist.get_world_size() > 1
@@ -34,6 +35,7 @@ def get_model(
     config.use_intra_head_parallelism = use_intra_head_parallelism
     config.attention_backend = attention_backend
     config.use_paged_kv_caching = use_paged_kv_caching
+    config.paged_kv_cache_block_size = paged_kv_cache_block_size
     config.prestore_kv_cache = prestore_kv_cache
     config.init_device = device if random_init else "meta"
 

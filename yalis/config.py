@@ -95,6 +95,7 @@ class InferenceConfig:
         attention_backend: str = "flash",
         use_intra_head_parallelism: bool = False,
         use_paged_kv_caching: bool = False,
+        paged_kv_cache_block_size = 256,
         prestore_kv_cache: bool = True,
     ):
         """
@@ -128,6 +129,7 @@ class InferenceConfig:
         self.tp_dims = tp_dims
         self.use_intra_head_parallelism = use_intra_head_parallelism
         self.use_paged_kv_caching = use_paged_kv_caching
+        self.paged_kv_cache_block_size = paged_kv_cache_block_size
         self.prestore_kv_cache = prestore_kv_cache
         if attention_backend not in ["flash", "sdpa", "flex"]:
             raise ValueError(
@@ -170,6 +172,7 @@ class InferenceConfig:
 
         if self.use_intra_head_parallelism and not self.attention_backend == AttentionBackend.SDPA:
             raise ValueError("use_intra_head_parallelism requires attention_backend=sdpa") 
+        
     
 
     def __repr__(self):
