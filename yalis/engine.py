@@ -1,5 +1,4 @@
 import time
-t0 = time.perf_counter()
 import torch
 from typing import Union, List, Optional
 from .config import ModelConfig, InferenceConfig
@@ -14,7 +13,6 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 import time
 import gc
 from .timers import Timers
-print(f"Imports took {time.perf_counter() - t0:.2f} seconds")
 # These flags are taken from the following URL -
 # https://github.com/pytorch/pytorch/blob/347f96061f1cff603983b9be19ec92b374329a5b/benchmarks/gpt_fast/generate.py#L19
 torch._inductor.config.coordinate_descent_tuning = True

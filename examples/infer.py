@@ -1,7 +1,6 @@
 
 
 import time
-print("Started yalis")
 t0 = time.perf_counter()
 from yalis import ModelConfig, InferenceConfig, print_rank0, LLMEngine
 from transformers import AutoTokenizer
