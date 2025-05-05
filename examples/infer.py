@@ -80,7 +80,7 @@ if __name__ == "__main__":
                                        temperature=1.0, 
                                        tp_dims=None, 
                                        attention_backend="flash",
-                                       use_paged_kv_caching=True)
+                                       use_paged_kv_caching=False)
 
 
     engine = LLMEngine(model_config=model_config, inference_config=inference_config)
