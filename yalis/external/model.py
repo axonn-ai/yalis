@@ -159,6 +159,9 @@ class GPT(nn.Module):
         # Average the retain percentage across all blocks
         retain_perc_mean = retain_perc_g / len(self.transformer.h)
 
+        # All reduce retain percentage across all ranks
+        dist.all_reduce(retain_perc_mean, op=dist.ReduceOp.AVG)
+
         if self.config.tensor_parallel:
             x = Gather.apply(x, ax.comm_handle.inner_intra_layer_parallel_group)
         x = self.transformer.ln_f(x)
@@ -266,11 +269,18 @@ class GPT(nn.Module):
                 dtype,
             )
 
-            #print_rank0(f"{batch_size}, {self.config.n_head}, {self.config.num_warmup_steps}")
+            if self.config.tensor_parallel:
+                # dividing attention heads over the row tensor parallel group
+                # currently attention is duplicated across the column tensor parallel group
+                attention_world_size = ax.config.G_intra_r
+                assert self.config.n_head % attention_world_size == 0
+                heads = self.config.n_head // attention_world_size
+            else:
+                heads = self.config.n_head
 
             block.attn.warmup_quantiles = torch.zeros(
                 batch_size,
-                self.config.n_head,
+                heads,
                 self.config.num_warmup_steps,
                 dtype=dtype, 
                 device=device,
@@ -397,10 +407,10 @@ class CausalSelfAttention(nn.Module):
             )
         # disabled by default
         self.kv_cache: Optional[KVCache] = None
-        self.apply_sliding_window_attention = (
-            config.sliding_window_size is not None
-            and block_idx % config.sliding_window_layer_placing == 0
-        )
+        #self.apply_sliding_window_attention = (
+        #    config.sliding_window_size is not None
+        #    and block_idx % config.sliding_window_layer_placing == 0
+        #)
 
         # Used by thresh attention
         self.warmup_quantiles = None

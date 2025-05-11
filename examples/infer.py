@@ -17,7 +17,7 @@ except ImportError:
 
 if __name__ == "__main__":
     # Model ID from Hugging Face
-    model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
+    model_id = "meta-llama/Meta-Llama-3.1-8B-Instruct"
     
     user_prompts = [
         "How to bake a cake?",

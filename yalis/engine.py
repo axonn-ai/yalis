@@ -403,7 +403,6 @@ class LLMEngine:
                 # If done mask is True, we need to replace that next token with the eos token
                 next_token.masked_fill_(done_mask, eos_token_id)
 
-
                 if num_generation_step == self.inference_config.num_warmup_steps:
                     # End of warmup
 
@@ -440,9 +439,13 @@ class LLMEngine:
         )
         ttft = times[("generate", "prefill")] / events[("generate", "prefill")]
         tbt = times[("generate", "decode")] / events[("generate", "decode")]
-        warmup_time = (
-            times[("generate", "warmup")] / events[("generate", "warmup")]
-        )
+
+        if events[("generate", "warmup")] != 0:
+            warmup_time = (
+                times[("generate", "warmup")] / events[("generate", "warmup")]
+            )
+        else:
+            warmup_time = 0
 
         epsilon = 1e-9
         global_retain_perc = (
