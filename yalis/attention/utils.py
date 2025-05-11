@@ -13,6 +13,7 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
 
 
+#@torch.compile()
 def fit_powerlaw_linreg_torch(x: torch.Tensor, y: torch.Tensor):
     """
     Fits a power-law model using a linear regression on the logarithm of data.

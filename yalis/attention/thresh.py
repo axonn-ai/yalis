@@ -71,14 +71,15 @@ def lit_rotary_kv_update_gen(
     if warmup:
         out, quantiles = thresh_attention_warmup_forward(q, k_cache, v_cache, threshold_percentile, attn_mask=mask[:, None, None, :], enable_gqa=enable_gqa)
         g_indices = generation_counter.view(-1)
-        warmup_quantiles[b_indices, :, g_indices - 1] = quantiles[b_indices, :, 0]
+        #print (f"{g_indices.dtype=}, {warmup_quantiles.dtype=}, {quantiles.dtype=}")
+        warmup_quantiles[b_indices, :, g_indices - 1] = quantiles[b_indices, :, 0].to(warmup_quantiles.dtype)
         return out
     else:
         #out = torch.nn.functional.scaled_dot_product_attention(
         #    q, k_cache, v_cache, attn_mask=mask[:, None, None, :], enable_gqa=enable_gqa
         #)
         out, retain_ = thresh_attention_forward(q, k_cache, v_cache, generation_counter, token_counter, powerlaw_a, powerlaw_b, attn_mask=mask[:, None, None, :], enable_gqa=enable_gqa)
-        retain_perc.add_(retain_)
+        #retain_perc.add_(retain_)
         return out
 
 
