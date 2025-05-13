@@ -2,6 +2,7 @@
 from . import sdpa_and_flex
 from . import flash
 from . import thresh
+from . import topk
 
 from enum import Enum
 
@@ -10,3 +11,4 @@ class AttentionBackend(str, Enum):
     FLASH = "flash"
     FLEX = "flex"
     THRESH = "thresh"
+    TOPK = "topk"

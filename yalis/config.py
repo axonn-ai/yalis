@@ -150,7 +150,7 @@ class InferenceConfig:
         self.use_intra_head_parallelism = use_intra_head_parallelism
         self.use_paged_kv_caching = use_paged_kv_caching
         self.prestore_kv_cache = prestore_kv_cache
-        if attention_backend not in ["flash", "sdpa", "flex", "thresh"]:
+        if attention_backend not in ["flash", "sdpa", "flex", "thresh", "topk"]:
             raise ValueError(
                 f"Invalid attention backend: {attention_backend}. Supported values are 'flash', 'sdpa', 'flex'."
             )

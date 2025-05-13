@@ -19,6 +19,7 @@ torch._inductor.config.coordinate_descent_tuning = True
 torch._inductor.config.triton.unique_kernel_names = True
 torch._inductor.config.fx_graph_cache = True  # Experimental feature to reduce compilation times, will be on by default in future
 torch._inductor.config.assert_indirect_indexing = False
+torch._dynamo.config.capture_scalar_outputs = True
 
 precision_to_dtype = {
     "bf16": torch.bfloat16,
@@ -405,7 +406,6 @@ class LLMEngine:
 
                 if num_generation_step == self.inference_config.num_warmup_steps:
                     # End of warmup
-
                     # Fit the powerlaw distribution
                     self.model.fit_powerlaw()
 
@@ -422,23 +422,25 @@ class LLMEngine:
                 output_tokens.append(next_token.clone())
                 timers.stop(timer_key)
                 
-                if done_mask.all():
-                    # If all tokens are done, we can stop the generation
-                    print_rank0(f"All tokens are done. Stopping generation at step {step}.")
-                    break
+                #if done_mask.all():
+                #    # If all tokens are done, we can stop the generation
+                #    print_rank0(f"All tokens are done. Stopping generation at step {step}.")
+                #    break
 
 
         output_tensor = torch.cat(output_tokens, dim=1)
         # End timing and calculate elapsed time
         timers.stop("generate")
         times, events = timers.get_times()
+
         tput = (
             prompt_tokens.shape[0]
             * tokens_to_generate
-            / (times[("generate",)] / 1000)
+           / (times[("generate",)] / 1000)
         )
         ttft = times[("generate", "prefill")] / events[("generate", "prefill")]
         tbt = times[("generate", "decode")] / events[("generate", "decode")]
+
 
         if events[("generate", "warmup")] != 0:
             warmup_time = (
@@ -478,6 +480,7 @@ class LLMEngine:
             print(
                 f"[Metrics] BatchSize = {prompt_tokens.shape[0]}, PromptLength = {prompt_tokens.shape[1]}, DecodeLength = {tokens_to_generate}, Throughput = {tput:.2f} tok/s, TTFT = {ttft:.4f} ms, TBT = {tbt:.4f} ms, E2E = {times[('generate',)]:.4f} ms, WarmupTime = {warmup_time:.4f} ms, BatchRetainPerc = {batch_retain_perc:.4f}"
             )
+            print(f"times: {times}")
         
         #print("Eos step index: ", eos_step_index)
         

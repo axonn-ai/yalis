@@ -3,8 +3,42 @@ import torch
 from axonn import axonn as ax 
 import math 
 import torch.distributed as dist
-from typing import Optional
-from yalis.attention.threshold_attention import thresh_attention_forward, thresh_attention_warmup_forward
+from typing import Optional, Tuple
+
+
+def topk_sdpa(query, key, value, topk, token_counter,attn_mask=None, enable_gqa=False) -> torch.Tensor:
+    B, H, L, S = query.size(0), query.size(1), query.size(-2), key.size(-2)
+    scale_factor = 1 / math.sqrt(query.size(-1))
+    attn_bias = torch.zeros(B, H, L, S, dtype=query.dtype, device=query.device)
+    attn_bias_nan = torch.zeros(B, H, L, S, dtype=query.dtype, device=query.device)
+    if attn_mask is not None:
+        if attn_mask.dtype == torch.bool:
+            attn_bias.masked_fill_(attn_mask.logical_not(), float("-inf"))
+            attn_bias_nan.masked_fill_(attn_mask.logical_not(), torch.nan)
+        else:
+            attn_bias = attn_mask + attn_bias
+
+    if enable_gqa:
+        key = key.repeat_interleave(query.size(-3)//key.size(-3), -3)
+        value = value.repeat_interleave(query.size(-3)//value.size(-3), -3)
+
+    attn_weight = query @ key.transpose(-2, -1) * scale_factor
+    attn_weight += attn_bias
+    attn_weight = torch.softmax(attn_weight, dim=-1)
+
+    if topk < 1:
+        assert B == 1, "topk must be a scalar for batch size > 1"
+        token_counter_scalar = token_counter.item()
+        topk = int(topk * token_counter_scalar)
+
+    if L == 1: # Generation Step
+        topk_vals, topk_indices = torch.topk(attn_weight, k=topk, dim=-1)
+        attn_weight_masked = torch.zeros_like(attn_weight)
+        attn_weight_masked.scatter_(-1, topk_indices, topk_vals)
+        attn_weight = attn_weight_masked
+
+    return attn_weight @ value
+
 
 def build_mask_from_index(index, t_max):
     B = index.size(0)
@@ -29,13 +63,8 @@ def lit_rotary_kv_update_gen(
     token_counter: torch.Tensor,  # B,1
     k_cache: torch.Tensor,  # B,nh,t_max,hs
     v_cache: torch.Tensor,  # B,nh,t_max,hs,
-    threshold_percentile: float,
-    generation_counter: torch.Tensor, # B,1
-    warmup_quantiles: torch.Tensor, # B,nh, num_warmups
+    topk: float,
     retain_perc: torch.Tensor, # B,nh, num_warmups
-    powerlaw_a: torch.Tensor, # B,nh, num_warmups
-    powerlaw_b: torch.Tensor, # B,nh, num_warmups
-    warmup: bool = False,
 ) -> torch.Tensor:
     cos = index_into_rope_cache_gen(cos, token_counter)
     sin = index_into_rope_cache_gen(sin, token_counter)
@@ -68,19 +97,9 @@ def lit_rotary_kv_update_gen(
     #[:, None, None, :]
     
     enable_gqa = q.size(1) != k.size(1)
-    if warmup:
-        out, quantiles = thresh_attention_warmup_forward(q, k_cache, v_cache, threshold_percentile, attn_mask=mask[:, None, None, :], enable_gqa=enable_gqa)
-        g_indices = generation_counter.view(-1)
-        #print (f"{g_indices.dtype=}, {warmup_quantiles.dtype=}, {quantiles.dtype=}")
-        warmup_quantiles[b_indices, :, g_indices - 1] = quantiles[b_indices, :, 0].to(warmup_quantiles.dtype)
-        return out
-    else:
-        #out = torch.nn.functional.scaled_dot_product_attention(
-        #    q, k_cache, v_cache, attn_mask=mask[:, None, None, :], enable_gqa=enable_gqa
-        #)
-        out, retain_ = thresh_attention_forward(q, k_cache, v_cache, generation_counter, token_counter, powerlaw_a, powerlaw_b, attn_mask=mask[:, None, None, :], enable_gqa=enable_gqa)
-        retain_perc.add_(retain_)
-        return out
+    out = topk_sdpa(q, k_cache, v_cache, topk, token_counter, attn_mask=mask[:, None, None, :], enable_gqa=enable_gqa)
+    retain_perc.add_(topk)
+    return out
 
 
 def lit_rotary_kv_update_prefill(
@@ -119,7 +138,7 @@ def lit_rotary_kv_update_prefill(
     out = torch.nn.functional.scaled_dot_product_attention(q, k, v, is_causal=True, enable_gqa=enable_gqa)
     return out
 
-def threshold_attention(q: torch.Tensor, 
+def topk_attention_forward(q: torch.Tensor, 
               k: torch.Tensor, 
               v: torch.Tensor,  
               k_cache: Optional[torch.Tensor] = None, 
@@ -127,13 +146,8 @@ def threshold_attention(q: torch.Tensor,
               cache_seqlens: Optional[torch.Tensor] = None,  
               rotary_cos: Optional[torch.Tensor] = None,
               rotary_sin: Optional[torch.Tensor] = None,
-              generation_counter: Optional[torch.Tensor] = None,
-              warmup_quantiles: Optional[torch.Tensor] = None,
-              warmup: bool = False,
               threshold_percentile: float = 0.0,
               retain_perc: Optional[torch.Tensor] = None,
-              powerlaw_a: Optional[torch.Tensor] = None,
-              powerlaw_b: Optional[torch.Tensor] = None,
               **kwargs) -> torch.Tensor:
     if "block_table" in kwargs and kwargs["block_table"] is not None:
         raise ValueError("'block_table' or paged kv-caching is not compatible with Threshold attention.")
@@ -150,14 +164,8 @@ def threshold_attention(q: torch.Tensor,
             cache_seqlens,  # B,1
             k_cache,  # B,nh,t_max,hs
             v_cache,  # B,nh,t_max,hs
-            threshold_percentile,
-            generation_counter,
-            warmup_quantiles,
-            retain_perc,
-            powerlaw_a,
-            powerlaw_b,
-            warmup=warmup,
-
+            topk=threshold_percentile,
+            retain_perc=retain_perc,
         )
     else:
         # prefill
@@ -174,8 +182,8 @@ def threshold_attention(q: torch.Tensor,
     return y
 
 
-@register_attention("thresh")
-def thresh_attn(q: torch.Tensor, 
+@register_attention("topk")
+def topk_attn(q: torch.Tensor, 
               k: torch.Tensor, 
               v: torch.Tensor,  
               k_cache: Optional[torch.Tensor] = None, 
@@ -185,12 +193,9 @@ def thresh_attn(q: torch.Tensor,
               rotary_sin: Optional[torch.Tensor] = None,
               use_intra_head_parallelism: bool = False,
               **kwargs):  
-    assert "generation_counter" in kwargs, "thresh attention requires a generation counter"
-    assert "warmup_quantiles" in kwargs, "thresh attention requires warmup quantiles"
-    assert "warmup" in kwargs, "thresh attention requires warmup flag"
-    assert "threshold_percentile" in kwargs, "thresh attention requires a threshold percentile"
-    assert "retain_perc" in kwargs, "thresh attention requires a retain percentage"
-    return threshold_attention(q=q,
+    assert "threshold_percentile" in kwargs, "topk attention requires a threshold percentile"
+    assert "retain_perc" in kwargs, "topk attention requires a retain percentage"
+    return topk_attention_forward(q=q,
                             k=k,
                             v=v,
                             k_cache=k_cache, 

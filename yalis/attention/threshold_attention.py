@@ -3,7 +3,7 @@ import torch
 import math
 from .utils import fit_powerlaw_linreg_torch
 #from .threshold_attention_triton import thresh_attn_fused, thresh_attn_reference
-from .threshold_attention_triton import thresh_attn_reference, thresh_attn_fused_wrapped
+from .threshold_attention_triton import thresh_attn_reference
 
 
 # This function has been modified from torch's SDPA attention example: https://pytorch.org/docs/stable/generated/torch.nn.functional.scaled_dot_product_attention.html
@@ -31,7 +31,7 @@ def thresh_attn(query, key, value, threshold, attn_mask=None, enable_gqa=False) 
 
     return attn_weight @ value
 
-# This function has been modified from torch's SDPA attention example: https://pytorch.org/docs/stable/generated/torch.nn.functional.scaled_dot_product_attention.html
+# This function has been modified from torch's SDPA attenion example: https://pytorch.org/docs/stable/generated/torch.nn.functional.scaled_dot_product_attention.html
 def thresh_warmup(query, key, value, percentile, attn_mask=None, enable_gqa=False) -> torch.Tensor:
     B, H, L, S = query.size(0), query.size(1), query.size(-2), key.size(-2)
     scale_factor = 1 / math.sqrt(query.size(-1))
@@ -103,7 +103,7 @@ def thresh_attention_forward(
     #threshold = threshold.to(dtype=torch.float32)
     #print ("[DEBUG] Threshold: ", threshold)
 
-    attn_output, count_nonzero = thresh_attn_fused_wrapped(
+    attn_output, count_nonzero = thresh_attn_reference(
         query,
         key,
         value,
@@ -112,8 +112,8 @@ def thresh_attention_forward(
         enable_gqa=enable_gqa,
     )
 
-    #retain_perc = count_nonzero / (token_counter.unsqueeze(-1).unsqueeze(-1) + 1) * 100
-    #retain_perc = retain_perc.squeeze().mean(dim=-1, keepdim=True) # B, 1
+    retain_perc = count_nonzero / (token_counter.unsqueeze(-1).unsqueeze(-1) + 1) * 100
+    retain_perc = retain_perc.squeeze().mean(dim=-1, keepdim=True) # B, 1
     #print ("[DEBUG] Retain percentage: ", retain_perc)
     #mean_retain_perc = torch.mean(retain_perc)
     #print ("[DEBUG] Mean retain percentage: ", mean_retain_perc)
@@ -155,4 +155,4 @@ def thresh_attention_forward(
 
 
     #assert torch.allclose(attn_output, attn_output_reference, atol=1e-2, rtol=rtol), f"Outputs do not match! {attn_output} vs {attn_output_reference}"
-    return attn_output, None
+    return attn_output, retain_perc
