@@ -6,5 +6,5 @@ def flex_decode_mask(token_counter):
         return (kv_idx <= token_counter[b])
     return _inner_mask
 
-def create_causal_block_mask_for_flex_attention(token_counter, kv_len):
-    return create_block_mask(flex_decode_mask(token_counter), B=None, H=None, Q_LEN=1, KV_LEN=kv_len)
+def create_causal_block_mask_for_flex_attention(token_counter, kv_len, batch_size):
+    return create_block_mask(flex_decode_mask(token_counter), B=batch_size, H=None, Q_LEN=1, KV_LEN=kv_len)

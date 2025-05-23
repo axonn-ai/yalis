@@ -144,7 +144,7 @@ class GPT(nn.Module):
         block_table=self.kv_cache_manager.block_table() if self.config.use_paged_kv_caching else None
 
         flex_attention_block_mask = (
-            create_causal_block_mask_for_flex_attention(self.token_counter, self.kv_length)
+            create_causal_block_mask_for_flex_attention(self.token_counter, self.kv_length, self.batch_size)
             if self.config.attention_backend == AttentionBackend.FLEX else None
         )
 
@@ -245,6 +245,7 @@ class GPT(nn.Module):
             max_seq_length = self.max_seq_length
         
         self.kv_length = max_seq_length
+        self.batch_size = batch_size
 
         # initialize the kv cache for all blocks
         for block in self.transformer.h:
