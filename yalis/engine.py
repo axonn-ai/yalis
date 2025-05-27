@@ -12,6 +12,8 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 import time
 import gc
 from .timers import Timers
+from yalis.attention.backends import AttentionBackend
+
 
 # These flags are taken from the following URL -
 # https://github.com/pytorch/pytorch/blob/347f96061f1cff603983b9be19ec92b374329a5b/benchmarks/gpt_fast/generate.py#L19
@@ -221,10 +223,21 @@ class LLMEngine:
 
         timers.start("tokenize")
         if isinstance(prompts, list) and all(isinstance(p, str) for p in prompts):
+            # Flex Attention Prefill requires the padding to be at least 128 tokens
             prompt_tokens_and_mask = self.tokenizer(
                 prompts, return_tensors="pt", padding=True
             )
             prompt_tokens = prompt_tokens_and_mask.input_ids
+
+            if self.inference_config.attention_backend == AttentionBackend.FLEX:
+                # Flex prefill requires the padding to be at least 128 tokens
+                max_prompt_length = prompt_tokens.shape[1]
+                if max_prompt_length < 128:
+                    prompt_tokens_and_mask = self.tokenizer(
+                        prompts, return_tensors="pt", padding="max_length", max_length=128
+                    )
+                    prompt_tokens = prompt_tokens_and_mask.input_ids 
+
             # prompt tokens contain padding tokens. Summing the attention mask
             # gives us the actual sequence lengths of each prompt sans padding
             prompt_sequence_lengths = prompt_tokens_and_mask.attention_mask.sum(dim=1)

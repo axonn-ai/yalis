@@ -1,16 +1,17 @@
 from torch.nn.attention.flex_attention import create_block_mask
+import torch
 
+# This still leads to a graph break but it's faster than creating the mask outside the compile block
+# Strangely, the graph break does not cause an empty CUDA graph
+# TODO: Investigate and make this torch compile friendly
 @staticmethod
 def flex_decode_mask(token_counter):
     def _inner_mask(b, h, q_idx, kv_idx):
         return (kv_idx <= token_counter[b])
     return _inner_mask
 
-@staticmethod
-def flex_prefill_mask():
-    def _inner_mask(b, h, q_idx, kv_idx):
-        return q_idx >= kv_idx
-    return _inner_mask
+def flex_prefill_mask(b, h, q_idx, kv_idx):
+    return q_idx >= kv_idx
 
 def create_causal_block_mask_for_flex_attention(T, token_counter, kv_len, batch_size):
     """
@@ -25,7 +26,8 @@ def create_causal_block_mask_for_flex_attention(T, token_counter, kv_len, batch_
     Returns:
         A block mask for flex attention.
     """
+
     if T==1:
-        return create_block_mask(flex_decode_mask(token_counter), B=batch_size, H=None, Q_LEN=1, KV_LEN=kv_len)
+        return create_block_mask(flex_decode_mask(token_counter), B=batch_size, H=None, Q_LEN=1, KV_LEN=kv_len, _compile=True)
     else:
-        return create_block_mask(flex_prefill_mask(), B=batch_size, H=None, Q_LEN=T, KV_LEN=T)
+        return create_block_mask(flex_prefill_mask, B=batch_size, H=None, Q_LEN=T, KV_LEN=T, _compile=True)
