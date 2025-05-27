@@ -25,7 +25,7 @@ from copy import deepcopy
 from axonn import axonn as ax
 from axonn.intra_layer.communication import Drop, Gather
 from kvcache_manager import KVCacheManager
-from flash_attn.ops.triton.rotary import apply_rotary
+from yalis.attention.flash import flash_apply_rotary as apply_rotary
 from yalis.attention.backends import AttentionBackend
 from yalis.attention.masking import create_causal_block_mask_for_flex_attention
 

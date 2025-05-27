@@ -1,5 +1,5 @@
 import torch
-from litgpt.model import Config
+from yalis.external.config import Config
 from pathlib import Path
 import sys
 from yalis.external.litgpt_utils import load_checkpoint, _EmptyInit
