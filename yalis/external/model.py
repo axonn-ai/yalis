@@ -32,8 +32,14 @@ from yalis.attention.masking import create_causal_block_mask_for_flex_attention
 from yalis import print_rank0
 
 # todo: these should be dynamically set during engine initialization
-NUM_BLOCKS, PAGE_BLOCK_SIZE = 1024, 256
+MAX_CONTEXT_LENGTH = 16384
 
+def get_dynamic_num_blocks(page_block_size, n_embd,  n_layer, dtype):    
+    free, total_bytes = torch.cuda.mem_get_info()
+    free = 0.98*free
+    dtype_num_bits = torch.tensor([], dtype = dtype, device = "cuda").element_size()
+    num_blocks = math.floor(free/(page_block_size*n_embd * n_layer * dtype_num_bits))
+    return num_blocks
 # switch sequential norm classes to TP norm classes if needed
 def get_norm_class(config):
     if not config.tensor_parallel or ax.config.G_intra_c == 1:
@@ -248,19 +254,22 @@ class GPT(nn.Module):
         self.batch_size = batch_size
 
         # initialize the kv cache for all blocks
+        paged_num_blocks = get_dynamic_num_blocks(self.config.paged_kv_cache_block_size, self.config.n_embd, self.config.n_layer, dtype)
         for block in self.transformer.h:
             block.attn.kv_cache = block.attn.build_kv_cache(
                 batch_size,
                 max_seq_length,
                 rope_cache_length,
+                paged_num_blocks,
                 device,
                 dtype,
             )
         if self.config.use_paged_kv_caching:
+            
             self.kv_cache_manager = KVCacheManager(batch_size, 
-                                                16384//PAGE_BLOCK_SIZE, # ToDo: set these dynamically 
-                                                NUM_BLOCKS, 
-                                                PAGE_BLOCK_SIZE)
+                                                MAX_CONTEXT_LENGTH//self.config.paged_kv_cache_block_size,  # ToDo: set these dynamically 
+                                                paged_num_blocks, 
+                                                self.config.paged_kv_cache_block_size) 
 
         self.token_counter = torch.zeros(batch_size, device=device, dtype=torch.int32)
 
@@ -471,6 +480,7 @@ class CausalSelfAttention(nn.Module):
         batch_size: int,
         max_seq_length: int,
         rope_cache_length: Optional[int] = None,
+        paged_num_blocks: Optional[int] = None,
         device: Optional[torch.device] = None,
         dtype: Optional[torch.dtype] = None,
     ) -> "KVCache":
@@ -478,7 +488,7 @@ class CausalSelfAttention(nn.Module):
         heads = self.config.n_query_groups
         if self.config.attention_backend == AttentionBackend.FLASH:
             if self.config.use_paged_kv_caching:
-                v_shape = (NUM_BLOCKS, PAGE_BLOCK_SIZE, heads, self.config.head_size)
+                v_shape = (paged_num_blocks, self.config.paged_kv_cache_block_size, heads, self.config.head_size)
             else:      
                 v_shape = (batch_size, max_seq_length, heads, self.config.head_size)
 
@@ -495,8 +505,8 @@ class CausalSelfAttention(nn.Module):
             if self.config.attention_backend == AttentionBackend.FLASH:
                 if self.config.use_paged_kv_caching:
                     k_shape = (
-                        NUM_BLOCKS,
-                        PAGE_BLOCK_SIZE,
+                        paged_num_blocks,
+                        self.config.paged_kv_cache_block_size,
                         heads,
                         rope_cache_length + self.config.head_size - self.config.rope_n_elem,
                     )

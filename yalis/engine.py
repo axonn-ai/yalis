@@ -1,3 +1,4 @@
+import time
 import torch
 from typing import Union, List, Optional
 from .config import ModelConfig, InferenceConfig
@@ -12,7 +13,6 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 import time
 import gc
 from .timers import Timers
-
 # These flags are taken from the following URL -
 # https://github.com/pytorch/pytorch/blob/347f96061f1cff603983b9be19ec92b374329a5b/benchmarks/gpt_fast/generate.py#L19
 torch._inductor.config.coordinate_descent_tuning = True
@@ -165,6 +165,7 @@ class LLMEngine:
             use_intra_head_parallelism=self.inference_config.use_intra_head_parallelism,
             attention_backend=self.inference_config.attention_backend,
             use_paged_kv_caching=self.inference_config.use_paged_kv_caching,
+            paged_kv_cache_block_size=self.inference_config.paged_kv_cache_block_size,
             prestore_kv_cache=self.inference_config.prestore_kv_cache,
         )
         self._make_params_contiguous()
