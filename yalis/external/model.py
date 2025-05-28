@@ -380,10 +380,28 @@ class CausalSelfAttention(nn.Module):
             # currently attention is duplicated across the column tensor parallel group
             self.config = deepcopy(self.config)
             attention_world_size = ax.config.G_intra_r
+            self.duplicating_kv = attention_world_size > config.n_query_groups
+            if self.duplicating_kv:
+                self.duplication_degree = attention_world_size // config.n_query_groups
+            else:
+                self.duplication_degree = 1
             assert self.config.n_head % attention_world_size == 0
+            # saving originals
+            self.total_n_head = self.config.n_head
+            self.total_n_query_groups = self.config.n_query_groups
+            # q per rank
             self.config.n_head //= attention_world_size
-            assert self.config.n_query_groups % attention_world_size == 0
-            self.config.n_query_groups //= attention_world_size
+            if self.duplicating_kv:
+                self.config.n_query_groups = 1
+                self.attn.duplicating_kv = True
+                self.attn.total_n_head = self.total_n_head
+                self.attn.total_n_query_groups = self.total_n_query_groups
+                self.attn.duplication_degree = self.duplication_degree
+                self.attn.head_size = self.config.head_size
+                self.attn.q_per_rank = self.config.n_head
+            else:
+                assert self.config.n_query_groups % attention_world_size == 0
+                self.config.n_query_groups //= attention_world_size
 
     def forward(
         self,
