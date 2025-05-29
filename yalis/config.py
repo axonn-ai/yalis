@@ -96,7 +96,6 @@ class InferenceConfig:
         use_intra_head_parallelism: bool = False,
         use_paged_kv_caching: bool = False,
         prestore_kv_cache: bool = True,
-        ignore_eos: Optional[bool] = True
     ):
         """
         Initialize the inference configuration.
@@ -131,7 +130,6 @@ class InferenceConfig:
         self.use_intra_head_parallelism = use_intra_head_parallelism
         self.use_paged_kv_caching = use_paged_kv_caching
         self.prestore_kv_cache = prestore_kv_cache
-        self.ignore_eos = ignore_eos
         if attention_backend not in ["flash", "sdpa", "flex"]:
             raise ValueError(
                 f"Invalid attention backend: {attention_backend}. Supported values are 'flash', 'sdpa', 'flex'."

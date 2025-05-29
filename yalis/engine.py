@@ -200,6 +200,7 @@ class LLMEngine:
         prompts: Union[list[str], list[list[int]]],
         tokens_to_generate: int = 50,
         report_throughput: bool = False,
+        ignore_eos_param: Optional[bool] = True
     ) -> torch.Tensor:
         """
         Generate tokens based on input prompts, which can either be a list of strings or a list of token ID lists.
@@ -268,7 +269,7 @@ class LLMEngine:
         # Using tensor size instead of inference config object to allow users to choose batch sizes < max batch size
         # (later defined in inference config).
         batch_size = prompt_tokens.size(0)
-        ignore_eos = self.inference_config.ignore_eos
+        ignore_eos = ignore_eos_param
         # Initialize done mask for multiple batches
         if batch_size > 1 and not ignore_eos:
             done_mask = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
