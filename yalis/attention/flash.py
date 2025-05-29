@@ -3,6 +3,26 @@ import torch
 from typing import Sequence, Optional, Union
 from .registry import register_attention
 from .update_kv_cache import update_paged_kv_cache
+from flash_attn.ops.triton.rotary import apply_rotary
+
+
+# A recent change (Commit a9a3170) added a wrap_triton call to the rotary kernel invocation
+# Torch compile requires this call to be inside a triton_op, otherwise compilation breaks
+# Ideally, this should be fixed in the flash attention repo but for now, this workaround works
+# TODO: Once flash attention fixes this, remove this
+@torch.library.triton_op("yalis::flash_apply_rotary", mutates_args=()) 
+def flash_apply_rotary(x: torch.Tensor, 
+                        rotary_cos: Optional[torch.Tensor] = None, 
+                        rotary_sin: Optional[torch.Tensor] = None, 
+                        token_counter: Optional[torch.Tensor] = None) -> torch.Tensor:
+    """
+    Applies rotary embeddings to the input tensor
+    """
+    return apply_rotary(x, 
+                        rotary_cos,
+                        rotary_sin,
+                        token_counter)
+
 
 
 # here we are registering the flash_attn_with_kv_cache kernel as a custom pytorch op 
