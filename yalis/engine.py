@@ -180,7 +180,6 @@ class LLMEngine:
             print_rank0(
                 "Pad token not found in the tokenizer. Using eos_token as pad token."
             )
-        self.eos_token_id = self.tokenizer.eos_token_id
         print_rank0(f"Initializing Model took {time.time() - t0} seconds")
     
     def reset_kv_cache(self, batch_size):
@@ -200,7 +199,7 @@ class LLMEngine:
         prompts: Union[list[str], list[list[int]]],
         tokens_to_generate: int = 50,
         report_throughput: bool = False,
-        ignore_eos_param: Optional[bool] = True
+        ignore_eos: Optional[bool] = True
     ) -> torch.Tensor:
         """
         Generate tokens based on input prompts, which can either be a list of strings or a list of token ID lists.
@@ -269,7 +268,7 @@ class LLMEngine:
         # Using tensor size instead of inference config object to allow users to choose batch sizes < max batch size
         # (later defined in inference config).
         batch_size = prompt_tokens.size(0)
-        ignore_eos = ignore_eos_param
+        ignore_eos = ignore_eos
         # Initialize done mask for multiple batches
         if batch_size > 1 and not ignore_eos:
             done_mask = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
@@ -318,11 +317,11 @@ class LLMEngine:
 
                 # EOS Support:
                 # Flatten to shape (batch_size,) for element wise comparison
-                done_mask |= (next_token.view(-1) == self.eos_token_id)
+                done_mask |= (next_token.view(-1) == self.tokenizer.eos_token_id)
                 # Reshape to match next_token's shape for masked_fill()
                 mask = done_mask.view(-1, 1)
                 # Force EOS prompts to stay EOS
-                next_token.masked_fill_(mask, self.eos_token_id)
+                next_token.masked_fill_(mask, self.tokenizer.eos_token_id)
 
                 output_tokens.append(next_token.clone())
 
@@ -330,6 +329,7 @@ class LLMEngine:
                 if done_mask.all():
                     print_rank0(f"All batch samples reached EOS at step {step}, stopping.")
                     timers.stop(timer_key)
+                    finished_reason = "EOS"
                     break
 
                 timers.stop(timer_key)
