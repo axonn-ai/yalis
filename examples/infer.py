@@ -88,9 +88,17 @@ if __name__ == "__main__":
 
     with profiler_context as prof:
         for iter in range(10):
+
+            if iter == 8:
+                torch.cuda.profiler.start()
+
             output_tokens, metrics = engine.generate(
                 input_prompts, report_throughput=True, tokens_to_generate=tokens_to_gen
             )
+            
+            if iter == 8:
+                torch.cuda.profiler.stop()
+
             if enable_profiling:
                 prof.step()
             dist.barrier()
