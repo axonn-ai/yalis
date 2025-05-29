@@ -114,7 +114,6 @@ class InferenceConfig:
             use_intra_head_parallelism (bool): Use intra-head parallelism for attention. 
             use_paged_kv_caching (bool): Use paged k/v caching for attention. 
             prestore_kv_cache (bool): Pre-store k/v in cache before calling attention.
-            ignore_eos (Optional[bool]): Ignore EOS stopping, default is True.
         """ 
         self.batch_size = batch_size
         # ToDo - default max_length should be none. If it is none, we should set it
