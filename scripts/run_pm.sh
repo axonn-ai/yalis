@@ -5,11 +5,11 @@
 #SBATCH --ntasks-per-node=4
 #SBATCH --constraint=gpu
 
-export HF_HOME="${SCRATCH}/.cache/huggingface"
-export HF_TRANSFORMERS_CACHE="${HF_HOME}"
-export HF_DATASETS_CACHE="${HF_HOME}/datasets"
-export TORCHINDUCTOR_CACHE_DIR="${SCRATCH}/.cache/torch_inductor"
-export YALIS_CACHE="${SCRATCH}/yalis/yalis/external"
+#export HF_HOME="${SCRATCH}/.cache/huggingface"
+#export HF_TRANSFORMERS_CACHE="${HF_HOME}"
+#export HF_DATASETS_CACHE="${HF_HOME}/datasets"
+#export TORCHINDUCTOR_CACHE_DIR="${SCRATCH}/.cache/torch_inductor"
+#export YALIS_CACHE="${SCRATCH}/yalis/yalis/external"
 
 module load cudatoolkit/12.4
 module load nccl
@@ -37,7 +37,16 @@ export MPICH_GPU_SUPPORT_ENABLED=0
 SCRIPT="examples/infer.py"
 export PYTHONPATH="$PYTHONPATH:."
 chmod +x scripts/get_rank.sh
+
+#run_cmd="NCCL_CUMEM_ENABLE=0 TORCH_NCCL_AVOID_RECORD_STREAMS=1 srun -C gpu -N $NNODES -n $GPUS -c 32 --cpu-bind=cores --gpus-per-node=4 ./scripts/get_rank.sh nsys profile -o yalisttrace -t cuda,nvtx --capture-range=cudaProfilerApi --capture-range-end=stop --cuda-graph-trace=node  python -u $SCRIPT"
+
+
+
+
+#nsys profile -w true -t cuda,nvtx,osrt,cudnn,cublas -s cpu   --capture-range=cudaProfilerApi --cudabacktrace=true -x true python -u $SCRIPT"
+#run_cmd="TORCHINDUCTOR_UNIQUE_KERNEL_NAMES=1 TORCH_COMPILE_DEBUG=1 INDUCTOR_ORIG_FX_SVG=1 NCCL_CUMEM_ENABLE=0 TORCH_NCCL_AVOID_RECORD_STREAMS=1 srun -C gpu -N $NNODES -n $GPUS -c 32 --cpu-bind=cores --gpus-per-node=4 ./scripts/get_rank.sh python -u $SCRIPT"
 run_cmd="NCCL_CUMEM_ENABLE=0 TORCH_NCCL_AVOID_RECORD_STREAMS=1 srun -C gpu -N $NNODES -n $GPUS -c 32 --cpu-bind=cores --gpus-per-node=4 ./scripts/get_rank.sh python -u $SCRIPT"
+
 
 echo $run_cmd
 eval $run_cmd

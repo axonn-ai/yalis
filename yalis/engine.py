@@ -298,6 +298,7 @@ class LLMEngine:
                     timer_key = "prefill"
                     timers.start(timer_key)
                     # print_rank0(f"mem before prefill = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
+                    torch.cuda.nvtx.range_push("Prefill")
                     next_token = prefill(
                         self.model, current_input_to_model, prompt_sequence_lengths, 
                         temperature=self.inference_config.temperature, 
@@ -306,9 +307,11 @@ class LLMEngine:
                     )  # Call prefill function
                     # print_rank0(f"mem after prefill = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
                     current_input_to_model = next_token.clone()
+                    torch.cuda.nvtx.range_pop()
                 else:  # Generation step
                     timer_key = "decode"
                     timers.start(timer_key)
+                    torch.cuda.nvtx.range_push("Decode")
                     with sdpa_kernel(SDPBackend.MATH):
                         next_token = generate(
                             self.model, current_input_to_model, 
@@ -320,6 +323,7 @@ class LLMEngine:
                     current_input_to_model.copy_(
                         next_token
                     )  # Copy the new token into tokens
+                    torch.cuda.nvtx.range_pop()
 
                 # EOS Support:
                 # Flatten to shape (batch_size,) for element wise comparison
