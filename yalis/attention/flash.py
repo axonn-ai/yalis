@@ -4,6 +4,9 @@ from typing import Sequence, Optional, Union
 from .registry import register_attention
 from .update_kv_cache import update_paged_kv_cache
 from flash_attn.ops.triton.rotary import apply_rotary
+import os
+
+USE_TRITON_ROCM = os.getenv("FLASH_ATTENTION_TRITON_AMD_ENABLE", "FALSE") == "TRUE"
 
 
 # A recent change (Commit a9a3170) added a wrap_triton call to the rotary kernel invocation
@@ -24,12 +27,7 @@ def flash_apply_rotary(x: torch.Tensor,
                         token_counter)
 
 
-
-# here we are registering the flash_attn_with_kv_cache kernel as a custom pytorch op 
-# so that it doesn't lead to torch compile graph breaks
-# more info can be found here - https://pytorch.org/tutorials/advanced/python_custom_ops.html#python-custom-ops-tutorial
-@torch.library.custom_op("yalis::torch_compile_compatible_flash_attention", mutates_args=("k_cache", "v_cache"))
-def torch_compile_compatible_flash_attention(q: torch.Tensor, 
+def torch_compile_compatible_flash_attention_impl(q: torch.Tensor, 
                             k_cache: torch.Tensor, 
                             v_cache: torch.Tensor, 
                             k: torch.Tensor, 
@@ -56,10 +54,26 @@ def torch_compile_compatible_flash_attention(q: torch.Tensor,
             )
     return y
 
-@torch_compile_compatible_flash_attention.register_fake
-def _(q, k_cache, v_cache, k, v, causal, cache_seqlens, rotary_cos, rotary_sin, rotary_interleaved, window_size, block_table):
-    # This is a fake implementation that returns an empty tensor of the same shape as q
-    return torch.empty_like(q)
+
+def build_torch_compile_compatible_flash_attention():
+    if USE_TRITON_ROCM:
+        return torch_compile_compatible_flash_attention_impl
+    else:
+        # here we are registering the flash_attn_with_kv_cache kernel as a custom pytorch op 
+        # so that it doesn't lead to torch compile graph breaks
+        # more info can be found here - https://pytorch.org/tutorials/advanced/python_custom_ops.html#python-custom-ops-tutorial
+        return torch.library.custom_op(
+            "yalis::torch_compile_compatible_flash_attention",
+            mutates_args=("k_cache", "v_cache")
+        )(torch_compile_compatible_flash_attention_impl)
+
+torch_compile_compatible_flash_attention = build_torch_compile_compatible_flash_attention()
+
+# Only register_fake if it is a custom op
+if not USE_TRITON_ROCM:
+    @torch_compile_compatible_flash_attention.register_fake
+    def _(q, k_cache, v_cache, k, v, causal, cache_seqlens, rotary_cos, rotary_sin, rotary_interleaved, window_size, block_table):
+        return torch.empty_like(q)
 
 @register_attention("flash")
 def flash_attention(q: torch.Tensor, 
