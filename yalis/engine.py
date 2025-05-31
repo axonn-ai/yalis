@@ -270,7 +270,7 @@ class LLMEngine:
         batch_size = prompt_tokens.size(0)
         ignore_eos = ignore_eos
         # Initialize done mask for multiple batches
-        if batch_size > 1 and not ignore_eos:
+        if not ignore_eos:
             done_mask = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
         finished_reason = "Max Token Length"
         output_tokens = []
@@ -317,22 +317,20 @@ class LLMEngine:
 
                 # EOS Support:
                 # Flatten to shape (batch_size,) for element wise comparison
-                done_mask |= (next_token.view(-1) == self.tokenizer.eos_token_id)
-                # Reshape to match next_token's shape for masked_fill()
-                mask = done_mask.view(-1, 1)
-                # Force EOS prompts to stay EOS
-                next_token.masked_fill_(mask, self.tokenizer.eos_token_id)
+                if not ignore_eos:
+                    done_mask |= (next_token.view(-1) == self.tokenizer.eos_token_id)
+                    # Reshape to match next_token's shape for masked_fill()
+                    mask = done_mask.view(-1, 1)
+                    # Force EOS prompts to stay EOS
+                    next_token.masked_fill_(mask, self.tokenizer.eos_token_id)
 
                 output_tokens.append(next_token.clone())
+                timers.stop(timer_key)
 
-                # Break only if every sequence is done
-                if done_mask.all():
-                    print_rank0(f"All batch samples reached EOS at step {step}, stopping.")
-                    timers.stop(timer_key)
+                # Break if every sequence is done
+                if not ignore_eos and done_mask.all():
                     finished_reason = "EOS"
                     break
-
-                timers.stop(timer_key)
 
         output_tensor = torch.cat(output_tokens, dim=1)
         # End timing and calculate elapsed time
