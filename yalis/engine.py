@@ -199,6 +199,7 @@ class LLMEngine:
         prompts: Union[list[str], list[list[int]]],
         tokens_to_generate: int = 50,
         report_throughput: bool = False,
+        ignore_eos: Optional[bool] = True
     ) -> torch.Tensor:
         """
         Generate tokens based on input prompts, which can either be a list of strings or a list of token ID lists.
@@ -264,6 +265,14 @@ class LLMEngine:
             f"Tokenization took {timers.get_times()[0][('tokenize',)]} ms"
         )
 
+        # Using tensor size instead of inference config object to allow users to choose batch sizes < max batch size
+        # (later defined in inference config).
+        batch_size = prompt_tokens.size(0)
+        ignore_eos = ignore_eos
+        # Initialize done mask for multiple batches
+        if not ignore_eos:
+            done_mask = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
+        finished_reason = "Max Token Length"
         output_tokens = []
         # Start timing the operations
         timers.start("generate")
@@ -306,8 +315,22 @@ class LLMEngine:
                         next_token
                     )  # Copy the new token into tokens
 
+                # EOS Support:
+                # Flatten to shape (batch_size,) for element wise comparison
+                if not ignore_eos:
+                    done_mask |= (next_token.view(-1) == self.tokenizer.eos_token_id)
+                    # Reshape to match next_token's shape for masked_fill()
+                    mask = done_mask.view(-1, 1)
+                    # Force EOS prompts to stay EOS
+                    next_token.masked_fill_(mask, self.tokenizer.eos_token_id)
+
                 output_tokens.append(next_token.clone())
                 timers.stop(timer_key)
+
+                # Break if every sequence is done
+                if not ignore_eos and done_mask.all():
+                    finished_reason = "EOS"
+                    break
 
         output_tensor = torch.cat(output_tokens, dim=1)
         # End timing and calculate elapsed time
@@ -329,9 +352,11 @@ class LLMEngine:
             "TBT": tbt,
             "E2E": times[('generate',)],
             "TokenizationTime": times[('tokenize',)],
+            "FinishedReason": finished_reason   # NOTE: This should be a list containing reasons for each batch but 
+                                                # our EOS stopping currently is all-or-nothing.
         }
         if dist.get_rank() == 0 and report_throughput:
-            print (f"[Metrics] BatchSize = {prompt_tokens.shape[0]}, PromptLength = {prompt_tokens.shape[1]}, DecodeLength = {tokens_to_generate}, Throughput = {tput:.2f} tok/s, TTFT = {ttft:.4f} ms, TBT = {tbt:.4f} ms, E2E = {times[('generate',)]:.4f} ms")
+            print (f"[Metrics] BatchSize = {prompt_tokens.shape[0]}, PromptLength = {prompt_tokens.shape[1]}, DecodeLength = {tokens_to_generate}, Throughput = {tput:.2f} tok/s, TTFT = {ttft:.4f} ms, TBT = {tbt:.4f} ms, E2E = {times[('generate',)]:.4f} ms, FinishedReason = {finished_reason}")
 
 
         return output_tensor, metrics
