@@ -4,7 +4,12 @@ from torch.utils.cpp_extension import BuildExtension, CppExtension
 setup(
     name='yalis',
     version='0.1.0',
-    packages=["yalis"],
+    packages=[
+        "yalis",
+        "yalis.tensor_parallel",
+        "yalis.external",
+        "yalis.attention",
+    ],
     package_dir={"yalis": "yalis"},
     # Other metadata for your package
     ext_modules=[
