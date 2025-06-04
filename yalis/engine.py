@@ -12,6 +12,7 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 import time
 import gc
 from .timers import Timers
+import os
 
 # These flags are taken from the following URL -
 # https://github.com/pytorch/pytorch/blob/347f96061f1cff603983b9be19ec92b374329a5b/benchmarks/gpt_fast/generate.py#L19
@@ -19,6 +20,11 @@ torch._inductor.config.coordinate_descent_tuning = True
 torch._inductor.config.triton.unique_kernel_names = True
 torch._inductor.config.fx_graph_cache = True  # Experimental feature to reduce compilation times, will be on by default in future
 torch._inductor.config.assert_indirect_indexing = False
+YALIS_DISABLE_COMPILE = os.environ.get("YALIS_DISABLE_COMPILE", "0") == "1"
+YALIS_DECODE_MODE = "default" if os.environ.get("YALIS_DISABLE_DECODE_CUDAGRAPHS", "0") == "1" else "reduce-overhead"
+
+print (f"YALIS_DISABLE_COMPILE = {YALIS_DISABLE_COMPILE}, YALIS_DECODE_MODE = {YALIS_DECODE_MODE}")
+
 
 precision_to_dtype = {
     "bf16": torch.bfloat16,
@@ -28,7 +34,7 @@ precision_to_dtype = {
 
 
 @torch.no_grad()
-@torch.compile()
+@torch.compile(disable=YALIS_DISABLE_COMPILE)
 def prefill(model, tokens, unpadded_prompt_lengths, temperature=1.0, top_k=None, top_p=1.0):
     """
     Prefill function for generating the first token.
@@ -48,7 +54,7 @@ def prefill(model, tokens, unpadded_prompt_lengths, temperature=1.0, top_k=None,
 
 
 @torch.no_grad()
-@torch.compile(mode="reduce-overhead")
+@torch.compile(mode=YALIS_DECODE_MODE, disable=YALIS_DISABLE_COMPILE)
 def generate(model, tokens, get_probs=False, temperature=1.0, top_k=None, top_p=1.0):
     """
     Generate function for producing the next token(s).
