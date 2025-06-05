@@ -1,7 +1,4 @@
 
-
-import time
-t0 = time.perf_counter()
 from yalis import ModelConfig, InferenceConfig, print_rank0, LLMEngine
 from transformers import AutoTokenizer
 import torch
@@ -17,9 +14,6 @@ try:
     from mpi4py import MPI
 except ImportError:
     pass
-
-print(f"Imports took {time.perf_counter() - t0:.2f} seconds")
-
 
 if __name__ == "__main__":
     # Model ID from Hugging Face
@@ -77,9 +71,9 @@ if __name__ == "__main__":
                                        max_length_of_generated_sequences=1024,
                                        top_p=0.80,
                                        temperature=1.0, 
-                                       tp_dims=None, 
+                                       tp_dims=None,
                                        attention_backend="flash",
-                                       use_paged_kv_caching=True)
+                                       use_paged_kv_caching=False)
 
 
     engine = LLMEngine(model_config=model_config, inference_config=inference_config)

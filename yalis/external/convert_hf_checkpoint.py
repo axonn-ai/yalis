@@ -700,7 +700,7 @@ def convert_hf_checkpoint(
         # for checkpoints that split the QKV across several files, we need to keep all the bin files
         # open, so we use `ExitStack` to close them all together at the end
 
-        if False:
+        if not debug_mode:
             # Using tqdm progress bar when not in debug mode
 
             total_size = max(
