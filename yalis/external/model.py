@@ -266,7 +266,7 @@ class GPT(nn.Module):
         if self.config.use_paged_kv_caching:
             
             self.kv_cache_manager = KVCacheManager(batch_size, 
-                                                MAX_CONTEXT_LENGTH//self.config.paged_kv_cache_block_size,  # ToDo: set these dynamically 
+                                                MAX_CONTEXT_LENGTH//self.config.paged_kv_cache_block_size,  
                                                 paged_num_blocks, 
                                                 self.config.paged_kv_cache_block_size) 
 
