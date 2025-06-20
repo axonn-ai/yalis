@@ -330,6 +330,7 @@ class Block(nn.Module):
         |     ↓
         └───► +
         """
+
         x_normed = self.norm_1(x)
         attention_output = self.attn(x_normed, cos, sin, token_counter, block_table, flex_attention_block_mask)
         attention_output = self.post_attention_norm(attention_output)

@@ -8,5 +8,5 @@ export TORCHINDUCTOR_CACHE_DIR="/dev/shm/$USER/.cache/torchinductor/torchinducto
 export TRITON_HOME="/dev/shm/$USER/.cache/triton/triton_${RANK}"
 export TRITON_CACHE_DIR="/dev/shm/$USER/.cache/triton/triton_${RANK}"
 
-exec nsys profile -o yalistrace -t cuda,nvtx --capture-range=cudaProfilerApi --capture-range-end=stop --cuda-graph-trace=node $*
-#exec $*
+#exec nsys profile -o yalistrace -t cuda,nvtx --capture-range=cudaProfilerApi --capture-range-end=stop --cuda-graph-trace=node $*
+exec $*
