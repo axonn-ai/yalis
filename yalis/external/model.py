@@ -330,21 +330,16 @@ class Block(nn.Module):
         |     ↓
         └───► +
         """
-
-        torch.cuda.nvtx.range_push("Attention")
         x_normed = self.norm_1(x)
         attention_output = self.attn(x_normed, cos, sin, token_counter, block_table, flex_attention_block_mask)
         attention_output = self.post_attention_norm(attention_output)
-        torch.cuda.nvtx.range_pop()
 
-        torch.cuda.nvtx.range_push("MLP")
         if self.config.parallel_residual:
             x_normed = x_normed if self.config.shared_attention_norm else self.norm_2(x)
             x = self.mlp(x_normed) + attention_output + x
         else:
             x = attention_output + x
             x = self.post_mlp_norm(self.mlp(self.norm_2(x))) + x
-        torch.cuda.nvtx.range_pop()
         return x
 
 
