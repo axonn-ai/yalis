@@ -3,7 +3,7 @@ from typing import Union, List, Optional
 from .config import ModelConfig, InferenceConfig
 from .model import get_model
 from .initialize import init_distributed
-from .utils import print_rank0, get_gpu_memory_info
+from .utils import print_rank0, get_gpu_memory_info, get_nvtx_funcs
 from .external.sampling import sample
 import logging
 import torch.distributed as dist
@@ -205,7 +205,8 @@ class LLMEngine:
         prompts: Union[list[str], list[list[int]]],
         tokens_to_generate: int = 50,
         report_throughput: bool = False,
-        ignore_eos: Optional[bool] = True
+        ignore_eos: Optional[bool] = True,
+        enable_nvtx: Optional[bool] = False,
     ) -> torch.Tensor:
         """
         Generate tokens based on input prompts, which can either be a list of strings or a list of token ID lists.
@@ -279,6 +280,9 @@ class LLMEngine:
         if not ignore_eos:
             done_mask = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
         finished_reason = "Max Token Length"
+
+        nvtx_range_push, nvtx_range_pop = get_nvtx_funcs(enable_nvtx)
+
         output_tokens = []
         # Start timing the operations
         timers.start("generate")
@@ -291,24 +295,27 @@ class LLMEngine:
             current_input_to_model = prompt_tokens.clone().to(
                 self.device
             )  # Move prompt tokens to the device
+
             prompt_sequence_lengths = prompt_sequence_lengths.to(self.device)
             for step in range(tokens_to_generate):
                 timer_key = None
                 if step == 0:  # Prefill step
                     timer_key = "prefill"
                     timers.start(timer_key)
-                    # print_rank0(f"mem before prefill = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
+                    nvtx_range_push("Prefill")
                     next_token = prefill(
                         self.model, current_input_to_model, prompt_sequence_lengths, 
                         temperature=self.inference_config.temperature, 
                         top_k=self.inference_config.top_k, 
                         top_p=self.inference_config.top_p
                     )  # Call prefill function
-                    # print_rank0(f"mem after prefill = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
+
                     current_input_to_model = next_token.clone()
+                    nvtx_range_pop()
                 else:  # Generation step
                     timer_key = "decode"
                     timers.start(timer_key)
+                    nvtx_range_push("Decode")
                     with sdpa_kernel(SDPBackend.MATH):
                         next_token = generate(
                             self.model, current_input_to_model, 
@@ -316,10 +323,11 @@ class LLMEngine:
                             top_k=self.inference_config.top_k, 
                             top_p=self.inference_config.top_p
                         )  # Call generate function
-                    # print_rank0(f"mem after generate {step} = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
+
                     current_input_to_model.copy_(
                         next_token
                     )  # Copy the new token into tokens
+                    nvtx_range_pop()
 
                 # EOS Support:
                 # Flatten to shape (batch_size,) for element wise comparison
