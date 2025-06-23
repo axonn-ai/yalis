@@ -49,28 +49,45 @@ def get_norm_class(config):
     else:
         raise NotImplementedError(f"TP version of {config.norm_class_name} not implemented")
 
-def get_asym_split(config):
-    attention_world_size = ax.config.G_intra_r
-    default_asym_split = [1/attention_world_size] * attention_world_size
-    asym_split = default_asym_split
-    asym_split_str = os.getenv('ASYM_SPLIT')
-    if asym_split_str:
-        try:
-            parsed_split = ast.literal_eval(asym_split_str)
-            if isinstance(parsed_split, list) and all(isinstance(x, (int, float)) for x in parsed_split):
-                    if abs(sum(parsed_split) - 1.0) < 1e-6:
-                        asym_split = parsed_split
-                        print(f"Using ASYM_SPLIT from environment variable: {asym_split}")
-                    else:
-                        print(f"Warning: ASYM_SPLIT '{asym_split_str}' from environment does not sum to 1. Using default: {default_asym_split}")
-            else:
-                print(f"Warning: Could not parse ASYM_SPLIT '{asym_split_str}' as a list of numbers. Using default: {default_asym_split}")
+def get_all_devices_info():
+    gloo_group = dist.new_group(backend="gloo")
+    dev = torch.cuda.current_device()
+    local = torch.cuda.get_device_properties(dev).name
+    ws = dist.get_world_size()
+    all_dev = [None] * ws
+    dist.all_gather_object(all_dev, local, group=gloo_group)
+    return all_dev
 
-        except (ValueError, SyntaxError, TypeError) as e:
-            print(f"Warning: Error parsing ASYM_SPLIT environment variable '{asym_split_str}': {e}. Using default: {default_asym_split}")
+asym_config = {} # {"ASYM_SPLIT_ATTN": {"config": [0.75, 0.25]}, "ASYM_SPLIT_MLP": ...}
+
+def get_asym_split(config, layer):
+    env_name = "ASYM_SPLIT_" + layer
+    global asym_config 
+    if asym_config.get(env_name) == None:
+        attention_world_size = ax.config.G_intra_r
+        default_asym_split = [1 / attention_world_size] * attention_world_size
+        asym_config[env_name] = default_asym_split
+        asym_split_str = os.getenv(env_name)
+        if asym_split_str:
+            try:
+                parsed_split = ast.literal_eval(asym_split_str)
+                if isinstance(parsed_split, list) and all(isinstance(x, (int, float)) for x in parsed_split):
+                        if abs(sum(parsed_split) - 1.0) < 1e-6:
+                            asym_config[env_name] = parsed_split
+                            print(f"Using {env_name} from environment variable: {parsed_split}")
+                        else:
+                            print(f"Warning: {env_name} '{asym_split_str}' from environment does not sum to 1. Using default: {default_asym_split}")
+                else:
+                    print(f"Warning: Could not parse {env_name} '{asym_split_str}' as a list of numbers. Using default: {default_asym_split}")
+            except (ValueError, SyntaxError, TypeError) as e:
+                print(f"Warning: Error parsing {env_name} environment variable '{asym_split_str}': {e}. Using default: {default_asym_split}")
+        else:
+            gpu_types = list(set(get_all_devices_info()))
+            if len(gpu_types) > 1:
+                print(f"Warning: On a heterogeneous system {gpu_types} but {env_name} environment variable not set. Using default: {default_asym_split}. Default will likely be load-imbalanced.")
+        return asym_config[env_name]
     else:
-         print(f"ASYM_SPLIT environment variable not set. Using default: {default_asym_split}")
-    return asym_split
+        return asym_config[env_name]
 
 
 class GPT(nn.Module):
@@ -376,7 +393,7 @@ class CausalSelfAttention(nn.Module):
         if not config.tensor_parallel:
             self.attn = nn.Linear(config.n_embd, shape, bias=config.bias)
         else:
-            asym_split = get_asym_split(config)
+            asym_split = get_asym_split(config, "ATTN")
             self.attn = TPLinear(config.n_embd, shape, bias=config.bias, init_device=config.init_device, asym_split=asym_split
                     )
 
@@ -612,11 +629,13 @@ class LLaMAMLP(nn.Module):
             self.proj = nn.Linear(
                 config.intermediate_size, config.n_embd, bias=config.bias
             )
+            print(self.gate_up_proj.shape())
         else:
-            asym_split = get_asym_split(config)
+            asym_split = get_asym_split(config, "MLP")
             self.gate_up_proj = TPLinear(
                 config.n_embd, 2 * config.intermediate_size, bias=config.bias, init_device=config.init_device,
-                asym_split=list(reversed(asym_split))
+                asym_split=asym_split, #list(reversed(asym_split)),
+                do_print=False
             )
             self.proj = TPLinear(
                 config.intermediate_size,
@@ -624,16 +643,17 @@ class LLaMAMLP(nn.Module):
                 bias=config.bias,
                 transpose=True,
                 init_device=config.init_device,
-                asym_split=list(reversed(asym_split))
+                asym_split=asym_split, #list(reversed(asym_split)),
+                do_print=False
             )
 
         self.config = config
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.gate_up_proj(x)
+        x = self.gate_up_proj(x, do_print=False)
         x_fc_1, x_fc_2 = x[..., ::2], x[..., 1::2]
         x = torch.nn.functional.silu(x_fc_1) * x_fc_2
-        return self.proj(x)
+        return self.proj(x, do_print=False)
 
 
 class GemmaMLP(LLaMAMLP):

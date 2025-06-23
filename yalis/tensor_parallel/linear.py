@@ -146,6 +146,7 @@ class TPLinear(torch.nn.Module):
         tensor_parallel_dims: Optional[Sequence[int]] = None,
         init_device="cuda",
         asym_split = None,
+        do_print = False,
         **kwargs,
     ):
         super(TPLinear, self).__init__()
@@ -248,6 +249,8 @@ class TPLinear(torch.nn.Module):
         )
         # register the weight matrix as a trainable parameter.
         self.weight = torch.nn.Parameter(initial_params, requires_grad=True)
+        #if do_print:
+        #    print(self.weight.shape)
 
         # Note: weight shape is (local_out_features, local_in_features) after sharding
         if self.weight.size(0) != self.local_out_features or self.weight.size(1) != self.local_in_features:
@@ -295,7 +298,9 @@ class TPLinear(torch.nn.Module):
         self._old_load_from_state_dict = self._load_from_state_dict
         self._load_from_state_dict = self._modified_load_from_state_dict
 
-    def all_reduce(self, x):
+    def all_reduce(self, x, do_print=False):
+        #if do_print:
+        #    print("WORLD SIZE INNER GROUP: ", dist.get_world_size(group=self.inner_group))
         dist.all_reduce(x, group=self.inner_group)
         return x
 
@@ -304,14 +309,17 @@ class TPLinear(torch.nn.Module):
 
     def forward(
         self,
-        x
+        x,
+        do_print=False
     ):
         #if self.asym_split != None:
         #    x = yalis_drop(x, -1, self.inner_group, self.asym_split) 
         # print(f"[Rank {dist.get_rank()}] Forward Matmul: Input Shape {x.shape}, Weight Shape {self.weight.shape}, Transpose {self.transpose}")
+        #if do_print:
+        #    print(x.shape)
         x = self.matmul(self.weight, x)
         # print(f"[Rank {dist.get_rank()}] After Matmul Shape: {x.shape}")
-        x = self.all_reduce(x)
+        x = self.all_reduce(x, do_print=do_print)
         # print(f"[Rank {dist.get_rank()}] After AllReduce Shape: {x.shape}")
 
         if self.bias is None:

@@ -106,16 +106,17 @@ if __name__ == "__main__":
     # Decode the token IDs into text
     detokenized_text = tokenizer.batch_decode(output_tokens, skip_special_tokens=True)
 
-    for prompt, output in zip(user_prompts, detokenized_text):
-        print_rank0("==========================\n\n")
-        print_rank0(f"prompt = {prompt}")
-        print_rank0(f"output = {output}")
-        print_rank0("==========================\n\n")
+    #for prompt, output in zip(user_prompts, detokenized_text):
+    #    print_rank0("==========================\n\n")
+    #    print_rank0(f"prompt = {prompt}")
+    #    print_rank0(f"output = {output}")
+    #    print_rank0("==========================\n\n")
 
     peak_bytes = torch.cuda.max_memory_allocated(device)
     peak_mb = peak_bytes / 1024**2
-    print("Device properties: ", torch.cuda.get_device_properties(device))
-    print(f"[rank {rank} on {device}] peak = {peak_mb:.1f} MB")
+    props =  torch.cuda.get_device_properties(device)
+    #print("Device properties: ", torch.cuda.get_device_properties(device))
+    print(f"[rank {rank} on {device}:{props.name}] peak = {peak_mb:.1f} MB")
         
              
     if enable_profiling:

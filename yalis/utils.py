@@ -1,7 +1,6 @@
 import torch
 import torch.distributed as dist
 
-
 def print_rank0(msg):
     if not dist.is_initialized():
         raise RuntimeError("Distributed process group is not initialized. Make sure init_distributed() is called before using this function.")
