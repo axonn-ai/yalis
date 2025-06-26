@@ -24,3 +24,14 @@ def get_nvtx_funcs(enabled: bool):
         def nvtx_range_push(msg): pass
         def nvtx_range_pop(): pass
     return nvtx_range_push, nvtx_range_pop
+
+
+def get_platform():
+    if torch.cuda.is_available():
+        if torch.version.cuda is not None:
+            return "cuda"
+        elif torch.version.hip is not None:
+            return "rocm"
+    return "cpu"
+
+
