@@ -93,7 +93,7 @@ if __name__ == "__main__":
     torch.cuda.reset_peak_memory_stats(device)
 
     with profiler_context as prof:
-        for iter in range(3):
+        for iter in range(5):
             output_tokens, metrics = engine.generate(
                 input_prompts, report_throughput=True, tokens_to_generate=tokens_to_gen
             )
@@ -106,11 +106,11 @@ if __name__ == "__main__":
     # Decode the token IDs into text
     detokenized_text = tokenizer.batch_decode(output_tokens, skip_special_tokens=True)
 
-    #for prompt, output in zip(user_prompts, detokenized_text):
-    #    print_rank0("==========================\n\n")
-    #    print_rank0(f"prompt = {prompt}")
-    #    print_rank0(f"output = {output}")
-    #    print_rank0("==========================\n\n")
+    for prompt, output in zip(user_prompts, detokenized_text):
+        print_rank0("==========================\n\n")
+        print_rank0(f"prompt = {prompt}")
+        print_rank0(f"output = {output}")
+        print_rank0("==========================\n\n")
 
     peak_bytes = torch.cuda.max_memory_allocated(device)
     peak_mb = peak_bytes / 1024**2
