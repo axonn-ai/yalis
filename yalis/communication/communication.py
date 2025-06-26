@@ -4,33 +4,44 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 from fractions import Fraction
 
-def can_divide(tensor_dim, pct: float) -> (bool, int, int):
+def can_divide(tensor_dim, pcts: [float]) -> (bool, int, int):
     """
     Takes the pct of a tensor that a rank should get, as a float,
     indicates whether or not this will result in the rank getting
     a whole number of elements, also returns a fraction version of
     the float
     """
-    num, den = Fraction(pct).limit_denominator().as_integer_ratio()
-    return ((num * tensor_dim) % den == 0, num, den)
+    sum_shards = 0
+    for pct in pcts:
+        sum_shards += round(tensor_dim * pct)
+    return sum_shards == tensor_dim
+    #num, den = Fraction(pct).limit_denominator().as_integer_ratio()
+    #print(num)
+    #print(den)
+    #print(tensor_dim)
+    #return (round(num * tensor_dim) % den == 0, num, den)
 
 def compute_offset(tensor_dim, asymmetric_map, rank):
     offset = 0
     for i in range(0, rank):
         pct = asymmetric_map[i]
-        check, num, den = can_divide(tensor_dim, pct)
+        #check, num, den = can_divide(tensor_dim, pct)
+        check = can_divide(tensor_dim, asymmetric_map)
         assert check
-        offset += (tensor_dim * num) // den
+        #offset += (tensor_dim * num) // den
+        offset += round(tensor_dim * pct)
     return offset
 
 def compute_all_shapes(full_shape, asymmetric_map):
     shapes = []
     for i in range(len(asymmetric_map)):
         pct = asymmetric_map[i]
-        check, num, den = can_divide(full_shape[0], pct)
+        #check, num, den = can_divide(full_shape[0], pct)
+        check = can_divide(full_shape[0], asymmetric_map)
         assert check
         new_shape = list(full_shape)
-        new_shape[0] = (full_shape[0] * num) // den
+        #new_shape[0] = (full_shape[0] * num) // den
+        new_shape[0] = round(full_shape[0] * pct)
         new_shape = torch.Size(new_shape)
         shapes.append(new_shape)
     return shapes
@@ -90,9 +101,11 @@ def yalis_drop(input_tensor, dim, process_group=None, asymmetric=None):
     else:
         #print("asymmetric drop")
         pct = asymmetric[this_chunk]
-        check, num, den = can_divide(input_shape, pct)
+        #check, num, den = can_divide(input_shape, pct)
+        check = can_divide(input_shape, asymmetric)
         assert check
-        chunk_size = (input_shape * num) // den
+        #chunk_size = (input_shape * num) // den
+        chunk_size = round(input_shape * pct)
         out = torch.narrow(
             input_tensor, dim,
             compute_offset(input_shape, asymmetric, this_chunk),

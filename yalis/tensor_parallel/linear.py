@@ -93,10 +93,12 @@ def initialize_params(
         shard_torch_dim = 1
         if asym_split:
             group_rank = dist.get_rank(shard_group)
-            check, num, den = can_divide(shard_dim_size, asym_split[group_rank])
+            #check, num, den = can_divide(shard_dim_size, asym_split[group_rank])
+            check = can_divide(shard_dim_size, asym_split)
             if not check:
                 raise ValueError(f"Cannot divide in_features {shard_dim_size} for rank {group_rank} with split {asym_split[group_rank]}")
-            local_shard_size = (shard_dim_size * num) // den
+            #local_shard_size = (shard_dim_size * num) // den
+            local_shard_size = round(shard_dim_size * asym_split[group_rank])
             # print(f"[Rank {rank}] RowParallel: Sharding dim {shard_torch_dim} ({shard_dim_size}) using group {shard_group}. My rank {group_rank}, target size {local_shard_size}, split {asym_split[group_rank]}")
         else:
             pass
@@ -109,10 +111,12 @@ def initialize_params(
         shard_torch_dim = 0
         if asym_split:
             group_rank = dist.get_rank(shard_group)
-            check, num, den = can_divide(shard_dim_size, asym_split[group_rank])
+            #check, num, den = can_divide(shard_dim_size, asym_split[group_rank])
+            check = can_divide(shard_dim_size, asym_split)
             if not check:
                 raise ValueError(f"Cannot divide out_features {shard_dim_size} for rank {group_rank} with split {asym_split[group_rank]}")
-            local_shard_size = (shard_dim_size * num) // den
+            #local_shard_size = (shard_dim_size * num) // den
+            local_shard_size = round(shard_dim_size * asym_split[group_rank])
             # print(f"[Rank {rank}] ColParallel: Sharding dim {shard_torch_dim} ({shard_dim_size}) using group {shard_group}. My rank {group_rank}, target size {local_shard_size}, split {asym_split[group_rank]}")
         else:
             pass
@@ -213,9 +217,11 @@ class TPLinear(torch.nn.Module):
             full_dim_size = self.in_features
             if asym_split:
                 group_rank = dist.get_rank(shard_group)
-                check, num, den = can_divide(full_dim_size, asym_split[group_rank])
+                #check, num, den = can_divide(full_dim_size, asym_split[group_rank])
+                check = can_divide(full_dim_size, asym_split)
                 if not check: raise ValueError("Asymmetric split error for in_features")
-                self.local_in_features = (full_dim_size * num) // den
+                #self.local_in_features = (full_dim_size * num) // den
+                self.local_in_features = round(full_dim_size * asym_split[group_rank])
             else:
                 if full_dim_size % self.inner_group_size != 0: raise ValueError("in_features not divisible by inner_group_size")
                 self.local_in_features = full_dim_size // self.inner_group_size
@@ -226,9 +232,11 @@ class TPLinear(torch.nn.Module):
             full_dim_size = self.out_features
             if asym_split:
                 group_rank = dist.get_rank(shard_group)
-                check, num, den = can_divide(full_dim_size, asym_split[group_rank])
+                #check, num, den = can_divide(full_dim_size, asym_split[group_rank])
+                check = can_divide(full_dim_size, asym_split)
                 if not check: raise ValueError("Asymmetric split error for out_features")
-                self.local_out_features = (full_dim_size * num) // den
+                #self.local_out_features = (full_dim_size * num) // den
+                self.local_out_features = round(full_dim_size * asym_split[group_rank])
             else:
                 if full_dim_size % self.outer_group_size != 0: raise ValueError("out_features not divisible by outer_group_size")
                 self.local_out_features = full_dim_size // self.outer_group_size

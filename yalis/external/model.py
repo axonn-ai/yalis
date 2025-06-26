@@ -538,10 +538,12 @@ class CausalSelfAttention(nn.Module):
 
              asym_split = self.attn.asym_split # Get asym_split from the layer
              if asym_split:
-                 check, num, den = can_divide(global_n_query_groups, asym_split[rank_in_group])
+                 #check, num, den = can_divide(global_n_query_groups, asym_split[rank_in_group])
+                 check = can_divide(global_n_query_groups, asym_split)
                  if not check:
                      raise ValueError(f"Cannot divide heads {global_n_query_groups} for rank {rank_in_group} with split {asym_split[rank_in_group]}")
-                 local_n_query_groups = (global_n_query_groups * num) // den
+                 #local_n_query_groups = (global_n_query_groups * num) // den
+                 local_n_query_groups = round(global_n_query_groups * asym_split[rank_in_group])
              else: # Symmetric TP
                  if global_n_query_groups % world_size_group != 0:
                      raise ValueError(f"Cannot divide heads {global_n_query_groups} symmetrically by group size {world_size_group}")
