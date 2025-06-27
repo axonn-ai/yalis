@@ -16,6 +16,8 @@ from axonn.intra_layer.communication import (
     Drop,
     Gather,
 )
+from yalis.external.nccl_comm import CommHandler
+from yalis.tensor_parallel.all_reduce_op import tp_all_reduce
 
 from typing import Optional, Sequence
 import gc
@@ -124,6 +126,11 @@ class TPLinear(torch.nn.Module):
         if transpose:
             self.inner_group, self.outer_group = self.outer_group, self.inner_group
 
+
+        self.inner_nccl_comm_idx = CommHandler.create_communicator_from_process_group(self.inner_group)
+        # We do not need communicators for the outer and depth group as they are not used currently
+
+
         # depth_group is the Z tensor parallel group (akin to FSDP)
         self.depth_group = ax.comm_handle.depth_intra_layer_parallel_group
 
@@ -210,7 +217,7 @@ class TPLinear(torch.nn.Module):
         self._load_from_state_dict = self._modified_load_from_state_dict
 
     def all_reduce(self, x):
-        dist.all_reduce(x, group=self.inner_group)
+        tp_all_reduce(x, self.inner_nccl_comm_idx)
         return x
 
     def matmul(self, w, x):
