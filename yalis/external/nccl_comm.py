@@ -134,9 +134,9 @@ class CommHandler:
             comm: NCCLCommunicator - The communicator.
         """
         if CommHandler.comm_lib is None:
-            raise RuntimeError("NCCL library not loaded. Call CommHandler.get_nccl_communicator_from_process_group with a process group first.") # noqa: E501
+            raise RuntimeError("NCCL library not loaded. Call CommHandler.create_communicator_from_process_group with a process group first.") # noqa: E501
         if idx not in CommHandler.idx_to_comm:
-            raise RuntimeError(f"NCCL communicator with index {idx} not found. Call CommHandler.get_nccl_communicator_from_process_group with a process group first.") # noqa: E501
+            raise RuntimeError(f"NCCL communicator with index {idx} not found. Call CommHandler.create_communicator_from_process_group with a process group first.") # noqa: E501
 
         return CommHandler.idx_to_comm[idx]
   
@@ -149,9 +149,6 @@ class CommHandler:
 
 # Communicator Class for NCCL and RCCL
 class NCCLCommunicator:
-    def __init__(self, unique_id: ncclUniqueId, nranks: int, rank: int, device: int):
-        self.initialize_comm(unique_id, nranks, rank, device)
-
     def __init__(self, process_group: torch.distributed.ProcessGroup):
         rank = torch.distributed.get_rank(process_group)
         nranks = torch.distributed.get_world_size(process_group)
