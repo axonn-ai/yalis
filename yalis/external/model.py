@@ -382,11 +382,12 @@ class CausalSelfAttention(nn.Module):
             attention_world_size = ax.config.G_intra_r
             self.duplicating_kv = attention_world_size > config.n_query_groups
             if self.duplicating_kv:
+                assert attention_world_size % config.n_query_groups == 0
                 self.duplication_degree = attention_world_size // config.n_query_groups
             else:
                 self.duplication_degree = 1
             assert self.config.n_head % attention_world_size == 0
-            # saving originals
+            # storing number of global heads in the entire model
             self.total_n_head = self.config.n_head
             self.total_n_query_groups = self.config.n_query_groups
             # q per rank

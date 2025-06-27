@@ -270,8 +270,6 @@ class TPLinear(torch.nn.Module):
             ), "This is neither a full checkpoint nor a sharded checkpoint"
 
             if is_full_weight_matrix and getattr(self, "duplicating_kv", False):
-                #print("THE SCARY CASE!!!!")
-                #world  = dist.get_world_size(self.outer_group)
                 rank = dist.get_rank(self.outer_group)
                 hs = self.head_size
                 q_per_rank = self.q_per_rank
@@ -313,6 +311,8 @@ class TPLinear(torch.nn.Module):
                 state_dict[prefix + "weight"] = weight
 
         if self.bias is not None:
+            if getattr(self, "duplicating_kv", False):
+                raise NotImplementedError("There is currently no support for scaling the R dimension > #kv heads when using a model with bias")
             bias = (
                 state_dict[prefix + "bias"] if prefix + "bias" in state_dict else None
             )
