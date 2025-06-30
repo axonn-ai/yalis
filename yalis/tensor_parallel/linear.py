@@ -12,7 +12,7 @@ import math
 from axonn import axonn as ax
 from axonn.intra_layer.communication import Drop
 from yalis.external.nccl_comm import CommHandler
-from yalis.tensor_parallel.all_reduce_op import tp_all_reduce
+from yalis.tensor_parallel.all_reduce_op import tp_all_reduce, symmetric_all_reduce_op
 
 from typing import Optional, Sequence
 import gc
@@ -234,7 +234,8 @@ class TPLinear(torch.nn.Module):
         self._load_from_state_dict = self._modified_load_from_state_dict
 
     def all_reduce(self, x):
-        tp_all_reduce(x, self.inner_nccl_comm_idx)
+        #tp_all_reduce(x, self.inner_nccl_comm_idx)
+        x = symmetric_all_reduce_op(x, self.tp_dims, self.transpose)
         return x
 
     def matmul(self, w, x):
