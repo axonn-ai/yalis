@@ -160,11 +160,14 @@ class TPLinear(torch.nn.Module):
         # in_features should be divisible by inner_group_size
         assert in_features % self.inner_group_size == 0
         # in_features should be divisible by inner_group_size
-        assert out_features % self.outer_group_size == 0
+        ###assert out_features % self.outer_group_size == 0
         # local_in_features - this is the number of in_features on each GPU
         self.local_in_features = divide(in_features, self.inner_group_size)
         # local_out_features - this is the number of out_features on each GPU
-        self.local_out_features = divide(out_features, self.outer_group_size)
+        if out_features % self.outer_group_size == 0:
+            self.local_out_features = divide(out_features, self.outer_group_size)
+        else:
+            self.local_out_features = math.ceil(out_features / self.outer_group_size)
         # initialize the weight matrix and grab the local slice for each GPU
         initial_params = initialize_params(
             out_features,
@@ -273,7 +276,36 @@ class TPLinear(torch.nn.Module):
                 is_full_weight_matrix or is_sharded_weight_matrix
             ), "This is neither a full checkpoint nor a sharded checkpoint"
 
-            if is_full_weight_matrix:
+            if is_full_weight_matrix and getattr(self, "duplicating_kv", False):
+                rank = dist.get_rank(self.outer_group)
+                hs = self.head_size
+                q_per_rank = self.q_per_rank
+                q_per_kv = self.total_n_head // self.total_n_query_groups
+                blk = q_per_kv + 2
+                q_rows = []
+                groups = set()
+                for h in range(rank * q_per_rank, (rank + 1) * q_per_rank):
+                    g = h // q_per_kv
+                    groups.add(g)
+                    local_q = h % q_per_kv
+                    row0 = (g * blk + local_q) * hs
+                    q_rows.extend(range(row0, row0 + hs))
+                kv_rows = []
+                for g in groups:
+                    base = g * blk * hs + q_per_kv * hs
+                    kv_rows.extend(range(base, base + hs))
+                    kv_rows.extend(range(base + hs, base + 2 * hs))
+                local_rows = q_rows + kv_rows
+                weight = weight.contiguous()
+                weight = weight[local_rows, :].contiguous()
+                state_dict[prefix + "weight"] = weight
+                if self.weight.shape != weight.shape:
+                    self.weight = torch.nn.Parameter(
+                        torch.empty_like(weight, device="cuda"),
+                        requires_grad=True
+                    )
+                self.local_out_features = weight.size(0)
+            elif is_full_weight_matrix:
                 out_features_group, in_features_group = (
                     self.outer_group,
                     self.inner_group,
@@ -281,10 +313,13 @@ class TPLinear(torch.nn.Module):
                 weight = extract_local_params_from_full_params(
                     weight, out_features_group, in_features_group
                 )
-
-            state_dict[prefix + "weight"] = weight
+                state_dict[prefix + "weight"] = weight
+            else:
+                state_dict[prefix + "weight"] = weight
 
         if self.bias is not None:
+            if getattr(self, "duplicating_kv", False):
+                raise NotImplementedError("There is currently no support for scaling the R dimension > #kv heads when using a model with bias")
             bias = (
                 state_dict[prefix + "bias"] if prefix + "bias" in state_dict else None
             )
