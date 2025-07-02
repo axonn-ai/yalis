@@ -55,9 +55,9 @@ def load_checkpoint(model: nn.Module,
         if any(True for _ in m.parameters(recurse=False))  # module has direct params
         or any(True for _ in m.buffers(recurse=False))    # or direct buffers
     ]
+    assert len(modules_to_hook) > 0, "Could not find modules with direct parameters or buffers"
 
     pbar = tqdm(total=len(modules_to_hook), desc="Loading State Dict")
-
     def _post_hook(module, incompatible_keys):
         # one tick per module
         pbar.update(1)
@@ -66,6 +66,10 @@ def load_checkpoint(model: nn.Module,
     for m in modules_to_hook:
         m.register_load_state_dict_post_hook(_post_hook)
 
-    model.load_state_dict(state_dict, strict=strict)
-
-    pbar.close()
+    try:
+        model.load_state_dict(state_dict, strict=strict)
+    except Exception as e:
+        print_rank0(f"Error loading checkpoint: {e}")
+        raise e
+    finally:
+        pbar.close()

@@ -58,8 +58,12 @@ def divide(a, b):
 def extract_local_params_from_full_params(
     params, out_features_group, in_features_group
 ):
+    # Drop the in_features dimension (last dimension)
     params = Drop.apply(params, in_features_group, -1)
+
+    # Drop the out_features dimension (second last dimension)
     params = Drop.apply(params, out_features_group, -2)
+
     params = params.contiguous()
     return params
 
