@@ -350,9 +350,9 @@ class CausalSelfAttention(nn.Module):
         shape = (config.n_head + 2 * config.n_query_groups) * config.head_size
         # key, query, value projections for all heads, but in a batch
         if not config.tensor_parallel:
-            self.attn = nn.Linear(config.n_embd, shape, bias=config.bias)
+            self.qkv = nn.Linear(config.n_embd, shape, bias=config.bias or config.attn_bias)
         else:
-            self.attn = TPLinear(config.n_embd, shape, bias=config.bias, init_device=config.init_device)
+            self.qkv = TPLinear(config.n_embd, shape, bias=config.bias or config.attn_bias, init_device=config.init_device)
 
         # output projection
         # if `head_size` is explicitly specified in the config, `n_embd` might not be equal to `head_size * n_head`
@@ -399,22 +399,37 @@ class CausalSelfAttention(nn.Module):
             x.size()
         )  # batch size, sequence length, embedding dimensionality (n_embd)
 
-        qkv = self.attn(x)
+        qkv = self.qkv(x)
 
-        # assemble into a number of query groups to support MHA, MQA and GQA together (see `config.n_query_groups`)
-        q_per_kv = self.config.n_head // self.config.n_query_groups
-        total_qkv = q_per_kv + 2  # each group has 1+ queries, 1 key, and 1 value
-        qkv = qkv.view(
-            B, T, self.config.n_query_groups, total_qkv, self.config.head_size
-        )
+        # # assemble into a number of query groups to support MHA, MQA and GQA together (see `config.n_query_groups`)
+        # q_per_kv = self.config.n_head // self.config.n_query_groups
+        # total_qkv = q_per_kv + 2  # each group has 1+ queries, 1 key, and 1 value
+        # qkv = qkv.view(
+        #     B, T, self.config.n_query_groups, total_qkv, self.config.head_size
+        # )
 
-        # split batched computation into three
-        q, k, v = qkv.split((q_per_kv, 1, 1), dim=3)
+        # # split batched computation into three
+        # q, k, v = qkv.split((q_per_kv, 1, 1), dim=3)
+
+        # q = q.reshape(B, T, -1, self.config.head_size)  # (B, T, nh_q, hs)
+        # k = k.reshape(B, T, -1, self.config.head_size)  # (B, T, nh_k, hs)
+        # v = v.reshape(B, T, -1, self.config.head_size)  # (B, T, nh_v, hs)
+        
+        head_size = self.config.head_size
+        n_head = self.config.n_head
+        n_query_groups = self.config.n_query_groups
+        
+        query_size = n_head * head_size
+        key_size = value_size = n_query_groups * head_size
+        # Split qkv into query, key and value matrices.
+        q, k, v = qkv.split((query_size, key_size, value_size), dim=-1)  # 3x(B, T, C*)
+        
 
         q = q.reshape(B, T, -1, self.config.head_size)  # (B, T, nh_q, hs)
         k = k.reshape(B, T, -1, self.config.head_size)  # (B, T, nh_k, hs)
         v = v.reshape(B, T, -1, self.config.head_size)  # (B, T, nh_v, hs)
-
+        
+        
         assert (
             self.config.rope_n_elem == self.config.head_size
         ), "partial rope is not supported yet"
@@ -522,7 +537,18 @@ class CausalSelfAttention(nn.Module):
             assert v_shape[-1] % ax.config.G_intra_c == 0
             v_shape = v_shape[:-1] + (v_shape[-1] // ax.config.G_intra_c,)
         return KVCache(k_shape, v_shape, device=device, dtype=dtype)
+    
+    
+    def _load_from_state_dict(self, state_dict: dict, prefix: str, *args: Any, **kwargs: Any) -> None:
+        """For compatibility with legacy checkpoints."""
 
+        for attr in ("weight", "bias"):
+            legacy_key = f"{prefix}attn.{attr}"
+            current_key = f"{prefix}qkv.{attr}"
+            if legacy_key in state_dict:
+                state_dict[current_key] = qkv_reassemble(state_dict.pop(legacy_key), self.config)
+
+        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
 
 class GptNeoxMLP(nn.Module):
     def __init__(self, config: Config) -> None:
@@ -542,17 +568,32 @@ class GptNeoxMLP(nn.Module):
 class LLaMAMLP(nn.Module):
     def __init__(self, config: Config) -> None:
         super().__init__()
+        # Not adding an optional intermediate_size parameter because config takes care of it although the newer implementation does it.
         if not config.tensor_parallel:
-            self.gate_up_proj = nn.Linear(
-                config.n_embd, 2 * config.intermediate_size, bias=config.bias
-            )
+            # self.gate_up_proj = nn.Linear(
+            #     config.n_embd, 2 * config.intermediate_size, bias=config.bias
+            # )
+            
+            self.fc_1 = nn.Linear(config.n_embd, config.intermediate_size, bias=config.bias)
+            self.fc_2 = nn.Linear(config.n_embd, config.intermediate_size, bias=config.bias)
+            
             self.proj = nn.Linear(
                 config.intermediate_size, config.n_embd, bias=config.bias
             )
         else:
-            self.gate_up_proj = TPLinear(
-                config.n_embd, 2 * config.intermediate_size, bias=config.bias, init_device=config.init_device
+            # self.gate_up_proj = TPLinear(
+            #     config.n_embd, 2 * config.intermediate_size, bias=config.bias, init_device=config.init_device
+            # )
+            
+            self.fc_1 = TPLinear(
+                config.n_embd, config.intermediate_size, bias=config.bias, init_device=config.init_device
+                
             )
+            self.fc_2 = TPLinear(
+                config.n_embd, config.intermediate_size, bias=config.bias, init_device=config.init_device
+                
+            )
+            
             self.proj = TPLinear(
                 config.intermediate_size,
                 config.n_embd,
@@ -564,16 +605,19 @@ class LLaMAMLP(nn.Module):
         self.config = config
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.gate_up_proj(x)
-        x_fc_1, x_fc_2 = x[..., ::2], x[..., 1::2]
+        # x = self.gate_up_proj(x)
+        # x_fc_1, x_fc_2 = x[..., ::2], x[..., 1::2]
+        
+        x_fc_1 = self.fc_1(x)
+        x_fc_2 = self.fc_2(x)
         x = torch.nn.functional.silu(x_fc_1) * x_fc_2
         return self.proj(x)
 
 
 class GemmaMLP(LLaMAMLP):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.gate_up_proj(x)
-        x_fc_1, x_fc_2 = x[..., ::2], x[..., 1::2]
+        x_fc_1 = self.fc_1(x)
+        x_fc_2 = self.fc_2(x)
         x = (
             torch.nn.functional.gelu(x_fc_1, approximate=self.config.gelu_approximate)
             * x_fc_2
