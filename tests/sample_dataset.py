@@ -577,7 +577,6 @@ class SonnetDataset(BenchmarkDataset):
                 f"({base_offset}).")
 
         # Determine how many lines to use.
-        import math
         num_input_lines = round(((input_len - base_offset) + avg_len) / avg_len) + 100
 
         samples = []
