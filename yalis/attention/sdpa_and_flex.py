@@ -263,7 +263,7 @@ def flex_attention_(q: torch.Tensor,
               use_intra_head_parallelism: bool = False,
               **kwargs):  
     assert "flex_attention_block_mask" in kwargs, "flex attention requires a block mask"
-    flex_attention_block_mask = kwargs["flex_attention_block_mask"]
+    #flex_attention_block_mask = kwargs["flex_attention_block_mask"]
     return sdpa_and_flex_attention(q=q,
                             k=k,
                             v=v,
@@ -274,5 +274,4 @@ def flex_attention_(q: torch.Tensor,
                             rotary_sin=rotary_sin,
                             use_intra_head_parallelism=use_intra_head_parallelism,
                             use_flex=True,
-                            flex_attention_block_mask=flex_attention_block_mask,
                             **kwargs)

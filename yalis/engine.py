@@ -35,27 +35,33 @@ precision_to_dtype = {
 
 @torch.no_grad()
 @torch.compile(disable=YALIS_DISABLE_COMPILE)
-def prefill(model, tokens, unpadded_prompt_lengths, temperature=1.0, top_k=None, top_p=1.0):
+def prefill(model, tokens, unpadded_prompt_lengths, temperature=1.0, top_k=None, top_p=1.0, get_logits=False):
     """
     Prefill function for generating the first token.
 
     Args:
         model: The model to generate from.
         tokens: Input tokens tensor.
+        get_logits: If True, returns logits as well.
 
     Returns:
         token_id: The next predicted token.
+        logits: (Optional) The raw logits from the model.
     """
 
-    logits = model(tokens, unpadded_prompt_lengths)["logits"]
+    logits = model(tokens, unpadded_prompt_lengths)["logits"].to(torch.float32)
     logits = logits[torch.arange(logits.size(0)), unpadded_prompt_lengths - 1]
     token_id = sample(logits=logits, temperature=temperature, top_k=top_k, top_p=top_p)
-    return token_id
+    # TODO: We should return a dict so that we can add more return values in the future
+    if get_logits:
+        return token_id, logits
+    else:
+        return token_id, None
 
 
 @torch.no_grad()
 @torch.compile(mode=YALIS_DECODE_MODE, disable=YALIS_DISABLE_COMPILE)
-def generate(model, tokens, get_probs=False, temperature=1.0, top_k=None, top_p=1.0):
+def generate(model, tokens, temperature=1.0, top_k=None, top_p=1.0, get_logits=False):
     """
     Generate function for producing the next token(s).
 
@@ -63,18 +69,18 @@ def generate(model, tokens, get_probs=False, temperature=1.0, top_k=None, top_p=
         model: The model to generate from.
         tokens: Input tokens tensor.
         input_pos: Position indices for the tokens.
-        get_probs: If True, returns logits as well.
+        get_logits: If True, returns logits as well.
 
     Returns:
         token_id: The next predicted token.
         logits: (Optional) The raw logits from the model.
     """
-    logits = model(tokens)["logits"]
+    logits = model(tokens)["logits"].to(torch.float32)
     token_id = sample(logits=logits[:, -1], temperature=temperature, top_k=top_k, top_p=top_p)
-    if get_probs:
-        return token_id, logits
+    if get_logits:
+        return token_id, logits[:, -1]
     else:
-        return token_id
+        return token_id, None
 
 
 class LLMEngine:
@@ -207,6 +213,7 @@ class LLMEngine:
         report_throughput: bool = False,
         ignore_eos: Optional[bool] = True,
         enable_nvtx: Optional[bool] = False,
+        get_logits: Optional[bool] = False,
     ) -> torch.Tensor:
         """
         Generate tokens based on input prompts, which can either be a list of strings or a list of token ID lists.
@@ -284,6 +291,7 @@ class LLMEngine:
         nvtx_range_push, nvtx_range_pop = get_nvtx_funcs(enable_nvtx)
 
         output_tokens = []
+        output_logits = []
         # Start timing the operations
         timers.start("generate")
         self.model.token_counter.zero_()
@@ -303,11 +311,12 @@ class LLMEngine:
                     timer_key = "prefill"
                     timers.start(timer_key)
                     nvtx_range_push("Prefill")
-                    next_token = prefill(
+                    next_token, logits = prefill(
                         self.model, current_input_to_model, prompt_sequence_lengths, 
                         temperature=self.inference_config.temperature, 
                         top_k=self.inference_config.top_k, 
-                        top_p=self.inference_config.top_p
+                        top_p=self.inference_config.top_p,
+                        get_logits=get_logits
                     )  # Call prefill function
 
                     current_input_to_model = next_token.clone()
@@ -317,11 +326,12 @@ class LLMEngine:
                     timers.start(timer_key)
                     nvtx_range_push("Decode")
                     with sdpa_kernel(SDPBackend.MATH):
-                        next_token = generate(
+                        next_token, logits = generate(
                             self.model, current_input_to_model, 
                             temperature=self.inference_config.temperature, 
                             top_k=self.inference_config.top_k, 
-                            top_p=self.inference_config.top_p
+                            top_p=self.inference_config.top_p,
+                            get_logits=get_logits
                         )  # Call generate function
 
                     current_input_to_model.copy_(
@@ -339,6 +349,8 @@ class LLMEngine:
                     next_token.masked_fill_(mask, self.tokenizer.eos_token_id)
 
                 output_tokens.append(next_token.clone())
+                if get_logits:
+                    output_logits.append(logits.clone())
                 timers.stop(timer_key)
 
                 # Break if every sequence is done
@@ -354,9 +366,13 @@ class LLMEngine:
         ttft = (
             (times[('generate', 'prefill')] / events[('generate', 'prefill')])
         )
-        tbt = (
-            (times[('generate', 'decode')] / events[('generate', 'decode')]) 
-        )
+        if events[('generate', 'decode')] > 0:
+            tbt = (
+                (times[('generate', 'decode')] / events[('generate', 'decode')]) 
+            )
+        else:
+            tbt = 0
+
         metrics = {
             "BatchSize": prompt_tokens.shape[0],
             "PromptLength": prompt_tokens.shape[1],
@@ -372,5 +388,7 @@ class LLMEngine:
         if dist.get_rank() == 0 and report_throughput:
             print (f"[Metrics] BatchSize = {prompt_tokens.shape[0]}, PromptLength = {prompt_tokens.shape[1]}, DecodeLength = {tokens_to_generate}, Throughput = {tput:.2f} tok/s, TTFT = {ttft:.4f} ms, TBT = {tbt:.4f} ms, E2E = {times[('generate',)]:.4f} ms, FinishedReason = {finished_reason}")
 
-
-        return output_tensor, metrics
+        if get_logits:
+            return output_tensor, metrics, output_logits
+        else:
+            return output_tensor, metrics
