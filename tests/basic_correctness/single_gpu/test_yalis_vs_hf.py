@@ -198,7 +198,7 @@ def _compare_logprobs(hf_logits, hf_tokens, yalis_logits, yalis_tokens):
             token_mismatch = hf_token_i != yalis_token_i
 
             if token_mismatch:
-                warnings.warn(f"Token mismatch: HF Token: {hf_token_i} vs Yalis Token: {yalis_token_i}")
+                warnings.warn(f"Token mismatch {i}: HF Token: {hf_token_i} vs Yalis Token: {yalis_token_i}")
                 # Check if the tokens are in the top NUM_LOGPROBS of each other
                 hf_token_i_in_topk = hf_token_i in yalis_topk[i]
                 yalis_token_i_in_topk = yalis_token_i in hf_topk[i]
@@ -231,8 +231,8 @@ def test_01_prefill(tokenizer, hf_model, yalis_engine, batch_size, prompt_length
 def test_02_decode(tokenizer, hf_model, yalis_engine, batch_size, prompt_length, dtype, alpaca_dataset):
     yalis_engine.reset_kv_cache(batch_size)
     prompts = alpaca_prompt(alpaca_dataset, tokenizer, prompt_length, batch_size)
-    hf_tokens, hf_logits = _get_hf_output(tokenizer, hf_model, prompts, num_tokens=10)
-    yalis_tokens, yalis_logits = _get_yalis_output(yalis_engine, prompts, num_tokens=10)
+    hf_tokens, hf_logits = _get_hf_output(tokenizer, hf_model, prompts, num_tokens=32)
+    yalis_tokens, yalis_logits = _get_yalis_output(yalis_engine, prompts, num_tokens=32)
     _compare_logprobs(hf_logits, hf_tokens, yalis_logits, yalis_tokens)
 
 # TODO: Add perplexity test
