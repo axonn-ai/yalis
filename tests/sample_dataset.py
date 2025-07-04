@@ -525,8 +525,7 @@ class SonnetDataset(BenchmarkDataset):
     """
     Simplified implementation of the Sonnet dataset.  Loads poem lines from a
     text file and generates sample requests.  Default values here copied from
-    `benchmark_serving.py` for the sonnet dataset.
-    """
+    `benchmark_serving.py` for the sonnet dataset.  """
 
     DEFAULT_PREFIX_LEN = 0
     DEFAULT_INPUT_LEN = 16384
@@ -579,7 +578,7 @@ class SonnetDataset(BenchmarkDataset):
 
         # Determine how many lines to use.
         import math
-        num_input_lines = round((input_len - base_offset) + avg_len // avg_len) + 100
+        num_input_lines = round(((input_len - base_offset) + avg_len) / avg_len) + 100
 
         samples = []
         for _ in range(num_requests):
