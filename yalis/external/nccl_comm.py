@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-# This file is inspired by https://github.com/vllm-project/vllm/blob/main/vllm/distributed/device_communicators/pynccl.py
+# This file is inspired by
+#       https://github.com/vllm-project/vllm/blob/main/vllm/distributed/device_communicators/pynccl.py
 
 import ctypes
 import torch
@@ -9,11 +10,15 @@ from yalis.utils import get_platform
 
 # NCCL constants
 NCCL_UNIQUE_ID_BYTES = 128
+
+
 class ncclUniqueId(ctypes.Structure):
     _fields_ = [("internal", ctypes.c_byte * NCCL_UNIQUE_ID_BYTES)]
 
+
 ncclComm_t = ctypes.c_void_p
 buffer_type = ctypes.c_void_p
+
 
 class ncclDataTypeEnum:
     ncclInt8 = 0
@@ -52,6 +57,7 @@ class ncclDataTypeEnum:
         if dtype == torch.bfloat16:
             return cls.ncclBfloat16
         raise ValueError(f"Unsupported dtype: {dtype}")
+
 
 class ncclRedOpTypeEnum:
     ncclSum = 0
@@ -101,10 +107,13 @@ class CommHandler:
             raise ValueError(f"Unsupported platform: {platform}")
 
     @staticmethod
-    def create_communicator_from_process_group(process_group: torch.distributed.ProcessGroup) -> int:
+    def create_communicator_from_process_group(
+        process_group: torch.distributed.ProcessGroup,
+    ) -> int:
         """
-        Create a communicator from a process group and return the index of the communicator.
-        If the communicator already exists, return the index of the existing communicator.
+        Create a communicator from a process group and return the index
+        of the communicator. If the communicator already exists, return
+        the index of the existing communicator.
         Input:
             process_group: torch.distributed.ProcessGroup
         Output:
@@ -123,27 +132,33 @@ class CommHandler:
 
         idx = CommHandler.process_group_to_idx[process_group]
         return idx
-    
+
     @staticmethod
     def get_communicator_from_idx(idx: int):
         """
         Get a communicator from an index.
         Input:
-            idx: int - The index of the communicator created by CommHandler.create_communicator_from_process_group.
+            idx: int - The index of the communicator created by
+                       CommHandler.create_communicator_from_process_group.
         Output:
             comm: NCCLCommunicator - The communicator.
         """
         if CommHandler.comm_lib is None:
-            raise RuntimeError("NCCL library not loaded. Call CommHandler.create_communicator_from_process_group with a process group first.") # noqa: E501
+            raise RuntimeError(
+                "NCCL lib not loaded. Call CommHandler.create_communicator_from_process_group with a process group first."  # noqa: E501
+            )
         if idx not in CommHandler.idx_to_comm:
-            raise RuntimeError(f"NCCL communicator with index {idx} not found. Call CommHandler.create_communicator_from_process_group with a process group first.") # noqa: E501
-
+            raise RuntimeError(
+                f"NCCL communicator with index {idx} not found. Call CommHandler.create_communicator_from_process_group with a process group first."  # noqa: E501
+            )
         return CommHandler.idx_to_comm[idx]
-  
+
     @staticmethod
     def get_comm_lib():
         if CommHandler.comm_lib is None:
-            raise RuntimeError("NCCL library not loaded. Call CommHandler.load_commlib() first.")
+            raise RuntimeError(
+                "NCCL lib not loaded. Call CommHandler.load_commlib() first."
+            )
         return CommHandler.comm_lib
 
 
@@ -153,7 +168,7 @@ class NCCLCommunicator:
         rank = torch.distributed.get_rank(process_group)
         nranks = torch.distributed.get_world_size(process_group)
         device = torch.cuda.current_device()
-        
+
         if rank == 0:
             unique_id = self.get_unique_id()
         else:
@@ -165,12 +180,16 @@ class NCCLCommunicator:
         byte_list = tensor.cpu().tolist()
         for i, byte in enumerate(byte_list):
             unique_id.internal[i] = byte
-        
+
         self.initialize_comm(unique_id, nranks, rank, device)
 
-    def initialize_comm(self, unique_id: ncclUniqueId, nranks: int, rank: int, device: int):
+    def initialize_comm(
+        self, unique_id: ncclUniqueId, nranks: int, rank: int, device: int
+    ):
         self.comm = ncclComm_t()
-        print(f"NCCLCommunicator: Device: {device}, Rank: {rank}, Nranks: {nranks}")
+        print(
+            f"NCCLCommunicator: Device: {device}, Rank: {rank}, Nranks: {nranks}"  # noqa: E501
+        )
         ret = CommHandler.get_comm_lib().ncclCommInitRank(
             ctypes.byref(self.comm),
             ctypes.c_int(nranks),
@@ -183,17 +202,25 @@ class NCCLCommunicator:
     def check_nccl_error(self, ret, msg="NCCL error"):
         if ret != 0:
             # Get error string
-            CommHandler.get_comm_lib().ncclGetErrorString.restype = ctypes.c_char_p
+            CommHandler.get_comm_lib().ncclGetErrorString.restype = (
+                ctypes.c_char_p
+            )
             err_str = CommHandler.get_comm_lib().ncclGetErrorString(ret)
-            raise RuntimeError(f"{msg}: {err_str.decode('utf-8')} (code {ret})")
+            raise RuntimeError(
+                f"{msg}: {err_str.decode('utf-8')} (code {ret})"
+            )
 
     def get_unique_id(self) -> ncclUniqueId:
         unique_id = ncclUniqueId()
-        ret = CommHandler.get_comm_lib().ncclGetUniqueId(ctypes.byref(unique_id))
+        ret = CommHandler.get_comm_lib().ncclGetUniqueId(
+            ctypes.byref(unique_id)
+        )
         self.check_nccl_error(ret, "ncclGetUniqueId failed")
         return unique_id
-    
-    def all_reduce(self, tensor, stream=None, op=torch.distributed.ReduceOp.SUM):
+
+    def all_reduce(
+        self, tensor, stream=None, op=torch.distributed.ReduceOp.SUM
+    ):
         if not tensor.is_cuda:
             raise ValueError("Tensor must be on CUDA/ROCm device")
 
@@ -208,7 +235,7 @@ class NCCLCommunicator:
             nccl_dtype,
             nccl_op,
             self.comm,
-            ctypes.c_void_p(stream.cuda_stream)
+            ctypes.c_void_p(stream.cuda_stream),
         )
         self.check_nccl_error(ret, "ncclAllReduce failed")
 

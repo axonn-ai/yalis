@@ -95,11 +95,16 @@ def flash_attention(
     prestore_kv_cache: bool = True,
     **kwargs
 ) -> torch.Tensor:
-    if "use_intra_head_parallelism" in kwargs and kwargs["use_intra_head_parallelism"]:  # noqa: E501
+    if (
+        "use_intra_head_parallelism" in kwargs
+        and kwargs["use_intra_head_parallelism"]
+    ):  # noqa: E501
         raise ValueError(
             "flash attention backend does not support intra head parallelism"
         )
-    if block_table is not None and (rotary_cos is not None or rotary_sin is not None):  # noqa: E501
+    if block_table is not None and (
+        rotary_cos is not None or rotary_sin is not None
+    ):  # noqa: E501
         raise ValueError(
             "flash attention kernel does not support rotary embeddings with a block table"  # noqa: E501
         )

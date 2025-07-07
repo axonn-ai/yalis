@@ -79,7 +79,9 @@ def intra_head_sdpa(
         dist.all_reduce(S, op=dist.ReduceOp.SUM, group=process_group)
     S = S + mask
     A = torch.nn.functional.softmax(
-        S, dim=-1, dtype=torch.float,
+        S,
+        dim=-1,
+        dtype=torch.float,
     ).to(dtype=q.dtype)
     Out = A @ v
     if enable_gqa:
@@ -115,7 +117,7 @@ def rotary_kv_update_sdpa_gen(
         for x in [q, k]:
             head_size = x.size(-1)
             x1 = x[..., : head_size // 2]  # (B, nh, T, hs/2)
-            x2 = x[..., head_size // 2:]  # (B, nh, T, hs/2)
+            x2 = x[..., head_size // 2 :]  # (B, nh, T, hs/2)
             rotated = torch.cat((-x2, x1), dim=-1)  # (B, nh, T, hs)
             roped = (x * cos) + (rotated * sin)
             roped = roped.to(dtype=x.dtype)
@@ -203,7 +205,7 @@ def rotary_kv_update_sdpa_prefill(
         for x in [q, k]:
             head_size = x.size(-1)
             x1 = x[..., : head_size // 2]  # (B, nh, T, hs/2)
-            x2 = x[..., head_size // 2:]  # (B, nh, T, hs/2)
+            x2 = x[..., head_size // 2 :]  # (B, nh, T, hs/2)
             rotated = torch.cat((-x2, x1), dim=-1)  # (B, nh, T, hs)
             roped = (x * cos) + (rotated * sin)
             roped = roped.to(dtype=x.dtype)
@@ -338,7 +340,6 @@ def flex_attention_(
     assert (
         "flex_attention_block_mask" in kwargs
     ), "flex attention requires a block mask"
-    flex_attention_block_mask = kwargs["flex_attention_block_mask"]
     return sdpa_and_flex_attention(
         q=q,
         k=k,

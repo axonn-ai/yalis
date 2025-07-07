@@ -1,9 +1,9 @@
-from setuptools import setup, find_packages
+from setuptools import setup
 from torch.utils.cpp_extension import BuildExtension, CppExtension
 
 setup(
-    name='yalis',
-    version='0.1.0',
+    name="yalis",
+    version="0.1.0",
     packages=[
         "yalis",
         "yalis.tensor_parallel",
@@ -14,15 +14,15 @@ setup(
     # Other metadata for your package
     ext_modules=[
         CppExtension(
-            name='kvcache_manager',  # the module name you will import in Python
-            sources=['yalis/attention/paged_kv_cache.cpp'],  # adjust the path as needed
-            extra_compile_args=['-O3'],  # optional, for optimization
+            name="kvcache_manager",
+            sources=["yalis/attention/paged_kv_cache.cpp"],
+            extra_compile_args=["-O3"],
         )
     ],
-    cmdclass={'build_ext': BuildExtension},
+    cmdclass={"build_ext": BuildExtension},
     install_requires=[
-        'torch',  # Ensure PyTorch is installed
+        "torch",  # Ensure PyTorch is installed
     ],
-    author='Siddharth Singh, Prajwal Singhania, Lannie Dalton Hough, Ishan Revankar',
-    description='An easy-to-use library for LLM inference'
+    author="Siddharth Singh, Prajwal Singhania, Lannie Dalton Hough, Ishan Revankar",  # noqa: E501
+    description="An easy-to-use library for LLM inference",
 )

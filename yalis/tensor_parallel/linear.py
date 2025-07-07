@@ -1,4 +1,4 @@
-# Copyright 2023-2024 Parallel Software and Systems Group, University of Maryland.
+# Copyright 2023-2024 Parallel Software and Systems Group, University of Maryland.  # noqa
 # See the top-level LICENSE file for details.
 #
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
@@ -7,15 +7,10 @@ import torch.distributed as dist
 import torch
 import torch.nn.functional as F
 
-from torch.autograd import Function
-
 import math
 
 from axonn import axonn as ax
-from axonn.intra_layer.communication import (
-    Drop,
-    Gather,
-)
+from axonn.intra_layer.communication import Drop
 from yalis.external.nccl_comm import CommHandler
 from yalis.tensor_parallel.all_reduce_op import tp_all_reduce
 
@@ -83,10 +78,12 @@ def initialize_params(
         params, out_features_group, in_features_group
     )
 
-    # This line is important within this function as placing outside leads to pytorch not deleting the reserved memory
+    # This line is important within this function:
+    # placing outside leads to pytorch not deleting the reserved memory
     torch.cuda.empty_cache()
 
-    # This will lead to immediate memory garbage collection but can be slow - Probably not needed
+    # This leads to immediate memory garbage collection but can be slow
+    # Probably not needed
     gc.collect()
     return params
 
@@ -116,24 +113,33 @@ class TPLinear(torch.nn.Module):
 
         self.init_device = init_device
         # weights are shaped [out_features, in_features]
-        # in_features are distributed across self.inner_group (X tensor parallel group)
-        # out_features are distributed across self.inner_group (Y tensor parallel group)
+        # in_features are distributed across self.inner_group (X TP group)
+        # out_features are distributed across self.inner_group (Y TP group)
         # if transpose is true then X and Y are swapped
-        if tensor_parallel_dims is not None and torch.distributed.get_rank() == 0:
+        if (
+            tensor_parallel_dims is not None
+            and torch.distributed.get_rank() == 0
+        ):
             print(
                 "Manually setting TP dims for a layer with shape",
-                f" - {(in_features, out_features)} | tp-dims = {tensor_parallel_dims}",
+                f" - {(in_features, out_features)} | tp-dims = {tensor_parallel_dims}",  # noqa: E501
             )
         self.inner_group, self.outer_group, self.depth_group = (
             ax.comm_handle.get_intra_layer_groups(tensor_parallel_dims)
         )
         if transpose:
-            self.inner_group, self.outer_group = self.outer_group, self.inner_group
+            self.inner_group, self.outer_group = (
+                self.outer_group,
+                self.inner_group,
+            )
 
-
-        self.inner_nccl_comm_idx = CommHandler.create_communicator_from_process_group(self.inner_group)
-        # We do not need communicators for the outer and depth group as they are not used currently
-
+        self.inner_nccl_comm_idx = (
+            CommHandler.create_communicator_from_process_group(
+                self.inner_group
+            )
+        )
+        # We do not need NCCL communicators for the outer and depth group
+        # as no collective is performed on them during the forward pass
 
         # depth_group is the Z tensor parallel group (akin to FSDP)
         self.depth_group = ax.comm_handle.depth_intra_layer_parallel_group
@@ -149,7 +155,7 @@ class TPLinear(torch.nn.Module):
         self.in_features = in_features
         self.out_features = out_features
 
-        # expert mode = True -> user needs to parallelize non-linear layers manually
+        # expert mode = True -> user parallelizes non-linear layers manually
         # expert mode = False -> non-linear layers are parallelized using
         #                        data parallelism
         #                        automatically by AxoNN. This does involve some
@@ -163,15 +169,19 @@ class TPLinear(torch.nn.Module):
 
         # in_features should be divisible by inner_group_size
         assert in_features % self.inner_group_size == 0
-        # in_features should be divisible by inner_group_size
-        ###assert out_features % self.outer_group_size == 0
+
         # local_in_features - this is the number of in_features on each GPU
         self.local_in_features = divide(in_features, self.inner_group_size)
+
         # local_out_features - this is the number of out_features on each GPU
         if out_features % self.outer_group_size == 0:
-            self.local_out_features = divide(out_features, self.outer_group_size)
+            self.local_out_features = divide(
+                out_features, self.outer_group_size
+            )
         else:
-            self.local_out_features = math.ceil(out_features / self.outer_group_size)
+            self.local_out_features = math.ceil(
+                out_features / self.outer_group_size
+            )
         # initialize the weight matrix and grab the local slice for each GPU
         initial_params = initialize_params(
             out_features,
@@ -230,10 +240,7 @@ class TPLinear(torch.nn.Module):
     def matmul(self, w, x):
         return F.linear(x, w)
 
-    def forward(
-        self,
-        x
-    ):
+    def forward(self, x):
 
         x = self.matmul(self.weight, x)
         x = self.all_reduce(x)
@@ -262,14 +269,19 @@ class TPLinear(torch.nn.Module):
         )
 
     @torch.no_grad()
-    def _modified_load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
-        # If the parameters were initialized on meta-device, we need to materialize them here
+    def _modified_load_from_state_dict(
+        self, state_dict, prefix, *args, **kwargs
+    ):
+        # If the parameters were initialized on meta-device,
+        # we need to materialize them here
         if self.init_device == "meta":
             self.to_empty(device="cuda")
             self.init_device = "cuda"
 
         weight = (
-            state_dict[prefix + "weight"] if prefix + "weight" in state_dict else None
+            state_dict[prefix + "weight"]
+            if prefix + "weight" in state_dict
+            else None
         )
 
         if weight is not None:
@@ -281,7 +293,9 @@ class TPLinear(torch.nn.Module):
             ), "This is neither a full checkpoint nor a sharded checkpoint"
 
             # TODO: This can be further optimized potentially
-            if is_full_weight_matrix and getattr(self, "duplicating_kv", False):
+            if is_full_weight_matrix and getattr(
+                self, "duplicating_kv", False
+            ):
                 rank = dist.get_rank(self.outer_group)
                 hs = self.head_size
                 q_per_rank = self.q_per_rank
@@ -307,7 +321,7 @@ class TPLinear(torch.nn.Module):
                 if self.weight.shape != weight.shape:
                     self.weight = torch.nn.Parameter(
                         torch.empty_like(weight, device="cuda"),
-                        requires_grad=True
+                        requires_grad=True,
                     )
                 self.local_out_features = weight.size(0)
             elif is_full_weight_matrix:
@@ -324,9 +338,14 @@ class TPLinear(torch.nn.Module):
 
         if self.bias is not None:
             if getattr(self, "duplicating_kv", False):
-                raise NotImplementedError("There is currently no support for scaling the R dimension > #kv heads when using a model with bias")
+                raise NotImplementedError(
+                    "There is currently no support for scaling the R dimension"
+                    " > #kv heads when using a model with bias"
+                )
             bias = (
-                state_dict[prefix + "bias"] if prefix + "bias" in state_dict else None
+                state_dict[prefix + "bias"]
+                if prefix + "bias" in state_dict
+                else None
             )
             if bias is not None:
                 if bias.size(0) == self.out_features:
@@ -335,8 +354,6 @@ class TPLinear(torch.nn.Module):
                 else:
                     assert (
                         bias.size(0) == self.local_out_features
-                    ), "This is neither a full checkpoint nor a sharded checkpoint"
+                    ), "This is neither a full nor a sharded checkpoint"
 
         self._old_load_from_state_dict(state_dict, prefix, *args, **kwargs)
-
-    

@@ -40,7 +40,6 @@ class Timers:
             self.curr_index[key] = 0
         return total_times, total_events
 
-
     def create_hatchet_literal_cct(self):
         def insert_node(key, time, root):
             if len(key) == 1:
@@ -64,7 +63,9 @@ class Timers:
                     root[top_node]["children"].append(child)
                 return root[top_node]
 
-        sorted_timers = dict(sorted(self.timers.items(), key=lambda item: len(item[0])))
+        sorted_timers = dict(
+            sorted(self.timers.items(), key=lambda item: len(item[0]))
+        )
         root = {}
         for key, time in sorted_timers.items():
             insert_node(key, time, root)
