@@ -2,6 +2,7 @@ import pytest
 import torch
 import torch.distributed as dist
 
+
 @pytest.fixture(scope="module", autouse=True)
 def dist_group():
     if not torch.cuda.is_available():
@@ -11,4 +12,4 @@ def dist_group():
     yield
     if dist.is_initialized():
         dist.barrier()
-        dist.destroy_process_group() 
+        dist.destroy_process_group()

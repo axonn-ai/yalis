@@ -144,7 +144,9 @@ def find_weight_files(
     with gated_repo_catcher(repo_id, access_token):
         info = repo_info(repo_id, token=access_token)
     filenames = [f.rfilename for f in info.siblings]
-    bins = list(filter_repo_objects(items=filenames, allow_patterns=["*.bin*"]))
+    bins = list(
+        filter_repo_objects(items=filenames, allow_patterns=["*.bin*"])
+    )
     safetensors = list(
         filter_repo_objects(items=filenames, allow_patterns=["*.safetensors*"])
     )

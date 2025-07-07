@@ -11,10 +11,17 @@ from typing import Dict, List, Optional, Tuple, Union
 
 from tqdm import tqdm
 import torch
-from lightning.fabric.utilities.load import _NotYetLoadedTensor as NotYetLoadedTensor
+from lightning.fabric.utilities.load import (
+    _NotYetLoadedTensor as NotYetLoadedTensor,
+)
 
 from config import Config
-from litgpt.utils import extend_checkpoint_dir, incremental_save, lazy_load, save_config
+from litgpt.utils import (
+    extend_checkpoint_dir,
+    incremental_save,
+    lazy_load,
+    save_config,
+)
 
 
 def copy_weights_gpt_neox(
@@ -205,7 +212,7 @@ def copy_weights_hf_llama(
             # which means that we can write the converted tensrors for ll to the disk and free up the space from the RAM for future layers' tensors
             if None not in qkv and saver is not None:
 
-                q,k,v =  qkv
+                q, k, v = qkv
                 q = load_param(q, f"layer {l} q", dtype, verbose=debug_mode)
                 k = load_param(k, f"layer {l} k", dtype, verbose=debug_mode)
                 v = load_param(v, f"layer {l} v", dtype, verbose=debug_mode)
@@ -230,18 +237,24 @@ def copy_weights_hf_llama(
             # Similarly doing the same check for the gate projection layers
             if None not in gate_up_proj and saver is not None:
 
-
                 gate_proj, up_proj = gate_up_proj
                 gate_proj = load_param(
-                    gate_proj, f"layer {l} gate_proj", dtype, verbose=debug_mode
+                    gate_proj,
+                    f"layer {l} gate_proj",
+                    dtype,
+                    verbose=debug_mode,
                 )
-                up_proj = load_param(up_proj, f"layer {l} up_proj", dtype, verbose=debug_mode)
+                up_proj = load_param(
+                    up_proj, f"layer {l} up_proj", dtype, verbose=debug_mode
+                )
 
-                gate_up_proj = torch.stack((gate_proj, up_proj), dim=1).reshape(
-                    2 * gate_proj.size(0), -1
-                )
+                gate_up_proj = torch.stack(
+                    (gate_proj, up_proj), dim=1
+                ).reshape(2 * gate_proj.size(0), -1)
                 gate_up_proj_ref = saver.store_early(gate_up_proj)
-                state_dict[f"transformer.h.{l}.mlp.gate_up_proj.weight"] = gate_up_proj_ref
+                state_dict[f"transformer.h.{l}.mlp.gate_up_proj.weight"] = (
+                    gate_up_proj_ref
+                )
 
                 gate_up_proj_weights[l] = None
 
@@ -268,8 +281,6 @@ def copy_weights_hf_llama(
         else:
             state_dict[to_name] = param
 
-
-
         if progress_per_file is not None:
             pbar.update(progress_per_file)
 
@@ -285,7 +296,9 @@ def copy_weights_hf_llama(
         gate_proj = load_param(
             gate_proj, f"layer {i} gate_proj", dtype, verbose=debug_mode
         )
-        up_proj = load_param(up_proj, f"layer {i} up_proj", dtype, verbose=debug_mode)
+        up_proj = load_param(
+            up_proj, f"layer {i} up_proj", dtype, verbose=debug_mode
+        )
 
         # shape of gate_proj -> intermediate x hidden
         # shape of up_proj -> intermediate x hidden
@@ -426,7 +439,9 @@ def copy_weights_gemma_2(
         gate_proj = load_param(
             gate_proj, f"layer {i} gate_proj", dtype, verbose=debug_mode
         )
-        up_proj = load_param(up_proj, f"layer {i} up_proj", dtype, verbose=debug_mode)
+        up_proj = load_param(
+            up_proj, f"layer {i} up_proj", dtype, verbose=debug_mode
+        )
 
         # shape of gate_proj -> intermediate x hidden
         # shape of up_proj -> intermediate x hidden
@@ -463,7 +478,8 @@ def copy_weights_phi(
     debug_mode: Optional[bool] = False,
 ) -> None:
     if any(
-        layer_name.startswith(("layers.", "transformer.")) for layer_name in hf_weights
+        layer_name.startswith(("layers.", "transformer."))
+        for layer_name in hf_weights
     ):
         raise ValueError(
             "You are using an outdated Phi checkpoint. Please reload it as described in 'tutorials/download_phi.md'"
@@ -527,7 +543,9 @@ def copy_weights_phi(
                 qkv[weight_type][weight_name] = param
             elif from_name.endswith("gate_up_proj.weight"):
                 weight = load_param(param, f"layer {l} gate_up_proj", dtype)
-                state_dict[f"transformer.h.{l}.mlp.gate_up_proj.weight"] = weight
+                state_dict[f"transformer.h.{l}.mlp.gate_up_proj.weight"] = (
+                    weight
+                )
                 continue
             to_name = weight_map[from_name]
             if to_name is None:
@@ -549,13 +567,22 @@ def copy_weights_phi(
                 # split across different .bin files
                 continue
             q = load_param(
-                qkv["q_proj"], f"layer {i} q {weight_type}", dtype, verbose=debug_mode
+                qkv["q_proj"],
+                f"layer {i} q {weight_type}",
+                dtype,
+                verbose=debug_mode,
             )
             k = load_param(
-                qkv["k_proj"], f"layer {i} k {weight_type}", dtype, verbose=debug_mode
+                qkv["k_proj"],
+                f"layer {i} k {weight_type}",
+                dtype,
+                verbose=debug_mode,
             )
             v = load_param(
-                qkv["v_proj"], f"layer {i} v {weight_type}", dtype, verbose=debug_mode
+                qkv["v_proj"],
+                f"layer {i} v {weight_type}",
+                dtype,
+                verbose=debug_mode,
             )
             q_per_kv = config.n_head // config.n_query_groups
             qs = torch.split(q, config.head_size * q_per_kv)
@@ -673,17 +700,27 @@ def convert_hf_checkpoint(
         copy_fn = copy_weights_gpt_neox
 
     # initialize a new empty state dict to hold our new weights
-    sd = {} # This is the main state_dict that  is being updated and will get finally saved in the last line.
+    sd = (
+        {}
+    )  # This is the main state_dict that  is being updated and will get finally saved in the last line.
 
     # Load the json file containing weight mapping
     pytorch_bin_map_json_path = checkpoint_dir / "pytorch_model.bin.index.json"
-    model_safetensor_map_json_path = checkpoint_dir / "model.safetensors.index.json"
-    if pytorch_bin_map_json_path.is_file():  # not all checkpoints have this file
+    model_safetensor_map_json_path = (
+        checkpoint_dir / "model.safetensors.index.json"
+    )
+    if (
+        pytorch_bin_map_json_path.is_file()
+    ):  # not all checkpoints have this file
         with open(pytorch_bin_map_json_path, encoding="utf-8") as json_map:
             bin_index = json.load(json_map)
-        bin_files = {checkpoint_dir / bin for bin in bin_index["weight_map"].values()}
+        bin_files = {
+            checkpoint_dir / bin for bin in bin_index["weight_map"].values()
+        }
     elif model_safetensor_map_json_path.is_file():
-        with open(model_safetensor_map_json_path, encoding="utf-8") as json_map:
+        with open(
+            model_safetensor_map_json_path, encoding="utf-8"
+        ) as json_map:
             bin_index = json.load(json_map)
         bin_files = {
             checkpoint_dir / Path(bin).with_suffix(".bin")
@@ -694,7 +731,9 @@ def convert_hf_checkpoint(
         # some checkpoints serialize the training arguments
         bin_files = {f for f in bin_files if f.name != "training_args.bin"}
     if not bin_files:
-        raise ValueError(f"Expected {str(checkpoint_dir)!r} to contain .bin files")
+        raise ValueError(
+            f"Expected {str(checkpoint_dir)!r} to contain .bin files"
+        )
 
     with incremental_save(checkpoint_dir / "lit_model.pth") as saver:
         # for checkpoints that split the QKV across several files, we need to keep all the bin files
@@ -739,7 +778,13 @@ def convert_hf_checkpoint(
             # Handling files without progress bar in debug mode
             for bin_file in sorted(bin_files):
                 hf_weights = lazy_load(bin_file)
-                copy_fn(sd, hf_weights, saver=saver, dtype=dtype, debug_mode=debug_mode)
+                copy_fn(
+                    sd,
+                    hf_weights,
+                    saver=saver,
+                    dtype=dtype,
+                    debug_mode=debug_mode,
+                )
 
         print(f"Saving converted checkpoint to {checkpoint_dir}")
         saver.save(sd)

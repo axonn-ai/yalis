@@ -11,6 +11,7 @@ from typing_extensions import Self
 
 from packaging.version import Version
 from importlib.metadata import version, PackageNotFoundError
+
 try:
     litgpt_version = version("litgpt")
 except:
@@ -19,6 +20,7 @@ if Version(litgpt_version) >= Version("0.5.9"):
     from litgpt.config import find_multiple
 else:
     from litgpt.utils import find_multiple
+
 
 @dataclass
 class Config:
@@ -66,7 +68,9 @@ class Config:
     attn_bias: bool = False
     attention_scores_scalar: Optional[int] = None
     sliding_window_size: Optional[int] = None
-    sliding_window_layer_placing: Optional[Literal["all", "interleaved"]] = None
+    sliding_window_layer_placing: Optional[Literal["all", "interleaved"]] = (
+        None
+    )
     # if `attention_logit_softcapping` is used, cannot use optimized
     # `torch.nn.functional.scaled_dot_product_attention` (which implements
     # Flash attention), may result in higher memory and runtime footprint.
@@ -79,7 +83,9 @@ class Config:
     # Transformer block (MLP)
     intermediate_size: Optional[int] = None
     bias: bool = True
-    mlp_class_name: Literal["GptNeoxMLP", "LLaMAMLP", "GemmaMLP", "LLaMAMoE"] = "GptNeoxMLP"
+    mlp_class_name: Literal[
+        "GptNeoxMLP", "LLaMAMLP", "GemmaMLP", "LLaMAMoE"
+    ] = "GptNeoxMLP"
     gelu_approximate: str = "none"
     n_expert: int = 0
     n_expert_per_token: int = 0
@@ -98,7 +104,9 @@ class Config:
 
         # vocab size should be a power of 2 to be optimal on hardware. compute the closest value
         if self.padded_vocab_size is None:
-            self.padded_vocab_size = find_multiple(self.vocab_size, self.padding_multiple)
+            self.padded_vocab_size = find_multiple(
+                self.vocab_size, self.padding_multiple
+            )
         else:
             # vocab size shouldn't be larger than padded vocab size
             self.vocab_size = min(self.vocab_size, self.padded_vocab_size)
@@ -112,14 +120,21 @@ class Config:
         # compute the intermediate size for MLP if not set
         if self.intermediate_size is None:
             if self.mlp_class_name == "LLaMAMLP":
-                raise ValueError(f"The config {self.name!r}, needs to set the `intermediate_size`")
+                raise ValueError(
+                    f"The config {self.name!r}, needs to set the `intermediate_size`"
+                )
             self.intermediate_size = 4 * self.n_embd
 
         self.rope_n_elem = int(self.rotary_percentage * self.head_size)
 
         if self.sliding_window_size is not None:
             self.sliding_window_layer_stride = (
-                1 if (self.sliding_window_layer_placing is None or self.sliding_window_layer_placing == "all") else 2
+                1
+                if (
+                    self.sliding_window_layer_placing is None
+                    or self.sliding_window_layer_placing == "all"
+                )
+                else 2
             )
 
     @classmethod
@@ -131,7 +146,10 @@ class Config:
                     config
                     for config in configs
                     if name == config["hf_config"]["name"]
-                    or config["hf_config"]["org"] + "/" + config["hf_config"]["name"] == name
+                    or config["hf_config"]["org"]
+                    + "/"
+                    + config["hf_config"]["name"]
+                    == name
                 )
             except StopIteration:
                 raise ValueError(f"{name!r} is not a supported config name")
@@ -147,7 +165,9 @@ class Config:
         with open(path, encoding="utf-8") as fp:
             file_kwargs = yaml.safe_load(fp)
             if file_kwargs is None:
-                raise ValueError(f"{path} is empty which is likely unexpected.")
+                raise ValueError(
+                    f"{path} is empty which is likely unexpected."
+                )
         file_kwargs.update(kwargs)
         return cls(**file_kwargs)
 
@@ -158,12 +178,15 @@ class Config:
             return cls.from_file(config_path, **kwargs)
         if (model_name := path.name) in name_to_config:
             return cls.from_name(model_name, **kwargs)
-        raise FileNotFoundError(f"For {str(path)!r} neither 'model_config.yaml' nor matching config exists.")
+        raise FileNotFoundError(
+            f"For {str(path)!r} neither 'model_config.yaml' nor matching config exists."
+        )
 
     @property
     def mlp_class(self) -> Type:
         # `self.mlp_class_name` cannot be the type to keep the config serializable
         import litgpt.model
+
         return getattr(litgpt.model, self.mlp_class_name)
 
     @property
@@ -173,7 +196,7 @@ class Config:
         from functools import partial
 
         if self.norm_class_name == "RMSNorm":
-            
+
             from litgpt.model import RMSNorm
 
             return partial(RMSNorm, add_unit_offset="Gemma" in self.name)
@@ -192,7 +215,10 @@ class Config:
 ########################
 configs = [
     # https://huggingface.co/stabilityai/stablelm-base-alpha-3b/blob/main/config.json
-    dict(name="stablelm-base-alpha-3b", hf_config=dict(org="stabilityai", name="stablelm-base-alpha-3b")),
+    dict(
+        name="stablelm-base-alpha-3b",
+        hf_config=dict(org="stabilityai", name="stablelm-base-alpha-3b"),
+    ),
     # https://huggingface.co/stabilityai/stablelm-base-alpha-7b/blob/main/config.json
     dict(
         name="stablelm-base-alpha-7b",
@@ -202,7 +228,11 @@ configs = [
         padding_multiple=256,
     ),
     # https://huggingface.co/stabilityai/stablelm-tuned-alpha-3b/blob/main/config.json
-    dict(name="stablelm-tuned-alpha-3b", hf_config=dict(org="stabilityai", name="stablelm-tuned-alpha-3b"), n_head=32),
+    dict(
+        name="stablelm-tuned-alpha-3b",
+        hf_config=dict(org="stabilityai", name="stablelm-tuned-alpha-3b"),
+        n_head=32,
+    ),
     # https://huggingface.co/stabilityai/stablelm-tuned-alpha-7b/blob/main/config.json
     dict(
         name="stablelm-tuned-alpha-7b",
@@ -247,7 +277,9 @@ stablecode = [
     # https://huggingface.co/stabilityai/stablecode-completion-alpha-3b/blob/main/config.json
     dict(
         name="stablecode-completion-alpha-3b",
-        hf_config=dict(org="stabilityai", name="stablecode-completion-alpha-3b"),
+        hf_config=dict(
+            org="stabilityai", name="stablecode-completion-alpha-3b"
+        ),
         block_size=16384,
         vocab_size=49152,
         n_layer=32,
@@ -256,7 +288,9 @@ stablecode = [
     # https://huggingface.co/stabilityai/stablecode-completion-alpha-3b-4k/blob/main/config.json
     dict(
         name="stablecode-completion-alpha-3b-4k",
-        hf_config=dict(org="stabilityai", name="stablecode-completion-alpha-3b-4k"),
+        hf_config=dict(
+            org="stabilityai", name="stablecode-completion-alpha-3b-4k"
+        ),
         vocab_size=49152,
         n_layer=32,
         n_embd=2560,
@@ -707,7 +741,12 @@ llama_3 = [
         mlp_class_name="LLaMAMLP",
         intermediate_size=14336,
         rope_base=500000,
-        rope_adjustments=dict(factor=8.0, low_freq_factor=1.0, high_freq_factor=4.0, original_max_seq_len=8192)
+        rope_adjustments=dict(
+            factor=8.0,
+            low_freq_factor=1.0,
+            high_freq_factor=4.0,
+            original_max_seq_len=8192,
+        ),
     ),
     # https://huggingface.co/meta-llama/Meta-Llama-3-70B/blob/main/config.json
     dict(
@@ -746,7 +785,12 @@ llama_3 = [
         mlp_class_name="LLaMAMLP",
         intermediate_size=28672,
         rope_base=500000,
-        rope_adjustments=dict(factor=8.0, low_freq_factor=1.0, high_freq_factor=4.0, original_max_seq_len=8192)
+        rope_adjustments=dict(
+            factor=8.0,
+            low_freq_factor=1.0,
+            high_freq_factor=4.0,
+            original_max_seq_len=8192,
+        ),
     ),
     # https://huggingface.co/meta-llama/Meta-Llama-3.1-405B/blob/main/config.json
     dict(
@@ -758,7 +802,7 @@ llama_3 = [
         n_layer=126,
         n_head=128,
         n_embd=16384,
-        n_query_groups=8, # Fixed from 16 to 8
+        n_query_groups=8,  # Fixed from 16 to 8
         rotary_percentage=1.0,
         parallel_residual=False,
         bias=False,
@@ -766,7 +810,12 @@ llama_3 = [
         mlp_class_name="LLaMAMLP",
         intermediate_size=53248,
         rope_base=500000,
-        rope_adjustments=dict(factor=8.0, low_freq_factor=1.0, high_freq_factor=4.0, original_max_seq_len=8192)
+        rope_adjustments=dict(
+            factor=8.0,
+            low_freq_factor=1.0,
+            high_freq_factor=4.0,
+            original_max_seq_len=8192,
+        ),
     ),
     # https://huggingface.co/meta-llama/Llama-3.2-1B/blob/main/config.json
     dict(
@@ -786,7 +835,12 @@ llama_3 = [
         mlp_class_name="LLaMAMLP",
         intermediate_size=8192,
         rope_base=500000,
-        rope_adjustments=dict(factor=32.0, low_freq_factor=1.0, high_freq_factor=4.0, original_max_seq_len=8192)
+        rope_adjustments=dict(
+            factor=32.0,
+            low_freq_factor=1.0,
+            high_freq_factor=4.0,
+            original_max_seq_len=8192,
+        ),
     ),
     # https://huggingface.co/meta-llama/Llama-3.2-3B/blob/main/config.json
     dict(
@@ -806,7 +860,12 @@ llama_3 = [
         mlp_class_name="LLaMAMLP",
         intermediate_size=8192,
         rope_base=500000,
-        rope_adjustments=dict(factor=32.0, low_freq_factor=1.0, high_freq_factor=4.0, original_max_seq_len=8192)
+        rope_adjustments=dict(
+            factor=32.0,
+            low_freq_factor=1.0,
+            high_freq_factor=4.0,
+            original_max_seq_len=8192,
+        ),
     ),
     # https://huggingface.co/meta-llama/Llama-3.3-70B-Instruct/blob/main/config.json
     dict(
@@ -826,7 +885,12 @@ llama_3 = [
         mlp_class_name="LLaMAMLP",
         intermediate_size=28672,
         rope_base=500000,
-        rope_adjustments=dict(factor=8.0, low_freq_factor=1.0, high_freq_factor=4.0, original_max_seq_len=8192)
+        rope_adjustments=dict(
+            factor=8.0,
+            low_freq_factor=1.0,
+            high_freq_factor=4.0,
+            original_max_seq_len=8192,
+        ),
     ),
 ]
 for c in llama_3:
@@ -845,7 +909,9 @@ for c in llama_3:
 configs.append(
     dict(
         name="Llama-3.1-Nemotron-70B-Instruct-HF",
-        hf_config=dict(org="nvidia", name="Llama-3.1-Nemotron-70B-Instruct-HF"),
+        hf_config=dict(
+            org="nvidia", name="Llama-3.1-Nemotron-70B-Instruct-HF"
+        ),
         block_size=131072,
         vocab_size=128000,
         padded_vocab_size=128256,
@@ -860,7 +926,12 @@ configs.append(
         mlp_class_name="LLaMAMLP",
         intermediate_size=28672,
         rope_base=500000,
-        rope_adjustments=dict(factor=8.0, low_freq_factor=1.0, high_freq_factor=4.0, original_max_seq_len=8192)
+        rope_adjustments=dict(
+            factor=8.0,
+            low_freq_factor=1.0,
+            high_freq_factor=4.0,
+            original_max_seq_len=8192,
+        ),
     ),
 )
 
@@ -1836,7 +1907,10 @@ tiny_llama = [
     )
 ]
 for c in tiny_llama:
-    for kind, hf_postfix in (("", "-intermediate-step-1431k-3T"), ("-chat", "-Chat-v1.0")):
+    for kind, hf_postfix in (
+        ("", "-intermediate-step-1431k-3T"),
+        ("-chat", "-Chat-v1.0"),
+    ):
         copy = deepcopy(c)
         copy["name"] = c["name"].format(kind)
         copy["hf_config"]["name"] = c["hf_config"]["name"].format(hf_postfix)
@@ -1876,7 +1950,9 @@ llama_2_function_calling = [
     # https://huggingface.co/Trelis/Llama-2-7b-chat-hf-function-calling-v2/blob/main/config.json
     dict(
         name="Llama-2-7b-chat-hf-function-calling-v2",
-        hf_config=dict(org="Trelis", name="Llama-2-7b-chat-hf-function-calling-v2"),
+        hf_config=dict(
+            org="Trelis", name="Llama-2-7b-chat-hf-function-calling-v2"
+        ),
         padding_multiple=64,
         n_layer=32,
         rotary_percentage=1.0,
@@ -1919,7 +1995,7 @@ qwen_2_5 = [
         mlp_class_name="LLaMAMLP",
         intermediate_size=4864,
         norm_eps=1e-6,
-        rope_base=1000000
+        rope_base=1000000,
     ),
     # https://huggingface.co/Qwen/Qwen2.5-1.5B/blob/main/config.json
     dict(
@@ -1940,7 +2016,7 @@ qwen_2_5 = [
         mlp_class_name="LLaMAMLP",
         intermediate_size=8960,
         norm_eps=1e-6,
-        rope_base=1000000
+        rope_base=1000000,
     ),
     # https://huggingface.co/Qwen/Qwen2.5-3B/blob/main/config.json
     dict(
@@ -1961,7 +2037,7 @@ qwen_2_5 = [
         mlp_class_name="LLaMAMLP",
         intermediate_size=11008,
         norm_eps=1e-6,
-        rope_base=1000000
+        rope_base=1000000,
     ),
     # https://huggingface.co/Qwen/Qwen2.5-7B/blob/main/config.json
     dict(
@@ -1982,7 +2058,7 @@ qwen_2_5 = [
         mlp_class_name="LLaMAMLP",
         intermediate_size=18944,
         norm_eps=1e-6,
-        rope_base=1000000
+        rope_base=1000000,
     ),
     # https://huggingface.co/Qwen/Qwen2.5-14B/blob/main/config.json
     dict(
@@ -2003,7 +2079,7 @@ qwen_2_5 = [
         mlp_class_name="LLaMAMLP",
         intermediate_size=13824,
         norm_eps=1e-5,
-        rope_base=1000000
+        rope_base=1000000,
     ),
     # https://huggingface.co/Qwen/Qwen2.5-32B/blob/main/config.json
     dict(
@@ -2024,7 +2100,7 @@ qwen_2_5 = [
         mlp_class_name="LLaMAMLP",
         intermediate_size=27648,
         norm_eps=1e-5,
-        rope_base=1000000
+        rope_base=1000000,
     ),
     # https://huggingface.co/Qwen/Qwen2.5-72B/blob/main/config.json
     dict(
@@ -2045,7 +2121,7 @@ qwen_2_5 = [
         mlp_class_name="LLaMAMLP",
         intermediate_size=29568,
         norm_eps=1e-5,
-        rope_base=1000000
+        rope_base=1000000,
     ),
 ]
 
@@ -2069,7 +2145,7 @@ qwen_2_5_coder = [
         mlp_class_name="LLaMAMLP",
         intermediate_size=4864,
         norm_eps=1e-6,
-        rope_base=1000000
+        rope_base=1000000,
     ),
     # https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B/blob/main/config.json
     dict(
@@ -2090,7 +2166,7 @@ qwen_2_5_coder = [
         mlp_class_name="LLaMAMLP",
         intermediate_size=8960,
         norm_eps=1e-6,
-        rope_base=1000000
+        rope_base=1000000,
     ),
     # https://huggingface.co/Qwen/Qwen2.5-Coder-3B/blob/main/config.json
     dict(
@@ -2111,7 +2187,7 @@ qwen_2_5_coder = [
         mlp_class_name="LLaMAMLP",
         intermediate_size=11008,
         norm_eps=1e-6,
-        rope_base=1000000
+        rope_base=1000000,
     ),
     # https://huggingface.co/Qwen/Qwen2.5-Coder-7B/blob/main/config.json
     dict(
@@ -2132,7 +2208,7 @@ qwen_2_5_coder = [
         mlp_class_name="LLaMAMLP",
         intermediate_size=18944,
         norm_eps=1e-6,
-        rope_base=1000000
+        rope_base=1000000,
     ),
     # https://huggingface.co/Qwen/Qwen2.5-Coder-14B/blob/main/config.json
     dict(
@@ -2153,7 +2229,7 @@ qwen_2_5_coder = [
         mlp_class_name="LLaMAMLP",
         intermediate_size=13824,
         norm_eps=1e-5,
-        rope_base=1000000
+        rope_base=1000000,
     ),
     # https://huggingface.co/Qwen/Qwen2.5-Coder-32B/blob/main/config.json
     dict(
@@ -2174,7 +2250,7 @@ qwen_2_5_coder = [
         mlp_class_name="LLaMAMLP",
         intermediate_size=27648,
         norm_eps=1e-5,
-        rope_base=1000000
+        rope_base=1000000,
     ),
 ]
 
@@ -2200,7 +2276,7 @@ qwen_2_5_math = [
         mlp_class_name="LLaMAMLP",
         intermediate_size=8960,
         norm_eps=1e-6,
-        rope_base=10000
+        rope_base=10000,
     ),
     # https://huggingface.co/Qwen/Qwen2.5-Math-7B/blob/main/config.json
     dict(
@@ -2221,7 +2297,7 @@ qwen_2_5_math = [
         mlp_class_name="LLaMAMLP",
         intermediate_size=18944,
         norm_eps=1e-6,
-        rope_base=10000
+        rope_base=10000,
     ),
     # https://huggingface.co/Qwen/Qwen2.5-Math-72B/blob/main/config.json
     dict(
@@ -2242,7 +2318,7 @@ qwen_2_5_math = [
         mlp_class_name="LLaMAMLP",
         intermediate_size=29568,
         norm_eps=1e-5,
-        rope_base=10000
+        rope_base=10000,
     ),
 ]
 
@@ -2275,14 +2351,14 @@ qwq = [
         mlp_class_name="LLaMAMLP",
         intermediate_size=27648,
         norm_eps=1e-5,
-        rope_base=1000000
+        rope_base=1000000,
     ),
 ]
 
 configs.extend(qwq)
 
 
-#############    
+#############
 # Salamandra
 #############
 salamandra = [
@@ -2304,7 +2380,7 @@ salamandra = [
         mlp_class_name="LLaMAMLP",
         intermediate_size=5440,
         norm_eps=1e-5,
-        rope_base=10000
+        rope_base=10000,
     ),
     # https://huggingface.co/BSC-LT/salamandra-7b-instruct/blob/main/config.json
     dict(
@@ -2324,7 +2400,7 @@ salamandra = [
         mlp_class_name="LLaMAMLP",
         intermediate_size=11008,
         norm_eps=1e-6,
-        rope_base=10000
+        rope_base=10000,
     ),
 ]
 
@@ -2431,12 +2507,19 @@ r1_distill_llama = [
         mlp_class_name="LLaMAMLP",
         intermediate_size=14336,
         rope_base=500000,
-        rope_adjustments=dict(factor=8.0, low_freq_factor=1.0, high_freq_factor=4.0, original_max_seq_len=8192)
+        rope_adjustments=dict(
+            factor=8.0,
+            low_freq_factor=1.0,
+            high_freq_factor=4.0,
+            original_max_seq_len=8192,
+        ),
     ),
     # https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Llama-70B/blob/main/config.json
     dict(
         name="R1-Distill-Llama-70B",
-        hf_config=dict(org="deepseek-ai", name="DeepSeek-R1-Distill-Llama-70B"),
+        hf_config=dict(
+            org="deepseek-ai", name="DeepSeek-R1-Distill-Llama-70B"
+        ),
         block_size=131072,
         vocab_size=128000,
         padded_vocab_size=128256,
@@ -2451,7 +2534,12 @@ r1_distill_llama = [
         mlp_class_name="LLaMAMLP",
         intermediate_size=28672,
         rope_base=500000,
-        rope_adjustments=dict(factor=8.0, low_freq_factor=1.0, high_freq_factor=4.0, original_max_seq_len=8192)
+        rope_adjustments=dict(
+            factor=8.0,
+            low_freq_factor=1.0,
+            high_freq_factor=4.0,
+            original_max_seq_len=8192,
+        ),
     ),
 ]
 

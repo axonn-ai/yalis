@@ -4,6 +4,7 @@ from packaging.version import Version
 from importlib.metadata import version, PackageNotFoundError
 from yalis.attention.backends import AttentionBackend
 
+
 class ModelConfig:
     """
     Configuration for model initialization and management.
@@ -33,7 +34,7 @@ class ModelConfig:
 
     def _resolve_model_path(self, model_path: Optional[str]) -> str:
         """
-        Resolve the model path by checking the YALIS_CACHE environment variable.
+        Resolve the model path by checking the YALIS_CACHE environment variable
 
         Args:
             model_path (Optional[str]): The provided model path.
@@ -45,7 +46,7 @@ class ModelConfig:
             ValueError: If the resolved model path does not exist.
         """
         if model_path is None:
-            # Default to the YALIS_CACHE environment variable or a fallback directory
+            # Default to the YALIS_CACHE env variable or a fallback directory
             cache_dir = os.getenv("YALIS_CACHE", "~/.cache/yalis/")
             model_path = os.path.join(
                 os.path.expanduser(cache_dir), "checkpoints", self.model_name
@@ -63,17 +64,19 @@ class ModelConfig:
         Validate the configuration.
         """
         if self.model_path is None and self.model_name is None:
-            raise ValueError("Either 'model_name' or 'model_path' must be provided.")
+            raise ValueError(
+                "Either 'model_name' or 'model_path' must be provided."
+            )
 
         if self.precision not in {"fp32", "fp16", "bf16"}:
 
             raise ValueError(
-                f"Invalid precision: {self.precision}. Supported values are 'fp32', 'fp16', 'bf16'."
+                f"Invalid precision: {self.precision}. Supported values are 'fp32', 'fp16', 'bf16'."  # noqa: E501
             )
 
     def __repr__(self):
         return (
-            f"ModelConfig(model_name={self.model_name}, model_path={self.model_path}, "
+            f"ModelConfig(model_name={self.model_name}, model_path={self.model_path}, "  # noqa: E501
             f"precision={self.precision}"
         )
 
@@ -102,24 +105,24 @@ class InferenceConfig:
 
         Args:
             batch_size (int): Number of inputs processed in parallel.
-            max_length_of_generated_sequences (int): Maximum length of the generated sequences.
+            max_length_of_generated_sequences (int): Max generated seq length
             decoding_strategy (str): Decoding strategy, default is 'greedy'.
             num_beams (Optional[int]): Number of beams for beam search.
             temperature (Optional[float]): Sampling temperature.
             top_k (Optional[int]): Top-k sampling limit.
             top_p (Optional[float]): Nucleus sampling probability.
-            tp_dims (Optional[Tuple[int, int, int]]): Tensor parallelism dimensions. If None, all GPUs are used in the first dimension
+            tp_dims (Optional[Tuple[int, int, int]]): Tensor parallel dims.
+                            If None, all GPUs are used in the first dimension.
             metrics (bool): Enable real-time metrics collection.
-            attention_backend (str): Attention backend to use. Options are 'flash', 'flex', or 'sdpa'.
-            use_intra_head_parallelism (bool): Use intra-head parallelism for attention. 
-            use_paged_kv_caching (bool): Use paged k/v caching for attention. 
-            prestore_kv_cache (bool): Pre-store k/v in cache before calling attention.
-        """ 
+            attention_backend (str): Attention backend to use.
+                            Options are 'flash', 'flex', or 'sdpa'.
+            use_intra_head_parallelism (bool): Use intra-head parallelism.
+            use_paged_kv_caching (bool): Use paged k/v caching for attention.
+            prestore_kv_cache (bool): Pre-store k/v cache before attention.
+        """
         self.batch_size = batch_size
-        # ToDo - default max_length should be none. If it is none, we should set it
-        # from the model config
-        # anyway this arg isn't being used right now. KV Cache is defaulting to the model
-        # max sequence length
+        # ToDo - default max_length should be none.
+        # If it is none, we should set it from the model config
         self.max_length = max_length_of_generated_sequences
         self.temperature = temperature
         self.top_k = top_k
@@ -131,7 +134,7 @@ class InferenceConfig:
         self.prestore_kv_cache = prestore_kv_cache
         if attention_backend not in ["flash", "sdpa", "flex"]:
             raise ValueError(
-                f"Invalid attention backend: {attention_backend}. Supported values are 'flash', 'sdpa', 'flex'."
+                f"Invalid attention backend: {attention_backend}. Supported values are 'flash', 'sdpa', 'flex'."  # noqa: E501
             )
         self.attention_backend = AttentionBackend(attention_backend)
         try:
@@ -162,15 +165,26 @@ class InferenceConfig:
         if self.top_p is not None and (self.top_p < 0.0 or self.top_p > 1.0):
             raise ValueError("top_p must be in the range [0.0, 1.0].")
 
-        if self.tp_dims is not None and (type(self.tp_dims) != tuple or len(self.tp_dims) != 3):
+        if self.tp_dims is not None and (
+            not isinstance(self.tp_dims, tuple) or len(self.tp_dims) != 3
+        ):
             raise ValueError("tp_dims must be a 3-dimensional tuple.")
 
-        if self.use_paged_kv_caching and not self.attention_backend == AttentionBackend.FLASH:
-            raise ValueError("use_paged_kv_caching requires attention_backend=flash")
+        if (
+            self.use_paged_kv_caching
+            and not self.attention_backend == AttentionBackend.FLASH
+        ):
+            raise ValueError(
+                "use_paged_kv_caching requires attention_backend=flash"
+            )
 
-        if self.use_intra_head_parallelism and not self.attention_backend == AttentionBackend.SDPA:
-            raise ValueError("use_intra_head_parallelism requires attention_backend=sdpa") 
-    
+        if (
+            self.use_intra_head_parallelism
+            and not self.attention_backend == AttentionBackend.SDPA
+        ):
+            raise ValueError(
+                "use_intra_head_parallelism requires attention_backend=sdpa"
+            )
 
     def __repr__(self):
         return (
@@ -182,7 +196,7 @@ class InferenceConfig:
             f"  temperature={self.temperature},\n"
             f"  metrics={self.metrics},\n"
             f"  tp_dims={self.tp_dims},\n"
-            f"  use_intra_head_parallelism={self.use_intra_head_parallelism},\n"
+            f"  use_intra_head_parallelism={self.use_intra_head_parallelism},\n"  # noqa: E501
             f"  attention_backend={self.attention_backend.value},\n"
             f"  use_paged_kv_caching={self.use_paged_kv_caching},\n"
             f"  prestore_kv_cache={self.prestore_kv_cache}\n"

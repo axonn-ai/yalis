@@ -1,7 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+
+# File modified from:
+#  https://github.com/vllm-project/vllm/blob/main/vllm/model_executor/layers/rejection_sampler.py  # noqa: E501
+
 from functools import cached_property
-from importlib.util import find_spec
-from typing import Dict, List, Optional, Tuple
-from yalis import print_rank0
+from typing import Tuple
 
 import torch
 import torch.jit
@@ -28,14 +32,14 @@ class RejectionSampler(nn.Module):
     @cached_property
     def _smallest_positive_value(self) -> float:
         """Return the smallest positive value representable by the probs dtype.
-        This value is used when constructing a distribution from which to sample
-        recovered tokens in the first rejection case.
+        This value is used when constructing a distribution from which to
+        sample recovered tokens in the first rejection case.
 
         See _get_recovered_probs for more details
 
         Note that this isn't actually the smallest positive value representable
         by float32, but the smallest positive normal value.
-        See https://en.wikipedia.org/wiki/Subnormal_number for more information.
+        See https://en.wikipedia.org/wiki/Subnormal_number for more info.
         """
         return torch.finfo(self.probs_dtype).tiny
 
@@ -91,14 +95,16 @@ class RejectionSampler(nn.Module):
         )
 
         # Fill the last column.
-        # We check output directly as accepted may have True values inconsistent
-        # with causal acceptance.
+        # We check output directly as accepted may have True values
+        # inconsistent with causal acceptance.
         output_with_bonus_tokens[:, -1] = torch.where(
             output[:, -1] != -1, bonus_token_ids, -1
         )
 
         # Fill the recovered token ids.
-        output.mul_(~after_false_mask).add_(substitute_token_ids.mul(after_false_mask))
+        output.mul_(~after_false_mask).add_(
+            substitute_token_ids.mul(after_false_mask)
+        )
 
         return output_with_bonus_tokens
 
@@ -116,10 +122,12 @@ class RejectionSampler(nn.Module):
         # Assuming only one bonus token per batch
         bonus_tokens = bonus_tokens.view(batch_size, 1)
 
-        accepted, recovered_token_ids = self._batch_modified_rejection_sampling(
-            target_probs[:, :-1],
-            draft_probs,
-            draft_tokens,
+        accepted, recovered_token_ids = (
+            self._batch_modified_rejection_sampling(
+                target_probs[:, :-1],
+                draft_probs,
+                draft_tokens,
+            )
         )
 
         output_token_ids = self._create_output(
@@ -151,11 +159,13 @@ class RejectionSampler(nn.Module):
         batch_size, k, vocab_size = draft_probs.shape
 
         # shape [batch_size, k]
-        accepted = self._get_accepted(target_probs, draft_probs, draft_token_ids)
-
-        recovered_probs = self._get_recovered_probs(target_probs, draft_probs).reshape(
-            batch_size * k, vocab_size
+        accepted = self._get_accepted(
+            target_probs, draft_probs, draft_token_ids
         )
+
+        recovered_probs = self._get_recovered_probs(
+            target_probs, draft_probs
+        ).reshape(batch_size * k, vocab_size)
 
         # NOTE: the recovered_probs are overwritten by this method.
         recovered_token_ids = _multinomial(
@@ -198,7 +208,9 @@ class RejectionSampler(nn.Module):
         are accepted.
         """
         batch_size, k, _ = draft_probs.shape
-        batch_indices = torch.arange(batch_size, device=target_probs.device)[:, None]
+        batch_indices = torch.arange(batch_size, device=target_probs.device)[
+            :, None
+        ]
         probs_indicies = torch.arange(k, device=target_probs.device)
 
         # shape [batch_size, k]
@@ -237,8 +249,8 @@ class RejectionSampler(nn.Module):
         The probability distribution used in this rejection case is constructed
         as follows. Given :math:`q(x|x_1, \dots, x_n)`, the probability of
         :math:`x` given context :math:`x_1, \dots, x_n` according to the target
-        model and :math:`p(x|x_1, \dots, x_n)`, the same conditional probability
-        according to the draft model:
+        model and :math:`p(x|x_1, \dots, x_n)`, the same conditional
+        probability according to the draft model:
 
         .. math::
             x_{n+1} \sim (q(x|x_1, \dots, x_n) - p(x|x_1, \dots, x_n))_+
