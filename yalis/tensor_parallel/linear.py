@@ -58,9 +58,13 @@ def divide(a, b):
 def extract_local_params_from_full_params(
     params, out_features_group, in_features_group
 ):
-    params = Drop.apply(params, in_features_group)
-    params = Drop.apply(torch.t(params).contiguous(), out_features_group)
-    params = torch.t(params).contiguous()
+    # Drop the in_features dimension (last dimension)
+    params = Drop.apply(params, in_features_group, -1)
+
+    # Drop the out_features dimension (second last dimension)
+    params = Drop.apply(params, out_features_group, -2)
+
+    params = params.contiguous()
     return params
 
 
@@ -276,6 +280,7 @@ class TPLinear(torch.nn.Module):
                 is_full_weight_matrix or is_sharded_weight_matrix
             ), "This is neither a full checkpoint nor a sharded checkpoint"
 
+            # TODO: This can be further optimized potentially
             if is_full_weight_matrix and getattr(self, "duplicating_kv", False):
                 rank = dist.get_rank(self.outer_group)
                 hs = self.head_size

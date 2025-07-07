@@ -6,6 +6,8 @@ import torch.nn as nn
 from torch.overrides import TorchFunctionMode
 from typing_extensions import override
 from pathlib import Path
+from yalis.utils import print_rank0
+from tqdm.auto import tqdm
 
 # From https://lernapparat.de/faster-model-init by Thomas Viehmann
 class _EmptyInit(TorchFunctionMode):
@@ -44,6 +46,30 @@ class _EmptyInit(TorchFunctionMode):
 def load_checkpoint(model: nn.Module, 
                     checkpoint_path: Path, 
                     strict: bool = True) -> None:
+    print_rank0(f"Loading checkpoint from {checkpoint_path}")
     state_dict = lazy_load(checkpoint_path)
     state_dict = state_dict.get("model", state_dict)
-    model.load_state_dict(state_dict, strict=strict)
+    
+    modules_to_hook = [
+        m for m in model.modules()
+        if any(True for _ in m.parameters(recurse=False))  # module has direct params
+        or any(True for _ in m.buffers(recurse=False))    # or direct buffers
+    ]
+    assert len(modules_to_hook) > 0, "Could not find modules with direct parameters or buffers"
+
+    pbar = tqdm(total=len(modules_to_hook), desc="Loading State Dict")
+    def _post_hook(module, incompatible_keys):
+        # one tick per module
+        pbar.update(1)
+        # you *can* still mutate incompatible_keys here if you want
+
+    for m in modules_to_hook:
+        m.register_load_state_dict_post_hook(_post_hook)
+
+    try:
+        model.load_state_dict(state_dict, strict=strict)
+    except Exception as e:
+        print_rank0(f"Error loading checkpoint: {e}")
+        raise e
+    finally:
+        pbar.close()
