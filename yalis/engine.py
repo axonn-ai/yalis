@@ -3,7 +3,7 @@ from typing import Union, List, Optional
 from .config import ModelConfig, InferenceConfig
 from .model import get_model
 from .initialize import init_distributed
-from .utils import print_rank0, get_gpu_memory_info
+from .utils import print_rank0, get_gpu_memory_info, get_nvtx_funcs
 from .external.sampling import sample
 import logging
 import torch.distributed as dist
@@ -12,6 +12,7 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 import time
 import gc
 from .timers import Timers
+import os
 
 # These flags are taken from the following URL -
 # https://github.com/pytorch/pytorch/blob/347f96061f1cff603983b9be19ec92b374329a5b/benchmarks/gpt_fast/generate.py#L19
@@ -19,6 +20,11 @@ torch._inductor.config.coordinate_descent_tuning = True
 torch._inductor.config.triton.unique_kernel_names = True
 torch._inductor.config.fx_graph_cache = True  # Experimental feature to reduce compilation times, will be on by default in future
 torch._inductor.config.assert_indirect_indexing = False
+YALIS_DISABLE_COMPILE = os.environ.get("YALIS_DISABLE_COMPILE", "0") == "1"
+YALIS_DECODE_MODE = "default" if os.environ.get("YALIS_DISABLE_DECODE_CUDAGRAPHS", "0") == "1" else "reduce-overhead"
+
+print (f"YALIS_DISABLE_COMPILE = {YALIS_DISABLE_COMPILE}, YALIS_DECODE_MODE = {YALIS_DECODE_MODE}")
+
 
 precision_to_dtype = {
     "bf16": torch.bfloat16,
@@ -28,7 +34,7 @@ precision_to_dtype = {
 
 
 @torch.no_grad()
-@torch.compile()
+@torch.compile(disable=YALIS_DISABLE_COMPILE)
 def prefill(model, tokens, unpadded_prompt_lengths, temperature=1.0, top_k=None, top_p=1.0):
     """
     Prefill function for generating the first token.
@@ -48,7 +54,7 @@ def prefill(model, tokens, unpadded_prompt_lengths, temperature=1.0, top_k=None,
 
 
 @torch.no_grad()
-@torch.compile(mode="reduce-overhead")
+@torch.compile(mode=YALIS_DECODE_MODE, disable=YALIS_DISABLE_COMPILE)
 def generate(model, tokens, get_probs=False, temperature=1.0, top_k=None, top_p=1.0):
     """
     Generate function for producing the next token(s).
@@ -199,6 +205,8 @@ class LLMEngine:
         prompts: Union[list[str], list[list[int]]],
         tokens_to_generate: int = 50,
         report_throughput: bool = False,
+        ignore_eos: Optional[bool] = True,
+        enable_nvtx: Optional[bool] = False,
     ) -> torch.Tensor:
         """
         Generate tokens based on input prompts, which can either be a list of strings or a list of token ID lists.
@@ -264,6 +272,17 @@ class LLMEngine:
             f"Tokenization took {timers.get_times()[0][('tokenize',)]} ms"
         )
 
+        # Using tensor size instead of inference config object to allow users to choose batch sizes < max batch size
+        # (later defined in inference config).
+        batch_size = prompt_tokens.size(0)
+        ignore_eos = ignore_eos
+        # Initialize done mask for multiple batches
+        if not ignore_eos:
+            done_mask = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
+        finished_reason = "Max Token Length"
+
+        nvtx_range_push, nvtx_range_pop = get_nvtx_funcs(enable_nvtx)
+
         output_tokens = []
         # Start timing the operations
         timers.start("generate")
@@ -276,24 +295,27 @@ class LLMEngine:
             current_input_to_model = prompt_tokens.clone().to(
                 self.device
             )  # Move prompt tokens to the device
+
             prompt_sequence_lengths = prompt_sequence_lengths.to(self.device)
             for step in range(tokens_to_generate):
                 timer_key = None
                 if step == 0:  # Prefill step
                     timer_key = "prefill"
                     timers.start(timer_key)
-                    # print_rank0(f"mem before prefill = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
+                    nvtx_range_push("Prefill")
                     next_token = prefill(
                         self.model, current_input_to_model, prompt_sequence_lengths, 
                         temperature=self.inference_config.temperature, 
                         top_k=self.inference_config.top_k, 
                         top_p=self.inference_config.top_p
                     )  # Call prefill function
-                    # print_rank0(f"mem after prefill = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
+
                     current_input_to_model = next_token.clone()
+                    nvtx_range_pop()
                 else:  # Generation step
                     timer_key = "decode"
                     timers.start(timer_key)
+                    nvtx_range_push("Decode")
                     with sdpa_kernel(SDPBackend.MATH):
                         next_token = generate(
                             self.model, current_input_to_model, 
@@ -301,13 +323,28 @@ class LLMEngine:
                             top_k=self.inference_config.top_k, 
                             top_p=self.inference_config.top_p
                         )  # Call generate function
-                    # print_rank0(f"mem after generate {step} = {torch.cuda.memory_allocated() / 1e9:.2f} GB")
+
                     current_input_to_model.copy_(
                         next_token
                     )  # Copy the new token into tokens
+                    nvtx_range_pop()
+
+                # EOS Support:
+                # Flatten to shape (batch_size,) for element wise comparison
+                if not ignore_eos:
+                    done_mask |= (next_token.view(-1) == self.tokenizer.eos_token_id)
+                    # Reshape to match next_token's shape for masked_fill()
+                    mask = done_mask.view(-1, 1)
+                    # Force EOS prompts to stay EOS
+                    next_token.masked_fill_(mask, self.tokenizer.eos_token_id)
 
                 output_tokens.append(next_token.clone())
                 timers.stop(timer_key)
+
+                # Break if every sequence is done
+                if not ignore_eos and done_mask.all():
+                    finished_reason = "EOS"
+                    break
 
         output_tensor = torch.cat(output_tokens, dim=1)
         # End timing and calculate elapsed time
@@ -329,9 +366,11 @@ class LLMEngine:
             "TBT": tbt,
             "E2E": times[('generate',)],
             "TokenizationTime": times[('tokenize',)],
+            "FinishedReason": finished_reason   # NOTE: This should be a list containing reasons for each batch but 
+                                                # our EOS stopping currently is all-or-nothing.
         }
         if dist.get_rank() == 0 and report_throughput:
-            print (f"[Metrics] BatchSize = {prompt_tokens.shape[0]}, PromptLength = {prompt_tokens.shape[1]}, DecodeLength = {tokens_to_generate}, Throughput = {tput:.2f} tok/s, TTFT = {ttft:.4f} ms, TBT = {tbt:.4f} ms, E2E = {times[('generate',)]:.4f} ms")
+            print (f"[Metrics] BatchSize = {prompt_tokens.shape[0]}, PromptLength = {prompt_tokens.shape[1]}, DecodeLength = {tokens_to_generate}, Throughput = {tput:.2f} tok/s, TTFT = {ttft:.4f} ms, TBT = {tbt:.4f} ms, E2E = {times[('generate',)]:.4f} ms, FinishedReason = {finished_reason}")
 
 
         return output_tensor, metrics

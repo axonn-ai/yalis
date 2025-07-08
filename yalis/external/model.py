@@ -27,7 +27,7 @@ from copy import deepcopy
 from axonn import axonn as ax
 from axonn.intra_layer.communication import Drop, Gather
 from kvcache_manager import KVCacheManager
-from flash_attn.ops.triton.rotary import apply_rotary
+from yalis.attention.flash import flash_apply_rotary as apply_rotary
 from yalis.attention.backends import AttentionBackend
 from yalis.attention.masking import create_causal_block_mask_for_flex_attention
 from yalis.communication.communication import yalis_drop, yalis_all_gather, compute_offset, can_divide
@@ -185,7 +185,7 @@ class GPT(nn.Module):
         block_table=self.kv_cache_manager.block_table() if self.config.use_paged_kv_caching else None
 
         flex_attention_block_mask = (
-            create_causal_block_mask_for_flex_attention(self.token_counter, self.kv_length)
+            create_causal_block_mask_for_flex_attention(self.token_counter, self.kv_length, self.batch_size)
             if self.config.attention_backend == AttentionBackend.FLEX else None
         )
 
@@ -286,6 +286,7 @@ class GPT(nn.Module):
             max_seq_length = self.max_seq_length
         
         self.kv_length = max_seq_length
+        self.batch_size = batch_size
 
         # initialize the kv cache for all blocks
         for block in self.transformer.h:
@@ -425,10 +426,29 @@ class CausalSelfAttention(nn.Module):
             # currently attention is duplicated across the column tensor parallel group
             self.config = deepcopy(self.config)
             attention_world_size = ax.config.G_intra_r
+            self.duplicating_kv = attention_world_size > config.n_query_groups
+            if self.duplicating_kv:
+                assert attention_world_size % config.n_query_groups == 0
+                self.duplication_degree = attention_world_size // config.n_query_groups
+            else:
+                self.duplication_degree = 1
             assert self.config.n_head % attention_world_size == 0
+            # storing number of global heads in the entire model
+            self.total_n_head = self.config.n_head
+            self.total_n_query_groups = self.config.n_query_groups
+            # q per rank
             self.config.n_head //= attention_world_size
-            assert self.config.n_query_groups % attention_world_size == 0
-            self.config.n_query_groups //= attention_world_size
+            if self.duplicating_kv:
+                self.config.n_query_groups = 1
+                self.attn.duplicating_kv = True
+                self.attn.total_n_head = self.total_n_head
+                self.attn.total_n_query_groups = self.total_n_query_groups
+                self.attn.duplication_degree = self.duplication_degree
+                self.attn.head_size = self.config.head_size
+                self.attn.q_per_rank = self.config.n_head
+            else:
+                assert self.config.n_query_groups % attention_world_size == 0
+                self.config.n_query_groups //= attention_world_size
 
     def forward(
         self,

@@ -16,6 +16,8 @@ from axonn.intra_layer.communication import (
     Drop,
     Gather,
 )
+from yalis.external.nccl_comm import CommHandler
+from yalis.tensor_parallel.all_reduce_op import tp_all_reduce
 
 from typing import Optional, Sequence
 import gc
@@ -176,6 +178,11 @@ class TPLinear(torch.nn.Module):
         # else:
         #     print("NOT TRANSPOSE, inner_size: ", dist.get_world_size(self.inner_group), " outer_size: ", dist.get_world_size(self.outer_group))
 
+
+        self.inner_nccl_comm_idx = CommHandler.create_communicator_from_process_group(self.inner_group)
+        # We do not need communicators for the outer and depth group as they are not used currently
+
+
         # depth_group is the Z tensor parallel group (akin to FSDP)
         # self.depth_group = ax.comm_handle.depth_intra_layer_parallel_group
 
@@ -205,10 +212,11 @@ class TPLinear(torch.nn.Module):
         # in_features should be divisible by inner_group_size
         #assert in_features % self.inner_group_size == 0
         # in_features should be divisible by inner_group_size
-        #assert out_features % self.outer_group_size == 0
+        ###assert out_features % self.outer_group_size == 0
         # local_in_features - this is the number of in_features on each GPU
         # self.local_in_features = divide(in_features, self.inner_group_size)
         # local_out_features - this is the number of out_features on each GPU
+#<<<<<<< HEAD
         # self.local_out_features = divide(out_features, self.outer_group_size)
         
         rank = dist.get_rank()
@@ -244,6 +252,12 @@ class TPLinear(torch.nn.Module):
             # print(f"[Rank {rank}] TPLinear ColParallel Init: local_in={self.local_in_features}, local_out={self.local_out_features}")
 
 
+#=======
+#        if out_features % self.outer_group_size == 0:
+#            self.local_out_features = divide(out_features, self.outer_group_size)
+#        else:
+#            self.local_out_features = math.ceil(out_features / self.outer_group_size)
+#>>>>>>> develop
         # initialize the weight matrix and grab the local slice for each GPU
         initial_params = initialize_params(
             out_features,
@@ -306,10 +320,8 @@ class TPLinear(torch.nn.Module):
         self._old_load_from_state_dict = self._load_from_state_dict
         self._load_from_state_dict = self._modified_load_from_state_dict
 
-    def all_reduce(self, x, do_print=False):
-        #if do_print:
-        #    print("WORLD SIZE INNER GROUP: ", dist.get_world_size(group=self.inner_group))
-        dist.all_reduce(x, group=self.inner_group)
+    def all_reduce(self, x):
+        tp_all_reduce(x, self.inner_nccl_comm_idx)
         return x
 
     def matmul(self, w, x):
@@ -327,7 +339,7 @@ class TPLinear(torch.nn.Module):
         #    print(x.shape)
         x = self.matmul(self.weight, x)
         # print(f"[Rank {dist.get_rank()}] After Matmul Shape: {x.shape}")
-        x = self.all_reduce(x, do_print=do_print)
+        x = self.all_reduce(x)#, do_print=do_print)
         # print(f"[Rank {dist.get_rank()}] After AllReduce Shape: {x.shape}")
 
         if self.bias is None:
@@ -372,7 +384,36 @@ class TPLinear(torch.nn.Module):
                 is_full_weight_matrix or is_sharded_weight_matrix
             ), "This is neither a full checkpoint nor a sharded checkpoint"
 
-            if is_full_weight_matrix:
+            if is_full_weight_matrix and getattr(self, "duplicating_kv", False):
+                rank = dist.get_rank(self.outer_group)
+                hs = self.head_size
+                q_per_rank = self.q_per_rank
+                q_per_kv = self.total_n_head // self.total_n_query_groups
+                blk = q_per_kv + 2
+                q_rows = []
+                groups = set()
+                for h in range(rank * q_per_rank, (rank + 1) * q_per_rank):
+                    g = h // q_per_kv
+                    groups.add(g)
+                    local_q = h % q_per_kv
+                    row0 = (g * blk + local_q) * hs
+                    q_rows.extend(range(row0, row0 + hs))
+                kv_rows = []
+                for g in groups:
+                    base = g * blk * hs + q_per_kv * hs
+                    kv_rows.extend(range(base, base + hs))
+                    kv_rows.extend(range(base + hs, base + 2 * hs))
+                local_rows = q_rows + kv_rows
+                weight = weight.contiguous()
+                weight = weight[local_rows, :].contiguous()
+                state_dict[prefix + "weight"] = weight
+                if self.weight.shape != weight.shape:
+                    self.weight = torch.nn.Parameter(
+                        torch.empty_like(weight, device="cuda"),
+                        requires_grad=True
+                    )
+                self.local_out_features = weight.size(0)
+            elif is_full_weight_matrix:
                 out_features_group, in_features_group = (
                     self.outer_group,
                     self.inner_group,
@@ -381,10 +422,13 @@ class TPLinear(torch.nn.Module):
                     weight, out_features_group, in_features_group,
                     asym_split=self.asym_split
                 )
-
-            state_dict[prefix + "weight"] = weight
+                state_dict[prefix + "weight"] = weight
+            else:
+                state_dict[prefix + "weight"] = weight
 
         if self.bias is not None:
+            if getattr(self, "duplicating_kv", False):
+                raise NotImplementedError("There is currently no support for scaling the R dimension > #kv heads when using a model with bias")
             bias = (
                 state_dict[prefix + "bias"] if prefix + "bias" in state_dict else None
             )

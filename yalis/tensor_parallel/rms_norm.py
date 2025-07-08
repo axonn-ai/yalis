@@ -16,6 +16,8 @@ from axonn.intra_layer.communication import (
     Drop,
     Gather,
 )
+from yalis.external.nccl_comm import CommHandler
+from yalis.tensor_parallel.all_reduce_op import tp_all_reduce
 
 from typing import Optional, Sequence
 
@@ -78,6 +80,8 @@ class TPRMSNorm(torch.nn.Module):
         )
         if transpose:
             self.inner_group, self.outer_group = self.outer_group, self.inner_group
+
+        self.inner_nccl_comm_idx = CommHandler.create_communicator_from_process_group(self.inner_group)
         
         # calculating the sizes of each tensor parallel process group
         self.inner_group_size = dist.get_world_size(self.inner_group)
@@ -96,7 +100,7 @@ class TPRMSNorm(torch.nn.Module):
         self._load_from_state_dict = self._modified_load_from_state_dict
         
     def all_reduce(self, x):
-        dist.all_reduce(x, group=self.inner_group)
+        tp_all_reduce(x, self.inner_nccl_comm_idx)
         return x
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
