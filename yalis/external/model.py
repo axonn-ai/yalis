@@ -74,17 +74,17 @@ def get_asym_split(config, layer):
                 if isinstance(parsed_split, list) and all(isinstance(x, (int, float)) for x in parsed_split):
                         if abs(sum(parsed_split) - 1.0) < 1e-6:
                             asym_config[env_name] = parsed_split
-                            print(f"Using {env_name} from environment variable: {parsed_split}")
+                            print_rank0(f"Using {env_name} from environment variable: {parsed_split}")
                         else:
-                            print(f"Warning: {env_name} '{asym_split_str}' from environment does not sum to 1. Using default: {default_asym_split}")
+                            print_rank0(f"Warning: {env_name} '{asym_split_str}' from environment does not sum to 1. Using default: {default_asym_split}")
                 else:
-                    print(f"Warning: Could not parse {env_name} '{asym_split_str}' as a list of numbers. Using default: {default_asym_split}")
+                    print_rank0(f"Warning: Could not parse {env_name} '{asym_split_str}' as a list of numbers. Using default: {default_asym_split}")
             except (ValueError, SyntaxError, TypeError) as e:
-                print(f"Warning: Error parsing {env_name} environment variable '{asym_split_str}': {e}. Using default: {default_asym_split}")
+                print_rank0(f"Warning: Error parsing {env_name} environment variable '{asym_split_str}': {e}. Using default: {default_asym_split}")
         else:
-            gpu_types = list(set(get_all_devices_info()))
+            gpu_types = sorted(list(set(get_all_devices_info())))
             if len(gpu_types) > 1:
-                print(f"Warning: On a heterogeneous system {gpu_types} but {env_name} environment variable not set. Using default: {default_asym_split}. Default will likely be load-imbalanced.")
+                print_rank0(f"Warning: On a heterogeneous system {gpu_types} but {env_name} environment variable not set. Using default: {default_asym_split}. Default will likely be load-imbalanced.")
         return asym_config[env_name]
     else:
         return asym_config[env_name]
@@ -395,8 +395,11 @@ class CausalSelfAttention(nn.Module):
             self.attn = nn.Linear(config.n_embd, shape, bias=config.bias)
         else:
             asym_split = get_asym_split(config, "ATTN")
-            self.attn = TPLinear(config.n_embd, shape, bias=config.bias, init_device=config.init_device, asym_split=asym_split
-                    )
+            self.attn = TPLinear(
+                config.n_embd,
+                shape, bias=config.bias,
+                init_device=config.init_device, asym_split=asym_split
+            )
 
         # output projection
         # if `head_size` is explicitly specified in the config, `n_embd` might not be equal to `head_size * n_head`
@@ -656,7 +659,7 @@ class LLaMAMLP(nn.Module):
             asym_split = get_asym_split(config, "MLP")
             self.gate_up_proj = TPLinear(
                 config.n_embd, 2 * config.intermediate_size, bias=config.bias, init_device=config.init_device,
-                asym_split=asym_split, #list(reversed(asym_split)),
+                asym_split=asym_split,
                 do_print=False
             )
             self.proj = TPLinear(
@@ -665,7 +668,7 @@ class LLaMAMLP(nn.Module):
                 bias=config.bias,
                 transpose=True,
                 init_device=config.init_device,
-                asym_split=asym_split, #list(reversed(asym_split)),
+                asym_split=asym_split,
                 do_print=False
             )
 
