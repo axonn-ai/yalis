@@ -235,6 +235,13 @@ class LLMEngine:
             device=self.device,
             dtype=self.dtype,
         )
+        if self.inference_config.use_symmetric_memory_allreduce:
+            self.model.create_symmetric_memory_pool(
+                batch_size=self.inference_config.batch_size,
+                max_seq_length=self.inference_config.max_length,
+                device=torch.device(torch.cuda.current_device()),
+                dtype=self.dtype,
+            )
         self.tokenizer = AutoTokenizer.from_pretrained(
             self.model_config.model_name
         )

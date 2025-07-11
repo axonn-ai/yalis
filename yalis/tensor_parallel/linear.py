@@ -12,11 +12,32 @@ import math
 from axonn import axonn as ax
 from axonn.intra_layer.communication import Drop
 from yalis.external.nccl_comm import CommHandler
-from yalis.tensor_parallel.all_reduce_op import tp_all_reduce, symmetric_all_reduce_op
+from yalis.tensor_parallel.all_reduce_op import tp_all_reduce
+from yalis.utils import is_process_group_within_node, print_rank0
 
 from typing import Optional, Sequence
 import gc
 
+try:
+    import torch.distributed._symmetric_memory as symm_mem
+    HAS_TORCH_SYMMETRIC = True
+except ImportError:
+    HAS_TORCH_SYMMETRIC = False
+
+
+@torch.library.custom_op("yalis::matmul_with_symmetric_memory", mutates_args=['out'])
+def matmul_with_symmetric_memory(
+    out: torch.Tensor, 
+    x: torch.Tensor, 
+    w: torch.Tensor, 
+    inner_group_name: str,
+) -> torch.Tensor:
+    torch.mm(x.view(-1, x.shape[-1]), w.t(), out=out.view(-1, w.shape[0]))
+    return torch.ops.symm_mem.one_shot_all_reduce(out, "sum", inner_group_name)
+
+@matmul_with_symmetric_memory.register_fake
+def _(out, x, w, inner_group_name):
+    return torch.empty_like(out)
 
 # Wrapper for custom_fwd to handle different versions of PyTorch
 def version_aware_custom_fwd(*args, **kwargs):
@@ -232,19 +253,54 @@ class TPLinear(torch.nn.Module):
         self.skip_bias_add = skip_bias_add
         self._old_load_from_state_dict = self._load_from_state_dict
         self._load_from_state_dict = self._modified_load_from_state_dict
+        self.symmetric_memory_tensor = None
 
     def all_reduce(self, x):
-        #tp_all_reduce(x, self.inner_nccl_comm_idx)
-        x = symmetric_all_reduce_op(x, self.tp_dims, self.transpose)
+        tp_all_reduce(x, self.inner_nccl_comm_idx)
         return x
 
     def matmul(self, w, x):
         return F.linear(x, w)
 
-    def forward(self, x):
+    def set_symmetric_memory_tensor(self, max_batch_size, max_seq_length, dtype, device, symmetric_memory_pool):
+        '''
+        This function is used to set the symmmetric memory output tensor for the linear layer
+        We check if the pool already has a tensor for the current cache key.
+        If it does, we use that tensor.
+        If it does not, we create a new tensor and add it to the pool.
+        '''
+        cache_key = (max_batch_size * max_seq_length * self.local_out_features, dtype, device, self.inner_group.group_name)
 
-        x = self.matmul(self.weight, x)
-        x = self.all_reduce(x)
+        if not is_process_group_within_node(self.inner_group) or self.inner_group_size <= 1 or not HAS_TORCH_SYMMETRIC:
+            self.symmetric_memory_tensor = None
+            return
+
+        if cache_key not in symmetric_memory_pool:
+            # Create a new tensor and add it to the pool
+            nelem = max_batch_size * max_seq_length * self.local_out_features
+            msg = symm_mem.empty(
+                nelem,
+                dtype=dtype, 
+                device=device,
+            )
+            symm_mem.rendezvous(msg, group=self.inner_group)
+            symmetric_memory_pool[cache_key] = msg
+            memory_size = nelem * dtype.itemsize
+            print_rank0(f"Created symmetric memory tensor for {cache_key} - {memory_size / 1024 / 1024} MB")
+        
+        self.symmetric_memory_tensor = symmetric_memory_pool[cache_key]
+
+    def forward(
+        self,
+        x,
+        symmetric_memory_pool = None,
+    ):
+        if self.symmetric_memory_tensor is not None:
+            offset = x.shape[0] * x.shape[1] * self.local_out_features
+            x = matmul_with_symmetric_memory(self.symmetric_memory_tensor[:offset], x, self.weight, self.inner_group.group_name).view(*x.shape[:-1], self.local_out_features)
+        else:
+            x = self.matmul(self.weight, x)
+            x = self.all_reduce(x)
 
         if self.bias is None:
             return x

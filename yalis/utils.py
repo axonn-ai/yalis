@@ -1,6 +1,6 @@
 import torch
 import torch.distributed as dist
-
+import socket
 
 def print_rank0(msg):
     if not dist.is_initialized():
@@ -48,3 +48,22 @@ def get_platform():
         elif torch.version.hip is not None:
             return "rocm"
     return "cpu"
+
+
+def is_process_group_within_node(group=None):
+    local_hostname = socket.gethostname()
+    
+    # Convert hostname to bytes and pad to fixed length
+    max_len = 128
+    local_bytes = local_hostname.encode('utf-8')
+    local_bytes += b' ' * (max_len - len(local_bytes))
+    
+    # Gather hostnames from all processes
+    all_hostnames = [torch.empty(max_len, dtype=torch.uint8, device='cuda') for _ in range(torch.distributed.get_world_size(group))]
+    local_tensor = torch.tensor(list(local_bytes), dtype=torch.uint8, device='cuda')
+    torch.distributed.all_gather(all_hostnames, local_tensor, group=group)
+
+    # Decode hostnames
+    decoded_hostnames = [bytes(t.cpu().tolist()).decode('utf-8').strip() for t in all_hostnames]
+    
+    return all(h == local_hostname for h in decoded_hostnames)

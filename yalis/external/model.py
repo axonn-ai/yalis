@@ -18,7 +18,7 @@ from yalis.attention import attention_wrapper
 from yalis.external.config import Config
 import sys
 
-from yalis.tensor_parallel import TPLinear
+from yalis.tensor_parallel import TPLinear, TPRMSNorm
 from copy import deepcopy
 from axonn import axonn as ax
 from axonn.intra_layer.communication import Drop, Gather
@@ -26,6 +26,18 @@ from kvcache_manager import KVCacheManager
 from yalis.attention.flash import flash_apply_rotary as apply_rotary
 from yalis.attention.backends import AttentionBackend
 from yalis.attention.masking import create_causal_block_mask_for_flex_attention
+from yalis.utils import is_process_group_within_node
+import warnings
+
+from yalis import print_rank0
+import numpy as np
+
+try:
+    import torch.distributed._symmetric_memory as symm_mem
+
+    HAS_TORCH_SYMMETRIC = True
+except ImportError:
+    HAS_TORCH_SYMMETRIC = False
 
 # TODO: these should be dynamically set during engine initialization
 NUM_BLOCKS, PAGE_BLOCK_SIZE = 1024, 256
@@ -70,6 +82,7 @@ class GPT(nn.Module):
         self.max_seq_length = (
             self.config.block_size
         )  # rope cache is built here
+        self.symmetric_memory_pool = None
 
     @property
     def max_seq_length(self) -> int:
@@ -309,6 +322,37 @@ class GPT(nn.Module):
         for block in self.transformer.h:
             block.attn.kv_cache = None
         torch.cuda.empty_cache()
+
+    
+    def create_symmetric_memory_pool(
+        self, 
+        batch_size: int, 
+        max_seq_length: int,
+        device: torch.device, 
+        dtype: torch.dtype,
+    ) -> None:
+        """
+        This function is used to create a cache of symmetric memory tensors for the model.
+        Currently, these tensors are only used during decode and not during prefill, so we 
+        can assume the assume the size of the tensor needed is batch_size * 1 * output_features
+        """
+
+        if not HAS_TORCH_SYMMETRIC:
+            raise ValueError("Symmetric memory is not supported in this version of PyTorch")
+
+        self.symmetric_memory_pool = {}
+
+        def _update_symmetric_memory_pool(module):
+            if isinstance(module, TPLinear):
+                module.set_symmetric_memory_tensor(batch_size, max_seq_length, dtype, device, self.symmetric_memory_pool)
+      
+        self.transformer.apply(_update_symmetric_memory_pool)
+
+        if len(self.symmetric_memory_pool) == 0:
+            warnings.warn(
+                f"No tensor parallel groups found within the same node. Disabling symmetric memory allreduce"
+            )
+            self.symmetric_memory_pool = None
 
 
 class Block(nn.Module):
