@@ -30,8 +30,9 @@ from kvcache_manager import KVCacheManager
 from yalis.attention.flash import flash_apply_rotary as apply_rotary
 from yalis.attention.backends import AttentionBackend
 from yalis.attention.masking import create_causal_block_mask_for_flex_attention
-from yalis.communication.communication import yalis_drop, yalis_all_gather, compute_offset, can_divide
+from yalis.communication.communication import can_divide
 from yalis import print_rank0
+from yalis.tensor_parallel import get_asym_split
 
 # todo: these should be dynamically set during engine initialization
 NUM_BLOCKS, PAGE_BLOCK_SIZE = 1024, 256
@@ -48,47 +49,6 @@ def get_norm_class(config):
         return TPRMSNorm 
     else:
         raise NotImplementedError(f"TP version of {config.norm_class_name} not implemented")
-
-def get_all_devices_info():
-    gloo_group = dist.new_group(backend="gloo")
-    dev = torch.cuda.current_device()
-    local = torch.cuda.get_device_properties(dev).name
-    ws = dist.get_world_size()
-    all_dev = [None] * ws
-    dist.all_gather_object(all_dev, local, group=gloo_group)
-    return all_dev
-
-asym_config = {} # {"ASYM_SPLIT_ATTN": {"config": [0.75, 0.25]}, "ASYM_SPLIT_MLP": ...}
-
-def get_asym_split(config, layer):
-    env_name = "ASYM_SPLIT_" + layer
-    global asym_config 
-    if asym_config.get(env_name) == None:
-        attention_world_size = ax.config.G_intra_r
-        default_asym_split = [1 / attention_world_size] * attention_world_size
-        asym_config[env_name] = default_asym_split
-        asym_split_str = os.getenv(env_name)
-        if asym_split_str:
-            try:
-                parsed_split = ast.literal_eval(asym_split_str)
-                if isinstance(parsed_split, list) and all(isinstance(x, (int, float)) for x in parsed_split):
-                        if abs(sum(parsed_split) - 1.0) < 1e-6:
-                            asym_config[env_name] = parsed_split
-                            print_rank0(f"Using {env_name} from environment variable: {parsed_split}")
-                        else:
-                            print_rank0(f"Warning: {env_name} '{asym_split_str}' from environment does not sum to 1. Using default: {default_asym_split}")
-                else:
-                    print_rank0(f"Warning: Could not parse {env_name} '{asym_split_str}' as a list of numbers. Using default: {default_asym_split}")
-            except (ValueError, SyntaxError, TypeError) as e:
-                print_rank0(f"Warning: Error parsing {env_name} environment variable '{asym_split_str}': {e}. Using default: {default_asym_split}")
-        else:
-            gpu_types = sorted(list(set(get_all_devices_info())))
-            if len(gpu_types) > 1:
-                print_rank0(f"Warning: On a heterogeneous system {gpu_types} but {env_name} environment variable not set. Using default: {default_asym_split}. Default will likely be load-imbalanced.")
-        return asym_config[env_name]
-    else:
-        return asym_config[env_name]
-
 
 class GPT(nn.Module):
     def __init__(self, config: Config) -> None:

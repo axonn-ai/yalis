@@ -5,7 +5,10 @@ import math
 from axonn.intra_layer.communication import Drop, Gather
 import torch.distributed as dist
 from typing import Optional
-from torch.nn.attention.flex_attention import flex_attention
+from importlib.metadata import version
+from packaging.version import parse as V
+if V(version("torch")) >= V("2.7"):
+    from torch.nn.attention.flex_attention import flex_attention
 
 def build_mask_from_index(index, t_max):
         B = index.size(0)
@@ -124,7 +127,10 @@ def rotary_kv_update_sdpa_gen(
     else:
         if use_flex:
             assert flex_attention_block_mask is not None, "flex attention requires a block mask" 
-            out = flex_attention(q, k_cache, v_cache, enable_gqa=enable_gqa, block_mask=flex_attention_block_mask)
+            if V(version("torch")) < V("2.7"):
+                out = flex_attention(q, k_cache, v_cache, enable_gqa=enable_gqa, block_mask=flex_attention_block_mask)
+            else:
+                raise RuntimeError("Flex attention requires torch ≥ 2.7")
         else:
             out = torch.nn.functional.scaled_dot_product_attention(
                 q, k_cache, v_cache, attn_mask=mask[:, None, None, :], enable_gqa=enable_gqa
