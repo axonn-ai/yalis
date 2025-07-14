@@ -218,7 +218,7 @@ class LLMEngine:
         )
         model = self._make_params_contiguous(model)
         model.set_kv_cache(
-            batch_size=inference_config.batch_size,
+            max_batch_size=self.inference_config.max_batch_size,
             device=self.device,
             dtype=self.dtype,
         )
@@ -247,10 +247,10 @@ class LLMEngine:
         print_rank0(f"Initializing Model took {time.time() - t0} seconds")
         return model, tokenizer
 
-    def reset_kv_cache(self, batch_size):
-        self._reset_kv_cache(self.model, batch_size)
+    def reset_kv_cache(self, max_batch_size):
+        self._reset_kv_cache(self.model, max_batch_size)
 
-    def _reset_kv_cache(self, model, batch_size):
+    def _reset_kv_cache(self, model, max_batch_size):
         if not model:
             print_rank0(
                 "Model must be initialized before contiguous parameter buffer can be allocated"  # noqa: E501
@@ -258,13 +258,13 @@ class LLMEngine:
             return
         model.clear_kv_cache()
         model.set_kv_cache(
-            batch_size=batch_size,
+            max_batch_size=max_batch_size,
             device=self.device,
             dtype=self.dtype,
         )
         if self.inference_config.symmetric_allreduce_strategy is not None:
             model.create_symmetric_memory_pool(
-                batch_size=batch_size,
+                max_batch_size=max_batch_size,
                 max_seq_length=self.inference_config.max_length,
                 device=torch.device(torch.cuda.current_device()),
                 dtype=self.dtype,
