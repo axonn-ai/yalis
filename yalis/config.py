@@ -111,7 +111,7 @@ class InferenceConfig:
         Initialize the inference configuration.
 
         Args:
-            max_batch_size (int): Maximum number of inputs processed in parallel. 
+            max_batch_size (int): Maximum number of inputs processed in parallel.
                             The model will allocate KV cache for this many sequences.
                             During inference, any batch size <= max_batch_size can be used.
                             This enables dynamic batching for efficient resource utilization.
@@ -131,7 +131,7 @@ class InferenceConfig:
             prestore_kv_cache (bool): Pre-store k/v cache before attention.
         """
         self.max_batch_size = max_batch_size
-        #TODO - default max_length should be none.
+        # TODO - default max_length should be none.
         # If it is none, we should set it from the model config
         self.max_length = max_length_of_generated_sequences
         self.temperature = temperature

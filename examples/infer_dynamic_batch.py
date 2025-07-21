@@ -1,7 +1,6 @@
 from yalis import ModelConfig, InferenceConfig, print_rank0, LLMEngine
 from transformers import AutoTokenizer
 import torch
-import torch.distributed as dist
 from contextlib import nullcontext
 
 # needed to work with pytorch 2.3
@@ -36,15 +35,22 @@ if __name__ == "__main__":
 
     # Set the maximum batch size for the model
     MAX_BATCH_SIZE = 8
-    
+
     # Set batch sizes to test (must all be <= MAX_BATCH_SIZE)
     # BATCH_SIZES_TO_TEST = [1, 2, 4, 8]
-    BATCH_SIZES_TO_TEST = [1, 1, 2, 2] # First batch is initialization, any subsequent batch should be faster.
+    BATCH_SIZES_TO_TEST = [
+        1,
+        1,
+        2,
+        2,
+    ]  # First batch is initialization, any subsequent batch should be faster.
 
     for batch_size in BATCH_SIZES_TO_TEST:
         if batch_size > MAX_BATCH_SIZE:
-            raise ValueError(f"Batch size {batch_size} cannot be greater than max batch size {MAX_BATCH_SIZE}")
-    
+            raise ValueError(
+                f"Batch size {batch_size} cannot be greater than max batch size {MAX_BATCH_SIZE}"
+            )
+
     print(f"Testing dynamic batching with max_batch_size={MAX_BATCH_SIZE}")
     print(f"Will test batch sizes: {BATCH_SIZES_TO_TEST}")
 
@@ -86,15 +92,15 @@ if __name__ == "__main__":
         profiler_context = nullcontext()
 
     # all_results = {}
-    
+
     # Test each batch size
     for current_batch_size in BATCH_SIZES_TO_TEST:
         print_rank0(f"\n{'='*50}")
         print_rank0(f"TESTING BATCH SIZE: {current_batch_size}")
         print_rank0(f"{'='*50}")
-        
+
         current_batch_prompts = user_prompts[:current_batch_size]
-        
+
         # Format prompts for the model
         input_prompts = []
         for user_prompt in current_batch_prompts:
@@ -132,8 +138,12 @@ if __name__ == "__main__":
             output_tokens, skip_special_tokens=True
         )
 
-        for i, (prompt, output) in enumerate(zip(current_batch_prompts, detokenized_text)):
-            print_rank0(f"\n===== Batch {current_batch_size}, Sample {i+1} =====")
+        for i, (prompt, output) in enumerate(
+            zip(current_batch_prompts, detokenized_text)
+        ):
+            print_rank0(
+                f"\n===== Batch {current_batch_size}, Sample {i+1} ====="
+            )
             print_rank0(f"prompt: {prompt}")
             print_rank0(f"output: {output}")
 
@@ -147,7 +157,7 @@ if __name__ == "__main__":
     # print_rank0(f"\n{'='*60}")
     # print_rank0("DYNAMIC BATCHING TEST SUMMARY")
     # print_rank0(f"{'='*60}")
-    
+
     # for batch_size, results in all_results.items():
     #     metrics = results['metrics']
     #     print_rank0(f"\nBatch Size {batch_size}:")

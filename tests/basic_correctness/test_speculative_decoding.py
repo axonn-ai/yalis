@@ -118,7 +118,7 @@ def test_speculative(
         )
 
     # Reset KV caches for both engines
-    speculative_engine.reset_kv_cache(batch_size)
+    # speculative_engine.reset_kv_cache(batch_size)
 
     # Generate test prompts
     prompts = alpaca_prompt(

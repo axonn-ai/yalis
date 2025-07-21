@@ -4,10 +4,6 @@ GPUS_DEFAULT=1
 GPUS=${GPUS:-$GPUS_DEFAULT}
 
 
-source /scratch/10698/akarshsri/miniconda3/etc/profile.d/conda.sh
-conda activate /scratch/10698/akarshsri/envs/pssg
-
-
 export MASTER_ADDR=$(hostname)
 export MASTER_PORT=29500
 export WORLD_SIZE=${GPUS}
@@ -20,20 +16,20 @@ export NCCL_SOCKET_IFNAME=hsi
 export MPICH_GPU_SUPPORT_ENABLED=0
 export CUDA_VISIBLE_DEVICES=0
 
-
-export SCRATCH=$SCRATCH
-export TRANSFORMERS_HOME="$SCRATCH/hf_cache"
 export HF_HOME=$SCRATCH/hf_cache
 export HF_DATASETS_CACHE="$SCRATCH/hf_cache"
 export YALIS_CACHE="${SCRATCH}/yalis/yalis/external"
-export HF_DATASETS_OFFLINE=1
-export TRANSFORMERS_OFFLINE=1
 export TORCHINDUCTOR_CACHE_DIR="${SCRATCH}/.cache/torch_inductor"
 
-export YALIS_DISABLE_COMPILE=1 # remove later
+export BATCH_SIZES=1,2
+export PROMPT_LENGTHS=64,128
+export DECODE_TOKENS=4
+export MAX_SEQ_LEN=256
 
-SCRIPT_SDPA="-c tests/basic_correctness/sdpa.ini tests/basic_correctness/test_yalis_vs_hf.py"
-SCRIPT_FLASH="-c tests/basic_correctness/flash.ini tests/basic_correctness/test_yalis_vs_hf.py"
+# export YALIS_DISABLE_COMPILE=1
+
+SCRIPT_SDPA="-c tests/basic_correctness/sdpa.ini tests/basic_correctness"
+SCRIPT_FLASH="-c tests/basic_correctness/flash.ini tests/basic_correctness"
 
 export PYTHONPATH="$PYTHONPATH:."
 

@@ -172,6 +172,8 @@ class LLMEngine:
         self.model = None  # Placeholder for the loaded model
         self.device = device
         self.dtype = precision_to_dtype[model_config.precision]
+        self.model_config = model_config
+        self.inference_config = inference_config
         init_distributed(tp_dims=inference_config.tp_dims)
         print_rank0(f"Model Config: {model_config}")
         print_rank0(f"Inference Config: {inference_config}")
@@ -179,8 +181,6 @@ class LLMEngine:
         self.model, self.tokenizer = self._initialize_model(
             model_config, inference_config
         )
-        self.model_config = model_config
-        self.inference_config = inference_config
 
         # return extra memory to CUDA. Can prevent NCCL init OOMs
         torch.cuda.empty_cache()

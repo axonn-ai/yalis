@@ -51,7 +51,7 @@ def get_norm_class(config):
 
 class GPT(nn.Module):
     def __init__(self, config: Config) -> None:
-        
+
         super().__init__()
         assert config.padded_vocab_size is not None
         self.config = config
@@ -175,7 +175,7 @@ class GPT(nn.Module):
             else None
         )
 
-        #TODO: Implement token_counter slicing for flex attention.
+        # TODO: Implement token_counter slicing for flex attention.
         flex_attention_block_mask = (
             create_causal_block_mask_for_flex_attention(
                 self.token_counter, self.kv_length, self.batch_size
@@ -189,7 +189,8 @@ class GPT(nn.Module):
                 x,
                 self.cos,
                 self.sin,
-                self.token_counter[:x.size(0)],
+                phase,
+                self.token_counter[: x.size(0)],
                 block_table,
                 flex_attention_block_mask,
             )
@@ -204,10 +205,12 @@ class GPT(nn.Module):
                 torch.tanh(x / self.config.final_logit_softcapping)
                 * self.config.final_logit_softcapping
             )
-        self.token_counter[:x.size(0)].add_(
+        self.token_counter[: x.size(0)].add_(
             T if actual_sequence_lengths is None else actual_sequence_lengths
         )
-        if self.config.use_paged_kv_caching: #NOTE: Full token_counter tensor is supposed to passed, hence not slicing.
+        if (
+            self.config.use_paged_kv_caching
+        ):  # NOTE: Full token_counter tensor is supposed to passed, hence not slicing.
             # readjusting the token counters of the block table
             # to exclude padded tokens.
             # we can exclude this for generation
@@ -345,7 +348,7 @@ class GPT(nn.Module):
         Rewind the token counter and KV-cache by the num_tokens.
         Used when rejecting tokens during speculative decoding.
         """
-        self.token_counter -= num_tokens
+        self.token_counter[:num_tokens.size(0)] -= num_tokens
 
     def clear_kv_cache(self) -> None:
         for block in self.transformer.h:
@@ -589,8 +592,8 @@ class CausalSelfAttention(nn.Module):
         ), "partial rope is not supported yet"
 
         # Index KV cache for current batch size
-        k_cache = self.kv_cache.k[:(x.size(0))]
-        v_cache = self.kv_cache.v[:(x.size(0))]
+        k_cache = self.kv_cache.k[: (x.size(0))]
+        v_cache = self.kv_cache.v[: (x.size(0))]
 
         if self.config.attention_backend == AttentionBackend.FLASH:
             q = q.contiguous()
@@ -1002,8 +1005,8 @@ class KVCache(nn.Module):
         if input_pos.size(1) > 1:
             # prefill phase
             sequence_length = k.shape[2]
-            self.k[:, :, :sequence_length, :] = k[:, :, :sequence_length, :]
-            self.v[:, :, :sequence_length, :] = v[:, :, :sequence_length, :]
+            self.k[:n, :, :sequence_length, :] = k[:n, :, :sequence_length, :]
+            self.v[:n, :, :sequence_length, :] = v[:n, :, :sequence_length, :]
         else:
             batched_index_copy_(self.k[:n, ...], -2, input_pos, k)
             batched_index_copy_(self.v[:n, ...], -2, input_pos, v)

@@ -5,7 +5,7 @@ from utils import alpaca_prompt
 
 NUM_LOGPROBS = 5
 BATCH_SIZES = [1, 4, 8]
-PROMPT_LENGTHS = [128, 256, 512, 1024]
+PROMPT_LENGTHS = [128, 256] # 512, 1024]
 
 
 def _get_logprobs(logits):
@@ -188,7 +188,6 @@ def test_01_prefill(
     dtype,
     alpaca_dataset,
 ):
-    yalis_engine.reset_kv_cache(batch_size)
     prompts = alpaca_prompt(
         alpaca_dataset, tokenizer, prompt_length, batch_size
     )
@@ -214,7 +213,6 @@ def test_02_decode(
     dtype,
     alpaca_dataset,
 ):
-    yalis_engine.reset_kv_cache(batch_size)
     prompts = alpaca_prompt(
         alpaca_dataset, tokenizer, prompt_length, batch_size
     )

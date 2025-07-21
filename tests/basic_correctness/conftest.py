@@ -35,7 +35,10 @@ def pytest_addoption(parser):
 def cleanup_dist():
     yield
     if dist.is_initialized():
-        dist.barrier()
+        try:
+            dist.barrier()
+        except Exception as e:
+            print(f"[conftest]: Error in barrier: {e}")
         dist.destroy_process_group()
 
 
@@ -129,8 +132,8 @@ def yalis_engine(model_id, dtype, attn_backend):
     """Create a standard Yalis LLMEngine."""
     model_config = ModelConfig(model_name=model_id, precision=dtype.yalis)
     inference_config = InferenceConfig(
-        # initial batch size, will be changed with reset_kv_cache
-        batch_size=1,
+        # max batch size for dynamic batching
+        max_batch_size=8,  # Set to max batch size from test
         max_length_of_generated_sequences=2048,
         top_p=0.0,
         temperature=0.0,
@@ -154,7 +157,7 @@ def speculative_engine(model_id, draft_model_id, dtype, attn_backend):
     )
     inference_config = InferenceConfig(
         # initial batch size, will be changed with reset_kv_cache
-        batch_size=1,
+        max_batch_size=8,
         max_length_of_generated_sequences=2048,
         top_p=0.0,
         temperature=0.0,

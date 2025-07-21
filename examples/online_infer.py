@@ -39,9 +39,12 @@ system_prompt = "You are a helpful chatbot. Answer the following question.\n"
 model_id = "meta-llama/Meta-Llama-3-8B-Instruct"  # NOTE: HARD SET
 global_tokenizer = AutoTokenizer.from_pretrained(model_id)
 
+# Set the maximum batch size for the model
+MAX_BATCH_SIZE = 8
+
 model_config = ModelConfig(model_name=model_id, precision="bf16")
 inference_config = InferenceConfig(
-    batch_size=1,  # NOTE: HARD SET
+    max_batch_size=MAX_BATCH_SIZE,
     max_length_of_generated_sequences=1024,
     top_p=0.80,
     temperature=1.0,
@@ -213,6 +216,6 @@ if __name__ == "__main__":
         logging.info(
             "Starting Flask server on rank 0. Listening on port 5000..."
         )
-        app.run(host="0.0.0.0", port=5000)
+        app.run(host="0.0.0.0", port=5000, threaded=False, processes=1)
     else:
         infer_endpoint()
