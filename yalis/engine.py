@@ -3,7 +3,7 @@ from typing import Union, Optional
 from .config import ModelConfig, InferenceConfig
 from .model import get_model
 from .initialize import init_distributed
-from .utils import print_rank0, get_gpu_memory_info, get_nvtx_funcs
+from .utils import print_rank0, get_gpu_memory_info, get_max_gpu_memory_info, get_nvtx_funcs
 from .external.sampling import sample
 import torch.distributed as dist
 from transformers import AutoTokenizer
@@ -235,12 +235,13 @@ class LLMEngine:
             device=self.device,
             dtype=self.dtype,
         )
-        if self.inference_config.use_symmetric_memory_allreduce:
+        if self.inference_config.symmetric_allreduce_strategy is not None:
             self.model.create_symmetric_memory_pool(
                 batch_size=self.inference_config.batch_size,
                 max_seq_length=self.inference_config.max_length,
                 device=torch.device(torch.cuda.current_device()),
                 dtype=self.dtype,
+                algorithm=self.inference_config.symmetric_allreduce_strategy,
             )
         self.tokenizer = AutoTokenizer.from_pretrained(
             self.model_config.model_name
@@ -266,6 +267,14 @@ class LLMEngine:
             device=self.device,
             dtype=self.dtype,
         )
+        if self.inference_config.symmetric_allreduce_strategy is not None:
+            self.model.create_symmetric_memory_pool(
+                batch_size=batch_size,
+                max_seq_length=self.inference_config.max_length,
+                device=torch.device(torch.cuda.current_device()),
+                dtype=self.dtype,
+                algorithm=self.inference_config.symmetric_allreduce_strategy,
+            )
 
     def generate(
         self,

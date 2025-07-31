@@ -21,6 +21,15 @@ def get_gpu_memory_info():
         return allocated, reserved
     return 0, 0
 
+def get_max_gpu_memory_info():
+    BYTES_TO_GB = 1 / (1024**3)
+    if torch.cuda.is_available():
+        allocated = torch.cuda.max_memory_allocated() * BYTES_TO_GB
+        reserved = torch.cuda.max_memory_reserved() * BYTES_TO_GB
+        return allocated, reserved
+    return 0, 0
+
+
 
 def get_nvtx_funcs(enabled: bool):
     if enabled:

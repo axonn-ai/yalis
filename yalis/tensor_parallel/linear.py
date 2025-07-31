@@ -20,28 +20,12 @@ import gc
 
 try:
     import torch.distributed._symmetric_memory as symm_mem
+    from yalis.tensor_parallel.all_reduce_op import matmul_with_two_shot_allreduce, matmul_with_one_shot_allreduce
 
     HAS_TORCH_SYMMETRIC = True
 except ImportError:
     HAS_TORCH_SYMMETRIC = False
 
-
-@torch.library.custom_op(
-    "yalis::matmul_with_symmetric_memory", mutates_args=["out"]
-)
-def matmul_with_symmetric_memory(
-    out: torch.Tensor,
-    x: torch.Tensor,
-    w: torch.Tensor,
-    inner_group_name: str,
-) -> torch.Tensor:
-    torch.mm(x.view(-1, x.shape[-1]), w.t(), out=out.view(-1, w.shape[0]))
-    return torch.ops.symm_mem.one_shot_all_reduce(out, "sum", inner_group_name)
-
-
-@matmul_with_symmetric_memory.register_fake
-def _(out, x, w, inner_group_name):
-    return torch.empty_like(out)
 
 
 # Wrapper for custom_fwd to handle different versions of PyTorch
@@ -274,6 +258,7 @@ class TPLinear(torch.nn.Module):
         dtype,
         device,
         symmetric_memory_pool,
+        algorithm,
     ):
         """
         This function is used to set the symmmetric memory
@@ -299,7 +284,7 @@ class TPLinear(torch.nn.Module):
 
         if cache_key not in symmetric_memory_pool:
             # Create a new tensor and add it to the pool
-            nelem = max_batch_size * max_seq_length * self.local_out_features
+            nelem = max_batch_size * self.local_out_features # * max_seq_length -> not needed as we only use it for decode
             msg = symm_mem.empty(
                 nelem,
                 dtype=dtype,
@@ -313,15 +298,21 @@ class TPLinear(torch.nn.Module):
             )
 
         self.symmetric_memory_tensor = symmetric_memory_pool[cache_key]
+        if algorithm == "two-shot":
+            self.symmetric_allreduce_matmul_fn = matmul_with_two_shot_allreduce
+        elif algorithm == "one-shot":
+            self.symmetric_allreduce_matmul_fn = matmul_with_one_shot_allreduce
+        else:
+            raise ValueError(f"Invalid algorithm: {algorithm}")
 
     def forward(
         self,
         x,
         symmetric_memory_pool=None,
     ):
-        if self.symmetric_memory_tensor is not None:
+        if self.symmetric_memory_tensor is not None and x.shape[1] == 1:
             offset = x.shape[0] * x.shape[1] * self.local_out_features
-            x = matmul_with_symmetric_memory(
+            x = self.symmetric_allreduce_matmul_fn(
                 self.symmetric_memory_tensor[:offset],
                 x,
                 self.weight,

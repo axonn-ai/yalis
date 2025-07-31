@@ -260,7 +260,7 @@ class AlpacaDataset(BenchmarkDataset):
         # print (f"Average length of tokenized lines: {avg_len}")
 
         # Find one minimum length line.
-        index_min = np.argmin([len(tokens) for tokens in tokenized_lines])
+        index_min = np.argmin([len(tokens) for tokens in tokenized_lines]).item()
         min_len = len(tokenized_lines[index_min])
         padding_line = self.data[index_min]
         # print (f"Minimum length line: {padding_line}")
