@@ -99,7 +99,9 @@ class InferenceConfig:
         use_intra_head_parallelism: bool = False,
         use_paged_kv_caching: bool = False,
         prestore_kv_cache: bool = True,
-        symmetric_allreduce_strategy: Optional[Literal["one-shot", "two-shot"]] = None,
+        symmetric_allreduce_strategy: Optional[
+            Literal["one-shot", "two-shot"]
+        ] = None,
     ):
         """
         Initialize the inference configuration.
@@ -191,10 +193,12 @@ class InferenceConfig:
 
         if (
             self.symmetric_allreduce_strategy is not None
-            and self.symmetric_allreduce_strategy not in ["one-shot", "two-shot"]
+            and self.symmetric_allreduce_strategy
+            not in ["one-shot", "two-shot"]
         ):
             raise ValueError(
-                "symmetric_allreduce_strategy must be one of 'one-shot', 'two-shot', or None."
+                "symmetric_allreduce_strategy must be one of"
+                " 'one-shot', 'two-shot', or None."
             )
 
     def __repr__(self):

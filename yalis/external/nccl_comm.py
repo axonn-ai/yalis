@@ -203,7 +203,7 @@ class NCCLCommunicator:
 
     def get_comm_size(self):
         return self.nranks
-    
+
     def get_rank(self):
         return self.rank
 

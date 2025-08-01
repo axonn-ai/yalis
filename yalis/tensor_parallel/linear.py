@@ -20,12 +20,14 @@ import gc
 
 try:
     import torch.distributed._symmetric_memory as symm_mem
-    from yalis.tensor_parallel.all_reduce_op import matmul_with_two_shot_allreduce, matmul_with_one_shot_allreduce
+    from yalis.tensor_parallel.all_reduce_op import (
+        matmul_with_two_shot_allreduce,
+        matmul_with_one_shot_allreduce,
+    )
 
     HAS_TORCH_SYMMETRIC = True
 except ImportError:
     HAS_TORCH_SYMMETRIC = False
-
 
 
 # Wrapper for custom_fwd to handle different versions of PyTorch
@@ -282,9 +284,15 @@ class TPLinear(torch.nn.Module):
             self.symmetric_memory_tensor = None
             return
 
+        # group_name = torch.distributed.group.WORLD.group_name
+        # symm_mem.enable_symm_mem_for_group(group_name)
+        # self.inner_group = torch.distributed.group.WORLD
+
         if cache_key not in symmetric_memory_pool:
             # Create a new tensor and add it to the pool
-            nelem = max_batch_size * self.local_out_features # * max_seq_length -> not needed as we only use it for decode
+            nelem = (
+                max_batch_size * self.local_out_features
+            )  # * max_seq_length -> not needed as we only use it for decode
             msg = symm_mem.empty(
                 nelem,
                 dtype=dtype,

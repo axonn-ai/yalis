@@ -3,7 +3,11 @@ from typing import Union, Optional
 from .config import ModelConfig, InferenceConfig
 from .model import get_model
 from .initialize import init_distributed
-from .utils import print_rank0, get_gpu_memory_info, get_max_gpu_memory_info, get_nvtx_funcs
+from .utils import (
+    print_rank0,
+    get_gpu_memory_info,
+    get_nvtx_funcs,
+)
 from .external.sampling import sample
 import torch.distributed as dist
 from transformers import AutoTokenizer

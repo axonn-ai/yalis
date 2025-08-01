@@ -318,7 +318,7 @@ class GPT(nn.Module):
         max_seq_length: int,
         device: torch.device,
         dtype: torch.dtype,
-        algorithm: str
+        algorithm: str,
     ) -> None:
         """
         This function is used to create a cache of symmetric
