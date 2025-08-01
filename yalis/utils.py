@@ -66,6 +66,8 @@ def is_process_group_within_node(group=None):
     # Convert hostname to bytes and pad to fixed length
     max_len = 128
     local_bytes = local_hostname.encode("utf-8")
+    if len(local_bytes) > max_len:
+        local_bytes = local_bytes[:max_len]
     local_bytes += b" " * (max_len - len(local_bytes))
 
     # Gather hostnames from all processes
