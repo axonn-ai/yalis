@@ -1,5 +1,10 @@
-[flake8]
 # Flake8 has a bug that makes it report E203 with slicing
+# -*- conf -*-
+# flake8 settings for yalis
+#
+# These are the minimal flake8 settings recommended by Black
+# https://black.readthedocs.io/en/stable/the_black_code_style/current_style.html#code-style
+[flake8]
 extend-ignore = E203 
 per-file-ignores =
     yalis/external/convert_hf_checkpoint.py: E501, E741

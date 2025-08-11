@@ -98,7 +98,16 @@ class CommHandler:
     def load_commlib():
         platform = get_platform()
         if platform == "cuda":
-            CommHandler.comm_lib = ctypes.cdll.LoadLibrary("libnccl.so")
+            try:
+                # We need to try loading libnccl.so.2 first
+                CommHandler.comm_lib = ctypes.cdll.LoadLibrary("libnccl.so.2")
+            except OSError:
+                try:
+                    CommHandler.comm_lib = ctypes.cdll.LoadLibrary(
+                        "libnccl.so"
+                    )
+                except OSError as e:
+                    raise RuntimeError("Failed to load NCCL library.") from e
             CommHandler.num_comms = 0
         elif platform == "rocm":
             CommHandler.comm_lib = ctypes.cdll.LoadLibrary("librccl.so")
@@ -198,6 +207,14 @@ class NCCLCommunicator:
         )
         self.check_nccl_error(ret, "ncclCommInitRank failed")
         print(f"Created NCCL communicator for rank {rank}")
+        self.nranks = nranks
+        self.rank = rank
+
+    def get_comm_size(self):
+        return self.nranks
+
+    def get_rank(self):
+        return self.rank
 
     def check_nccl_error(self, ret, msg="NCCL error"):
         if ret != 0:

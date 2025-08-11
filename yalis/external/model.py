@@ -26,6 +26,7 @@ from kvcache_manager import KVCacheManager
 from yalis.attention.flash import flash_apply_rotary as apply_rotary
 from yalis.attention.backends import AttentionBackend
 from yalis.attention.masking import create_causal_block_mask_for_flex_attention
+import warnings
 
 # TODO: these should be dynamically set during engine initialization
 NUM_BLOCKS, PAGE_BLOCK_SIZE = 1024, 256
@@ -70,6 +71,7 @@ class GPT(nn.Module):
         self.max_seq_length = (
             self.config.block_size
         )  # rope cache is built here
+        self.symmetric_memory_pool = None
 
     @property
     def max_seq_length(self) -> int:
@@ -309,6 +311,42 @@ class GPT(nn.Module):
         for block in self.transformer.h:
             block.attn.kv_cache = None
         torch.cuda.empty_cache()
+
+    def create_symmetric_memory_pool(
+        self,
+        batch_size: int,
+        max_seq_length: int,
+        device: torch.device,
+        dtype: torch.dtype,
+        algorithm: str,
+    ) -> None:
+        """
+        This function is used to create a cache of symmetric
+        memory tensors within each TP Layer to be used for
+        low-latency all-reduce
+        """
+
+        self.symmetric_memory_pool = {}
+
+        def _update_symmetric_memory_pool(module):
+            if isinstance(module, TPLinear):
+                module.set_symmetric_memory_tensor(
+                    batch_size,
+                    max_seq_length,
+                    dtype,
+                    device,
+                    self.symmetric_memory_pool,
+                    algorithm,
+                )
+
+        self.transformer.apply(_update_symmetric_memory_pool)
+
+        if len(self.symmetric_memory_pool) == 0:
+            warnings.warn(
+                "No tensor parallel groups found within the same node."
+                "Disabling symmetric memory allreduce"
+            )
+            self.symmetric_memory_pool = None
 
 
 class Block(nn.Module):

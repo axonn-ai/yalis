@@ -13,9 +13,21 @@ from axonn import axonn as ax
 from axonn.intra_layer.communication import Drop
 from yalis.external.nccl_comm import CommHandler
 from yalis.tensor_parallel.all_reduce_op import tp_all_reduce
+from yalis.utils import is_process_group_within_node, print_rank0
 
 from typing import Optional, Sequence
 import gc
+
+try:
+    import torch.distributed._symmetric_memory as symm_mem
+    from yalis.tensor_parallel.all_reduce_op import (
+        matmul_with_two_shot_allreduce,
+        matmul_with_one_shot_allreduce,
+    )
+
+    HAS_TORCH_SYMMETRIC = True
+except ImportError:
+    HAS_TORCH_SYMMETRIC = False
 
 
 # Wrapper for custom_fwd to handle different versions of PyTorch
@@ -232,6 +244,7 @@ class TPLinear(torch.nn.Module):
         self.skip_bias_add = skip_bias_add
         self._old_load_from_state_dict = self._load_from_state_dict
         self._load_from_state_dict = self._modified_load_from_state_dict
+        self.symmetric_memory_tensor = None
 
     def all_reduce(self, x):
         tp_all_reduce(x, self.inner_nccl_comm_idx)
@@ -240,10 +253,82 @@ class TPLinear(torch.nn.Module):
     def matmul(self, w, x):
         return F.linear(x, w)
 
-    def forward(self, x):
+    def set_symmetric_memory_tensor(
+        self,
+        max_batch_size,
+        max_seq_length,
+        dtype,
+        device,
+        symmetric_memory_pool,
+        algorithm,
+    ):
+        """
+        This function is used to set the symmmetric memory
+        output tensor for the layer. We check if the
+        pool already has a tensor for the current cache key.
+        If it does, we use that tensor.
+        If it does not, we create a new tensor and add it to the pool.
+        """
+        cache_key = (
+            max_batch_size * max_seq_length * self.local_out_features,
+            dtype,
+            device,
+            self.inner_group.group_name,
+        )
 
-        x = self.matmul(self.weight, x)
-        x = self.all_reduce(x)
+        if (
+            not is_process_group_within_node(self.inner_group)
+            or self.inner_group_size <= 1
+            or not HAS_TORCH_SYMMETRIC
+        ):
+            self.symmetric_memory_tensor = None
+            return
+
+        # group_name = torch.distributed.group.WORLD.group_name
+        # symm_mem.enable_symm_mem_for_group(group_name)
+        # self.inner_group = torch.distributed.group.WORLD
+
+        if cache_key not in symmetric_memory_pool:
+            # Create a new tensor and add it to the pool
+            nelem = (
+                max_batch_size * self.local_out_features
+            )  # * max_seq_length -> not needed as we only use it for decode
+            msg = symm_mem.empty(
+                nelem,
+                dtype=dtype,
+                device=device,
+            )
+            symm_mem.rendezvous(msg, group=self.inner_group)
+            symmetric_memory_pool[cache_key] = msg
+            memory_size = nelem * dtype.itemsize
+            print_rank0(
+                f"Created symmetric memory tensor for {cache_key} - {memory_size / 1024 / 1024} MB"  # noqa: E501
+            )
+
+        self.symmetric_memory_tensor = symmetric_memory_pool[cache_key]
+        if algorithm == "two-shot":
+            self.symmetric_allreduce_matmul_fn = matmul_with_two_shot_allreduce
+        elif algorithm == "one-shot":
+            self.symmetric_allreduce_matmul_fn = matmul_with_one_shot_allreduce
+        else:
+            raise ValueError(f"Invalid algorithm: {algorithm}")
+
+    def forward(
+        self,
+        x,
+        symmetric_memory_pool=None,
+    ):
+        if self.symmetric_memory_tensor is not None and x.shape[1] == 1:
+            offset = x.shape[0] * x.shape[1] * self.local_out_features
+            x = self.symmetric_allreduce_matmul_fn(
+                self.symmetric_memory_tensor[:offset],
+                x,
+                self.weight,
+                self.inner_group.group_name,
+            ).view(*x.shape[:-1], self.local_out_features)
+        else:
+            x = self.matmul(self.weight, x)
+            x = self.all_reduce(x)
 
         if self.bias is None:
             return x
