@@ -5,6 +5,40 @@ import math
 import torch.distributed as dist
 from typing import Optional, Tuple
 
+def topk_sdpa_quantile(query, key, value, topk, token_counter,attn_mask=None, enable_gqa=False) -> torch.Tensor:
+    B, H, L, S = query.size(0), query.size(1), query.size(-2), key.size(-2)
+    scale_factor = 1 / math.sqrt(query.size(-1))
+    attn_bias = torch.zeros(B, H, L, S, dtype=query.dtype, device=query.device)
+    attn_bias_nan = torch.zeros(B, H, L, S, dtype=query.dtype, device=query.device)
+    if attn_mask is not None:
+        if attn_mask.dtype == torch.bool:
+            attn_bias.masked_fill_(attn_mask.logical_not(), float("-inf"))
+            attn_bias_nan.masked_fill_(attn_mask.logical_not(), torch.nan)
+        else:
+            attn_bias = attn_mask + attn_bias
+
+    if enable_gqa:
+        key = key.repeat_interleave(query.size(-3)//key.size(-3), -3)
+        value = value.repeat_interleave(query.size(-3)//value.size(-3), -3)
+
+    attn_weight = query @ key.transpose(-2, -1) * scale_factor
+    attn_weight += attn_bias
+    attn_weight = torch.softmax(attn_weight, dim=-1)
+
+    quantile = 1 - topk
+
+
+    attn_weight_nan = attn_weight.masked_fill(attn_mask.logical_not(), torch.nan)
+    quantiles = torch.nanquantile(attn_weight_nan, quantile, dim=-1, keepdim=True)
+
+    mask = attn_weight >= quantiles
+    
+    attn_weight = attn_weight.masked_fill(mask.logical_not(), 0.0)
+
+    count_nonzero = mask.count_nonzero(dim=-1)
+
+    return attn_weight @ value, count_nonzero
+
 
 def topk_sdpa(query, key, value, topk, token_counter,attn_mask=None, enable_gqa=False) -> torch.Tensor:
     B, H, L, S = query.size(0), query.size(1), query.size(-2), key.size(-2)
@@ -30,9 +64,11 @@ def topk_sdpa(query, key, value, topk, token_counter,attn_mask=None, enable_gqa=
         assert B == 1, "topk must be a scalar for batch size > 1"
         token_counter_scalar = token_counter.item()
         topk = int(topk * token_counter_scalar)
+        #print(f"token_counter_scalar: {token_counter_scalar}, topk: {topk}")
 
     if L == 1: # Generation Step
         topk_vals, topk_indices = torch.topk(attn_weight, k=topk, dim=-1)
+        #print(f"topk_vals: {topk_vals}, topk_indices: {topk_indices}")
         attn_weight_masked = torch.zeros_like(attn_weight)
         attn_weight_masked.scatter_(-1, topk_indices, topk_vals)
         attn_weight = attn_weight_masked
@@ -97,8 +133,12 @@ def lit_rotary_kv_update_gen(
     #[:, None, None, :]
     
     enable_gqa = q.size(1) != k.size(1)
-    out = topk_sdpa(q, k_cache, v_cache, topk, token_counter, attn_mask=mask[:, None, None, :], enable_gqa=enable_gqa)
-    retain_perc.add_(topk)
+    out, count_nonzero = topk_sdpa_quantile(q, k_cache, v_cache, topk, token_counter, attn_mask=mask[:, None, None, :], enable_gqa=enable_gqa)
+    #retain_perc.add_(topk)
+    retain_p = count_nonzero / (token_counter.unsqueeze(-1).unsqueeze(-1) + 1) * 100
+    retain_p = retain_p.squeeze().mean(dim=-1, keepdim=True) # B, 1
+    retain_perc.add_(retain_p)
+    #print (f"Retain Percentage: {retain_p}")
     return out
 
 

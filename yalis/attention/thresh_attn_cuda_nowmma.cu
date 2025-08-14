@@ -6,45 +6,6 @@
 using namespace nvcuda;
 using namespace nvcuda::wmma;
 
-// nvcuda::wmma::fragment<nvcuda::wmma::matrix_b,       16,16,16, half, row_major>  Vfrag;
-//  // --- 3) PASS 2: threshold & accumulate V ---
-//  for (int d0 = 0; d0 < D; d0 += BLOCK_N) {
-//    int bs = min(BLOCK_N, D - d0);
-//
-//    wmma::fill_fragment(Cfrag, 0);
-//
-//    // tile over T in chunks of 16
-//    for (int t0 = 0; t0 < T; t0 += BLOCK_N) {
-//
-//      // replicate the 1×16 slice of V
-//      if (lane < 16) {
-//        half s = __float2half(exp_buf[t0 + lane]);
-//        #pragma unroll
-//        for (int i = 0; i < 16; ++i) {
-//          a_tile[i][lane] = s;
-//        }
-//      }
-//
-//      // load into WMMA
-//      wmma::load_matrix_sync(Afrag, &a_tile[0][0], 16);
-//      half const* v_tile = v_base + (size_t)(t0 * D + d0);
-//      wmma::load_matrix_sync(Vfrag, (const half*)v_tile, D);
-//      // Perform matrix multiply
-//      wmma::mma_sync(Cfrag, Afrag, Vfrag, Cfrag);
-//
-//    }
-//    
-//    // TODO: Is this needed?
-//    // __syncthreads();
-//
-//    wmma::store_matrix_sync(&C_tile[0][0], Cfrag, 16, nvcuda::wmma::mem_row_major);
-//
-//    if (lane < bs) {
-//      acc[d0 + lane] = C_tile[0][lane];
-//    }
-//    __syncthreads();
-//  }
-
 struct __align__(4) PackedHalfIndex {
   __half score;     // 16 bits
   uint16_t index;   // 16 bits
@@ -71,7 +32,7 @@ extern "C" __global__ void decode_attn_two_pass_wmma(
     float        scale,
     int B, int H, int T, int D
 ) {
-  constexpr int NUM_WARPS = 4;
+  constexpr int NUM_WARPS = 32;
 
   int idx = blockIdx.x;
   if (idx >= B*H) return;
@@ -88,9 +49,6 @@ extern "C" __global__ void decode_attn_two_pass_wmma(
   int warp_id = tid / 32;
   int lane = tid % 32;
 
-  // STATIC shared for the 16×16 A-tile
-  __shared__ __align__(32) half a_tile[8][16];
-  __shared__ __align__(32) float C_tile[NUM_WARPS][16];
   __shared__ float m_arr[NUM_WARPS], l_arr[NUM_WARPS];
   __shared__ float m, l;
   __shared__ int valid_cnt;
@@ -101,6 +59,7 @@ extern "C" __global__ void decode_attn_two_pass_wmma(
   half* exp_buf = reinterpret_cast<half*>(_smem);                               // T floats
   uint16_t* valid_idx = reinterpret_cast<uint16_t*>(_smem +     T * sizeof(half));     // T floats
   half*  q_half  = reinterpret_cast<half* >( _smem + (T * sizeof(half)) + (T * sizeof(uint16_t)) );   // D halves
+  float*  acc     = reinterpret_cast<float* >( _smem + (T * sizeof(half)) + (T * sizeof(uint16_t)) + (D * sizeof(half)) );   // D halves
 
   // --- 1) INIT ---
   if (tid < D) {
@@ -112,76 +71,36 @@ extern "C" __global__ void decode_attn_two_pass_wmma(
   m = -1e9f;
   l = 0.0f;
 
-  // WMMA fragments
-  nvcuda::wmma::fragment<nvcuda::wmma::matrix_a,       16,16,16, half, row_major> Afrag;
-  nvcuda::wmma::fragment<nvcuda::wmma::matrix_b,       16,16,16, half, col_major>  Bfrag;
-  nvcuda::wmma::fragment<nvcuda::wmma::accumulator,    16,16,16, float>            Cfrag;
-
-
-  // Load a_tile once, each thread writes one value of q_half to a_tile 
-  #pragma unroll
-  for (int i = 0; i < 8; ++i) {
-      for (int k = 0; k < 16; ++k) {
-        a_tile[i][k] = q_half[i * 16 + k];
-      }
+  // Initialize accumulator
+  for (int d = tid; d < D; d += blockDim.x) {
+      acc[d] = 0.0f;
   }
 
+  for (int t = warp_id; t < T; t += NUM_WARPS) {
+    float dot = 0.0f;
 
-  // --- 2) PASS 1: compute (m,l) & buffer exp() ---
-  constexpr int BLOCK_N = 16;
-  int warp_offset = warp_id * BLOCK_N;
-  for (int t0 = warp_offset; t0 < T; t0 += BLOCK_N * 4) {
-    int bs = min(BLOCK_N, T - t0);
-
-    wmma::fill_fragment(Cfrag, 0);
-
-    // tile over D in chunks of 16
-    //#pragma unroll
-    for (int d0 = 0; d0 < D; d0 += 16) {
-
-      // Load the value that needs to be broadcast across rows
-      //half v = q_half[d0 + (lane % 16)];
-
-      //// Each thread writes to 4 rows to fill 16x16 tile (32 threads × 4 = 128 elements)
-      //#pragma unroll
-      //for (int i = 0; i < 4; ++i) {
-      //    // Compute linear index and then (row, col)
-      //    int linear_idx = i * 32 + lane;  // i ∈ [0, 3], lane ∈ [0, 31]
-      //    int row = linear_idx / 16;
-      //    int col = linear_idx % 16;
-      
-      //    int swizzled_row = (row ^ (col / 4)); 
-      //    a_tile[warp_id][swizzled_row][col] = v;
-      //}
-      // load into WMMA
-      half const* k_tile = k_base + (size_t)(t0 * D + d0);
-      wmma::load_matrix_sync(Bfrag, (const half*)k_tile, D);
-
-
-      wmma::load_matrix_sync(Afrag, &a_tile[d0 / 16][0], 0);
-      //half const* k_tile = k_base + (size_t)(d0 * T + t0);
-      // Perform matrix multiply
-      wmma::mma_sync(Cfrag, Afrag, Bfrag, Cfrag);
-
+    for (int d = lane; d < D; d += 32) {
+        float q_val = __half2float(q_half[d]);
+        float k_val = __half2float(k_base[t * D + d]);
+        dot += q_val * k_val;
     }
-    
-    wmma::store_matrix_sync(&C_tile[warp_id][0], Cfrag, 0, nvcuda::wmma::mem_row_major);
 
-    if (lane < bs) {
-      C_tile[warp_id][lane] = C_tile[warp_id][lane] * scale + __ldg(bias_ptr + t0 + lane);
-    }
+    // Reduce within warp
+    dot += __shfl_xor_sync(0xFFFFFFFF, dot, 16);
+    dot += __shfl_xor_sync(0xFFFFFFFF, dot, 8);
+    dot += __shfl_xor_sync(0xFFFFFFFF, dot, 4);
+    dot += __shfl_xor_sync(0xFFFFFFFF, dot, 2);
+    dot += __shfl_xor_sync(0xFFFFFFFF, dot, 1);
 
     if (lane == 0) {
-      // Compute the running max and sum of the exp(x - max)
-      for (int i = 0; i < bs; ++i) {
-        float x  = C_tile[warp_id][i];
-        float nm = fmaxf(m_arr[warp_id], x);
-        float em = expf(m_arr[warp_id]  - nm);
-        float eb = expf(x  - nm);
+        float logits = dot * scale + __ldg(bias_ptr + t);
+        exp_buf[t] = __float2half(logits);
+
+        float nm = fmaxf(m_arr[warp_id], logits);
+        float em = expf(m_arr[warp_id] - nm);
+        float eb = expf(logits - nm);
         l_arr[warp_id] = fmaf(l_arr[warp_id], em, eb);
         m_arr[warp_id] = nm;
-        exp_buf[t0 + i] = __float2half(x);
-      }
     }
   }
 
@@ -214,6 +133,12 @@ extern "C" __global__ void decode_attn_two_pass_wmma(
   }
   __syncthreads();
 
+  //if (tid == 0) {
+  //  for (int i = 0; i < T; ++i) {
+  //    printf("%6.3f ", exp_buf[i]);
+  //  }
+  //  printf("\n");
+  //}
   
   if (threadIdx.x == 0) {
       valid_cnt = 0;
@@ -256,10 +181,11 @@ extern "C" void decode_attn_cuda_launcher(
         __half* Oh = reinterpret_cast<      __half*>(Outp);
 
   int blocks  = B*H;
-  int threads = 128;
+  int threads = 1024;
   size_t dyn_shm = size_t(T)*sizeof(__half)
                  + size_t(T)*sizeof(uint16_t)
-                 + size_t(D)*sizeof(__half);
+                 + size_t(D)*sizeof(__half)
+                 + size_t(D)*sizeof(float);
 
 
   decode_attn_two_pass_wmma

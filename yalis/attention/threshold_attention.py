@@ -2,8 +2,8 @@ from typing import Optional, Tuple
 import torch
 import math
 from .utils import fit_powerlaw_linreg_torch
-#from .threshold_attention_triton import thresh_attn_fused, thresh_attn_reference
-from .threshold_attention_triton import thresh_attn_reference
+from .threshold_attention_triton import thresh_attn_fused_wrapped, thresh_attn_reference
+#from .threshold_attention_triton import thresh_attn_reference
 
 
 # This function has been modified from torch's SDPA attention example: https://pytorch.org/docs/stable/generated/torch.nn.functional.scaled_dot_product_attention.html
@@ -154,5 +154,5 @@ def thresh_attention_forward(
 
 
 
-    #assert torch.allclose(attn_output, attn_output_reference, atol=1e-2, rtol=rtol), f"Outputs do not match! {attn_output} vs {attn_output_reference}"
+    #assert torch.allclose(attn_output, attn_output_reference, atol=1e-2, rtol=rtol), f"Outputs do not match! {attn_output} vs {attn_output_reference}
     return attn_output, retain_perc

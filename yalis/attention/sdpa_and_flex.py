@@ -59,6 +59,23 @@ def intra_head_sdpa(q, k, v, attn_mask, process_group, enable_gqa, parallel=True
     return O
 
 
+@torch.compile()
+def sdpa_compile_fn(q, k, v, attn_mask, enable_gqa):
+    out = torch.nn.functional.scaled_dot_product_attention(
+        query=q,
+        key=k,
+        value=v,
+        attn_mask=attn_mask,
+        enable_gqa=enable_gqa,
+    )
+    return out
+
+@torch.compiler.disable(recursive=False)
+def sdpa_attn(q, k, v, attn_mask, enable_gqa):
+    dummy = torch.zeros(1)
+    out = sdpa_compile_fn(q, k, v, attn_mask, enable_gqa)
+    return out
+    
 
 def rotary_kv_update_sdpa_gen(
     q: torch.Tensor,  # B,nh,1,hs
@@ -126,9 +143,11 @@ def rotary_kv_update_sdpa_gen(
             assert flex_attention_block_mask is not None, "flex attention requires a block mask" 
             out = flex_attention(q, k_cache, v_cache, enable_gqa=enable_gqa, block_mask=flex_attention_block_mask)
         else:
-            out = torch.nn.functional.scaled_dot_product_attention(
-                q, k_cache, v_cache, attn_mask=mask[:, None, None, :], enable_gqa=enable_gqa
-            )
+            with torch.profiler.record_function("SDPADecode"): 
+                out = torch.nn.functional.scaled_dot_product_attention(
+                    q, k_cache, v_cache, attn_mask=mask[:, None, None, :], enable_gqa=enable_gqa
+                )
+            #out = sdpa_attn(q, k_cache, v_cache, attn_mask=mask[:, None, None, :], enable_gqa=enable_gqa)
         return out
 
 def rotary_kv_update_sdpa_prefill(

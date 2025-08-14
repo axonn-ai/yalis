@@ -41,8 +41,7 @@ def get_next_power_of_2(x):
         return 1 << (x - 1).bit_length()
 
 
-
-@triton.autotune(list(filter(keep, configs)), key=["T", "HEAD_DIM"])
+@triton.autotune(list(filter(keep, configs)), key=["B", "T", "HEAD_DIM"])
 @triton.jit
 def decode_attn_fwd(
     # data pointers
@@ -59,12 +58,14 @@ def decode_attn_fwd(
     stride_qb, stride_qh, stride_qm, stride_qk,
     stride_kb, stride_kh, stride_kk, stride_kn,
     stride_vb, stride_vh, stride_vn, stride_vk,
+    stride_ab, stride_ah, stride_am, stride_an,
     stride_ob, stride_oh, stride_om, stride_ok,
     stride_sb, stride_sh, stride_sm, stride_sn,
     stride_vib, stride_vih, stride_vim, stride_vin,
     stride_tb, stride_th,
     # sizes
-    B, H,
+    B: tl.constexpr,
+    H: tl.constexpr,
     T: tl.constexpr,
     HEAD_DIM: tl.constexpr,
     BLOCK_M: tl.constexpr,
@@ -80,6 +81,7 @@ def decode_attn_fwd(
     scores_base = scores + batch_id*stride_sb + head_id*stride_sh
     valid_indices_base = valid_indices + batch_id*stride_vib + head_id*stride_vih
     thresh_base = thresholds + batch_id*stride_tb + head_id*stride_th
+    attn_bias_base = attn_bias + batch_id*stride_ab + head_id*stride_ah
 
     q_ptr = ( 
         q_base
@@ -95,7 +97,7 @@ def decode_attn_fwd(
 
     # pointers for Q and outputs: one vector of length HEAD_DIM
     k_ptr = tl.make_block_ptr(base=k_base, shape=(T, HEAD_DIM), strides=(stride_kn, stride_kk), offsets=(0, 0), block_shape=(HEAD_DIM, BLOCK_N), order=(0,1))
-    attn_bias_ptr = tl.make_block_ptr(base=attn_bias, shape=(1, T), strides=(stride_sm, stride_sn), offsets=(0, 0), block_shape=(1, BLOCK_N), order=(1,0))
+    attn_bias_ptr = tl.make_block_ptr(base=attn_bias_base, shape=(1, T), strides=(stride_am, stride_an), offsets=(0, 0), block_shape=(1, BLOCK_N), order=(1,0))
     scores_ptr = tl.make_block_ptr(base=scores_base, shape=(1, T), strides=(stride_sm, stride_sn), offsets=(0,0), block_shape=(1, BLOCK_N), order=(1,0))
 
 
@@ -162,8 +164,8 @@ def decode_attn_fwd(
 
     # Exclusive prefix sum
     mask_sum = tl.cumsum(prob_mask.to(tl.int32), axis=0)  # [1]
+    mask_sum_exclusive = mask_sum - prob_mask.to(tl.int32)  # [1, T]
     mask_indices = tl.arange(0, T)  # [T]
-    mask_sum_exclusive = mask_sum - prob_mask.to(tl.int32)  # [1]
 
 
     tl.store(valid_indices_base + mask_sum_exclusive, mask_indices, mask=prob_mask)
@@ -253,6 +255,7 @@ def thresh_attn_fused(
         query.stride(0), query.stride(1), query.stride(2), query.stride(3),
         key.stride(0), key.stride(1), key.stride(2), key.stride(3),
         value.stride(0), value.stride(1), value.stride(2), value.stride(3),
+        attn_bias.stride(0), attn_bias.stride(1), attn_bias.stride(2), attn_bias.stride(3),
         o.stride(0), o.stride(1), o.stride(2), o.stride(3),
         scores.stride(0), scores.stride(1), scores.stride(2), scores.stride(3),
         valid_indices.stride(0), valid_indices.stride(1), valid_indices.stride(2), valid_indices.stride(3),
@@ -266,7 +269,7 @@ def thresh_attn_fused(
 
     return o
 
-@torch.compile() 
+@torch.compile(mode="max-autotune-no-cudagraphs")
 def thresh_attn_fused_wrapped(
    query: torch.Tensor,
    key: torch.Tensor,
@@ -278,6 +281,7 @@ def thresh_attn_fused_wrapped(
     """
     Wrapper function for the Triton implementation of thresholded attention.
     """
+    print ("[DEBUG] Calling thresh_attn_fused_wrapped")
 
     return thresh_attn_fused(
         query=query,
@@ -357,7 +361,7 @@ def get_threshold(query, key, value, percentile=0.5, attn_mask=None, enable_gqa=
 
 
 def test():
-    B, H, T, D = 1, 8, 8192, 128
+    B, H, T, D = 32, 8, 8192, 128
     query = torch.randn((B, H, 1, D), device=DEVICE).half()
     key = torch.randn((B, H, T, D), device=DEVICE).half()
     value = torch.randn((B, H, T, D), device=DEVICE).half()
@@ -397,7 +401,7 @@ def test():
     ), f"Outputs do not match! {ref_out} vs {triton_out}"
 
 
-@torch.compile()
+@torch.compile(mode="max-autotune-no-cudagraphs")
 def sdpa_attn(
     query, key, value, attn_mask=None, enable_gqa=False
 ) -> torch.Tensor:
@@ -412,19 +416,20 @@ def sdpa_attn(
 
 
 # Triton benchmarking to compare performance
-BATCH, N_HEADS, HEAD_DIM = 1, 8, 128
-
+BATCH, N_HEADS, HEAD_DIM = 32, 8, 128
+   
 # vary seq length for fixed head and batch=4
 config = triton.testing.Benchmark(
     x_names=["N_CTX"],
-    x_vals=[512, 1024, 2048, 4096, 8192],
+    x_vals=[512, 1024, 2048, 4096, 8192, 16384],
     line_arg="mode",
-    line_vals=[0, 0.5, 0.75, 0.875, -1],
+    line_vals=[0, 0.5, 0.75, 0.875, 0.95, -1],
     line_names=[
         "Triton (Percentile: 0)",
         "Triton (Percentile: 0.5)",
         "Triton (Percentile: 0.75)",
         "Triton (Percentile: 0.875)",
+        "Triton (Percentile: 0.95)",
         "Torch",
     ],
     styles=[
@@ -432,10 +437,11 @@ config = triton.testing.Benchmark(
         ("blue", "-"),
         ("green", "-"),
         ("orange", "-"),
+        ("purple", "-"),
         ("black", "--"),
     ],
     ylabel="Time (ms)",
-    plot_name=f"fused-attention-batch{BATCH}-head{N_HEADS}-d{HEAD_DIM}",
+    plot_name=f"fused-attention-head{N_HEADS}-batch{BATCH}-d{HEAD_DIM}",
     args={
         "H": N_HEADS,
         "BATCH": BATCH,
@@ -460,6 +466,26 @@ def bench_flash_attention(BATCH, H, N_CTX, HEAD_DIM, mode, device=DEVICE):
     ms = triton.testing.do_bench(fn)
     return ms
 
+# We want to run the run the threshold attention kernel with a given batch size, for nvtx profiling
+def run_thresh_attn_kernel(BATCH, H, N_CTX, HEAD_DIM, percentile, device=DEVICE):
+    dtype = torch.float16
+    q = torch.randn((BATCH, H * 4, 1, HEAD_DIM), dtype=dtype, device=device)
+    k = torch.randn((BATCH, H, N_CTX, HEAD_DIM), dtype=dtype, device=device)
+    v = torch.randn((BATCH, H, N_CTX, HEAD_DIM), dtype=dtype, device=device)
+    attn_mask = torch.arange(0, N_CTX, device=device).unsqueeze(0).unsqueeze(0) < N_CTX // 2
+
+    threshold = get_threshold(q, k, v, attn_mask=attn_mask, percentile=percentile, enable_gqa=True).reshape((BATCH, H * 4)).to(device=device, dtype=dtype)
+    fn = lambda: thresh_attn_fused_wrapped(q, k, v, threshold, attn_mask=attn_mask, enable_gqa=True)
+
+    # Warmup
+    for i in range(5):
+        fn()
+    
+    for i in range(10):
+        fn()
+
+
 if __name__ == "__main__":
     #test()
-    bench_flash_attention.run(save_path=".", print_data=True)
+    #bench_flash_attention.run(save_path=".", print_data=True)
+    run_thresh_attn_kernel(16, 8, 16384, 128, 0.5)

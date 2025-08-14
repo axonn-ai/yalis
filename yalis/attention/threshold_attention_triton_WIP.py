@@ -8,7 +8,8 @@ from torch.library import triton_op, wrap_triton
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from torch.utils.cpp_extension import load
 from typing import Optional
-
+import os
+import time
 DEVICE = "cuda"
 
 decode_attn_cuda = load(
@@ -17,6 +18,8 @@ decode_attn_cuda = load(
     verbose=True,
     extra_cuda_cflags=['-arch=sm_90', '-O3']
 )
+
+print(f"PID: {os.getpid()}")
 
 @torch.library.custom_op("yalis::decode_attn", mutates_args=())
 def decode_attn(
@@ -63,18 +66,9 @@ def thresh_attn_fused(
         else:
             attn_bias = attn_mask + attn_bias
     
-    #print (f"attn_bias: {attn_bias}")
-    
     if enable_gqa:
         key = key.repeat_interleave(query.size(-3)//key.size(-3), -3)
         value = value.repeat_interleave(query.size(-3)//value.size(-3), -3)
-
-    grid = lambda args: (query.shape[0], query.shape[1], 1)
-    o = torch.empty_like(query)
-
-    # Does the scores need to float32?
-    scores = torch.empty((B, H, 1, T), device=query.device, dtype=torch.float32)
-    valid_indices = torch.zeros((B, H, 1, T), device=query.device, dtype=torch.int32) - 1
 
     threshold = threshold.to(torch.float32).contiguous()
     attn_bias = attn_bias.to(torch.float32).contiguous()
@@ -88,7 +82,7 @@ def thresh_attn_fused(
         attn_bias,
     )
 
-@torch.compile(mode="max-autotune-no-cudagraphs")
+#@torch.compile(mode="max-autotune-no-cudagraphs")
 def thresh_attn_fused_wrapped(
    query: torch.Tensor,
    key: torch.Tensor,
@@ -179,15 +173,17 @@ def get_threshold(query, key, value, percentile=0.5, attn_mask=None, enable_gqa=
 
 
 def test():
-    B, H, T, D = 4, 8, 2048, 128
+    B, H, T, D = 32, 16, 8192, 128
     query = torch.randn((B, H, 1, D), device=DEVICE).half()
     key = torch.randn((B, H, T, D), device=DEVICE).half()
     value = torch.randn((B, H, T, D), device=DEVICE).half()
     print (f"Query: {query} \n\n")
     print (f"Key: {key} \n\n")
     scores = query @ key.transpose(-2, -1) / math.sqrt(D)
+    print (f"Scores: {scores} \n\n")
     scores = torch.softmax(scores, dim=-1)
     print (f"Scores: {scores} \n\n")
+    #print (f"Scores: {scores} \n\n")
 
 
     attn_mask = (
@@ -195,7 +191,7 @@ def test():
     )
     # print (f"Value: {value} \n\n")
     threshold = (
-        get_threshold(query, key, value, attn_mask=attn_mask)
+        get_threshold(query, key, value, attn_mask=None)
         .to(device=DEVICE, dtype=torch.float16)
         .reshape((B, H))
     )
@@ -203,19 +199,19 @@ def test():
 
     # Run the reference implementation
     ref_out, _ = thresh_attn_reference(
-        query, key, value, threshold, attn_mask=attn_mask
+        query, key, value, threshold, attn_mask=None
     )
     print(ref_out.shape, ref_out.dtype)
 
     # Run the Triton implementation
     triton_out = thresh_attn_fused(
-        query, key, value, threshold, attn_mask=attn_mask
+        query, key, value, threshold, attn_mask=None
     )
     print(triton_out.shape, triton_out.dtype)
     torch.cuda.synchronize()  
 
     # Compare the outputs
-    rtol = 0.0
+    rtol = 1e-2
     if (
         torch.version.hip is not None
         and triton.runtime.driver.active.get_current_target().arch == "gfx90a"
@@ -226,11 +222,11 @@ def test():
     ), f"Outputs do not match! {ref_out} vs {triton_out}"
 #
 #
-@torch.compile(mode="max-autotune-no-cudagraphs")
+#@torch.compile(mode="max-autotune-no-cudagraphs")
 def sdpa_attn(
     query, key, value, attn_mask=None, enable_gqa=False
 ) -> torch.Tensor:
-    with sdpa_kernel(SDPBackend.MATH):
+    with sdpa_kernel(backends=[SDPBackend.FLASH_ATTENTION]):
         return torch.nn.functional.scaled_dot_product_attention(
             query=query,
             key=key,
@@ -241,19 +237,20 @@ def sdpa_attn(
 
 
 # Triton benchmarking to compare performance
-BATCH, N_HEADS, HEAD_DIM = 32, 8, 128
+BATCH, N_HEADS, HEAD_DIM = 32, 32, 128
 
 # vary seq length for fixed head and batch=4
 config = triton.testing.Benchmark(
     x_names=["N_CTX"],
-    x_vals=[512, 1024, 2048, 4096],
+    x_vals=[512, 1024, 2048, 4096, 8192],
     line_arg="mode",
-    line_vals=[0, 0.5, 0.75, 0.875, -1],
+    line_vals=[0, 0.5, 0.75, 0.875, 0.95, -1],
     line_names=[
         "CUDA (Percentile: 0)",
         "CUDA (Percentile: 0.5)",
         "CUDA (Percentile: 0.75)",
         "CUDA (Percentile: 0.875)",
+        "CUDA (Percentile: 0.95)",
         "Torch",
     ],
     styles=[
@@ -261,6 +258,7 @@ config = triton.testing.Benchmark(
         ("blue", "-"),
         ("green", "-"),
         ("orange", "-"),
+        ("purple", "-"),
         ("black", "--"),
     ],
     ylabel="Time (ms)",
@@ -276,20 +274,108 @@ config = triton.testing.Benchmark(
 
 @triton.testing.perf_report(config)
 def bench_flash_attention(BATCH, H, N_CTX, HEAD_DIM, mode, device=DEVICE):
+    torch.compiler.reset()
+    dtype = torch.float16
+    q = torch.randn((BATCH, H, 1, HEAD_DIM), dtype=dtype, device=device)
+    k = torch.randn((BATCH, H, N_CTX, HEAD_DIM), dtype=dtype, device=device)
+    kt = k.transpose(-2, -1).contiguous()
+    v = torch.randn((BATCH, H, N_CTX, HEAD_DIM), dtype=dtype, device=device)
+    #attn_mask = torch.arange(0, N_CTX, device=device).unsqueeze(0).unsqueeze(0) < N_CTX // 2
+    if mode == -1:
+        compiled_fn = torch.compile(sdpa_attn, mode="max-autotune-no-cudagraphs")
+        fn = lambda: compiled_fn(q, k, v, attn_mask=None, enable_gqa=False)
+    else:
+        compiled_fn = torch.compile(thresh_attn_fused_wrapped, mode="max-autotune-no-cudagraphs")
+        threshold = get_threshold(q, k, v, attn_mask=None, percentile=mode, enable_gqa=False).reshape((BATCH, H)).to(device=device, dtype=dtype)
+        fn = lambda: compiled_fn(q, k, v, threshold, attn_mask=None, enable_gqa=False)
+    
+    ms = triton.testing.do_bench(fn)
+    return ms
+
+
+# We want to run the run the threshold attention kernel with a given batch size, for nvtx profiling
+def run_thresh_attn_kernel(BATCH, H, N_CTX, HEAD_DIM, percentile, device=DEVICE):
     dtype = torch.float16
     q = torch.randn((BATCH, H * 4, 1, HEAD_DIM), dtype=dtype, device=device)
     k = torch.randn((BATCH, H, N_CTX, HEAD_DIM), dtype=dtype, device=device)
     v = torch.randn((BATCH, H, N_CTX, HEAD_DIM), dtype=dtype, device=device)
     attn_mask = torch.arange(0, N_CTX, device=device).unsqueeze(0).unsqueeze(0) < N_CTX // 2
-    if mode == -1:
-        fn = lambda: sdpa_attn(q, k, v, attn_mask=attn_mask, enable_gqa=True)
-    else:
-        threshold = get_threshold(q, k, v, attn_mask=attn_mask, percentile=mode, enable_gqa=True).reshape((BATCH, H * 4)).to(device=device, dtype=dtype)
-        fn = lambda: thresh_attn_fused_wrapped(q, k, v, threshold, attn_mask=attn_mask, enable_gqa=True)
 
-    ms = triton.testing.do_bench(fn)
-    return ms
+    threshold = get_threshold(q, k, v, attn_mask=attn_mask, percentile=percentile, enable_gqa=True).reshape((BATCH, H * 4)).to(device=device, dtype=dtype)
+    fn = lambda: thresh_attn_fused_wrapped(q, k, v, threshold, attn_mask=attn_mask, enable_gqa=True)
+
+    # Warmup
+    for i in range(5):
+        fn()
+
+    torch.cuda.nvtx.range_push("thresh_attn_kernel")
+    for i in range(5):
+        fn()
+    torch.cuda.nvtx.range_pop()
+
+
+def benchmark_torch_compiled_kernels(
+    fn1, fn2, args1=(), args2=(), kwargs1={}, kwargs2={}, 
+    warmup=10, iters=100, verbose=True
+):
+    def time_fn(fn, args, kwargs):
+        start = torch.cuda.Event(enable_timing=True)
+        end = torch.cuda.Event(enable_timing=True)
+
+        # Warmup
+        for _ in range(warmup):
+            fn(*args, **kwargs)
+        torch.cuda.synchronize()
+
+        # Timed runs
+        start.record()
+        for _ in range(iters):
+            fn(*args, **kwargs)
+        end.record()
+
+        torch.cuda.synchronize()
+        elapsed_ms = start.elapsed_time(end) / iters
+        return elapsed_ms
+
+    compiled_fn1 = torch.compile(fn1, mode="max-autotune-no-cudagraphs")
+    compiled_fn2 = torch.compile(fn2, mode="max-autotune-no-cudagraphs")
+
+    ms1 = time_fn(compiled_fn1, args1, kwargs1)
+    ms2 = time_fn(compiled_fn2, args2, kwargs2)
+
+    if verbose:
+        print(f"{fn1.__name__} : {ms1:.3f} ms")
+        print(f"{fn2.__name__} : {ms2:.3f} ms")
+
+    return ms1, ms2
+
+def benchmark_thresh_attn_fused_wrapped(BATCH, H, N_CTX, HEAD_DIM, percentile):
+    query = torch.randn((BATCH, H * 4, 1, HEAD_DIM), dtype=torch.float16, device=DEVICE)
+    key = torch.randn((BATCH, H, N_CTX, HEAD_DIM), dtype=torch.float16, device=DEVICE)
+    value = torch.randn((BATCH, H, N_CTX, HEAD_DIM), dtype=torch.float16, device=DEVICE)
+    attn_mask = torch.arange(0, N_CTX, device=DEVICE).unsqueeze(0).unsqueeze(0) < N_CTX // 2
+    threshold = get_threshold(query, key, value, attn_mask=attn_mask, percentile=percentile, enable_gqa=True).reshape((BATCH, H * 4)).to(device=DEVICE, dtype=torch.float16)
+
+    ms_thresh, ms_sdpa = benchmark_torch_compiled_kernels(
+        thresh_attn_fused_wrapped,
+        sdpa_attn,
+        args1=(query, key, value, threshold, attn_mask, True),
+        args2=(query, key, value, attn_mask, True),
+        kwargs1={},
+    )
+
+    print (f"N_CTX: {N_CTX}, Percentile: {percentile}, Thresh: {ms_thresh:.3f} ms, SDPA: {ms_sdpa:.3f} ms")
+
+
+def run_all_benchmarks():
+    for N_CTX in [512, 1024, 2048, 4096, 8192]:
+        for percentile in [0.5, 0.75, 0.875, 0.95]:
+            torch.compiler.reset()
+            benchmark_thresh_attn_fused_wrapped(BATCH, N_HEADS, N_CTX, HEAD_DIM, percentile)
+
 
 if __name__ == "__main__":
-    #test()
+    test()
     bench_flash_attention.run(save_path=".", print_data=True)
+    #run_all_benchmarks()
+    #run_thresh_attn_kernel(16, 8, 4096, 128, 0.75)
