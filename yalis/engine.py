@@ -8,13 +8,16 @@ from .utils import (
     get_gpu_memory_info,
     get_nvtx_funcs,
 )
-from .external.sampling import sample
+from .external.sampling import sample, sample_top_p
+from .external.rejection_sampler import RejectionSampler
 import torch.distributed as dist
 from transformers import AutoTokenizer
 from torch.nn.attention import SDPBackend, sdpa_kernel
+from .constants import EnginePhase
 import time
 import gc
 from .timers import Timers
+
 import os
 
 # These flags are taken from the following URL -
@@ -28,6 +31,9 @@ torch._inductor.config.triton.unique_kernel_names = True
 torch._inductor.config.fx_graph_cache = True
 
 torch._inductor.config.assert_indirect_indexing = False
+
+torch._inductor.config.combo_kernel_foreach_dynamic_shapes = True
+
 
 YALIS_DISABLE_COMPILE = os.environ.get("YALIS_DISABLE_COMPILE", "0") == "1"
 
@@ -60,6 +66,7 @@ def prefill(
     top_k=None,
     top_p=1.0,
     get_logits=False,
+    phase: EnginePhase = EnginePhase.PREFILL,
 ):
     """
     Prefill function for generating the first token.
@@ -74,7 +81,9 @@ def prefill(
         logits: (Optional) The raw logits from the model.
     """
 
-    logits = model(tokens, unpadded_prompt_lengths)["logits"].to(torch.float32)
+    logits = model(tokens, phase, unpadded_prompt_lengths)["logits"].to(
+        torch.float32
+    )
     logits = logits[torch.arange(logits.size(0)), unpadded_prompt_lengths - 1]
     token_id = sample(
         logits=logits, temperature=temperature, top_k=top_k, top_p=top_p
@@ -89,7 +98,13 @@ def prefill(
 @torch.no_grad()
 @torch.compile(mode=YALIS_DECODE_MODE, disable=YALIS_DISABLE_COMPILE)
 def generate(
-    model, tokens, temperature=1.0, top_k=None, top_p=1.0, get_logits=False
+    model,
+    tokens,
+    temperature=1.0,
+    top_k=None,
+    top_p=1.0,
+    get_logits=False,
+    phase: EnginePhase = EnginePhase.DECODE_SINGLE,
 ):
     """
     Generate function for producing the next token(s).
@@ -104,7 +119,7 @@ def generate(
         token_id: The next predicted token.
         logits: (Optional) The raw logits from the model.
     """
-    logits = model(tokens)["logits"].to(torch.float32)
+    logits = model(tokens, phase)["logits"].to(torch.float32)
     token_id = sample(
         logits=logits[:, -1], temperature=temperature, top_k=top_k, top_p=top_p
     )
@@ -112,6 +127,28 @@ def generate(
         return token_id, logits[:, -1]
     else:
         return token_id, None
+
+
+@torch.no_grad()
+@torch.compile(
+    mode=YALIS_DECODE_MODE, disable=YALIS_DISABLE_COMPILE, fullgraph=True
+)
+def verify(
+    model,
+    tokens,
+    temperature=1.0,
+    top_k=None,
+    top_p=1.0,
+    phase: EnginePhase = EnginePhase.DECODE_MULTI,
+):
+    # Run the tokens through the model one-by-one
+    logits = model(tokens, phase)["logits"].to(torch.float32)
+
+    token_ids = sample(
+        logits=logits, temperature=temperature, top_k=top_k, top_p=top_p
+    )
+
+    return token_ids, logits
 
 
 class LLMEngine:
@@ -132,15 +169,18 @@ class LLMEngine:
             model_config (ModelConfig): Config for model setup.
             inference_config (InferenceConfig): Config for inference behavior.
         """
-        self.model_config = model_config
-        self.inference_config = inference_config
         self.model = None  # Placeholder for the loaded model
         self.device = device
-        self.dtype = precision_to_dtype[self.model_config.precision]
-        init_distributed(tp_dims=self.inference_config.tp_dims)
-        print_rank0(f"Model Config: {self.model_config}")
-        print_rank0(f"Inference Config: {self.inference_config}")
-        self._initialize_model()
+        self.dtype = precision_to_dtype[model_config.precision]
+        init_distributed(tp_dims=inference_config.tp_dims)
+        print_rank0(f"Model Config: {model_config}")
+        print_rank0(f"Inference Config: {inference_config}")
+
+        self.model, self.tokenizer = self._initialize_model(
+            model_config, inference_config
+        )
+        self.model_config = model_config
+        self.inference_config = inference_config
 
         # return extra memory to CUDA. Can prevent NCCL init OOMs
         torch.cuda.empty_cache()
@@ -150,114 +190,56 @@ class LLMEngine:
             f"Memory Stats After Initializing Model - {get_gpu_memory_info()} "
         )
 
-    def _make_params_contiguous(self):
-        if not self.model:
+    def _make_params_contiguous(self, model):
+        if not model:
             print_rank0(
                 "Model must be initialized before contiguous parameter buffer can be allocated"  # noqa: E501
             )
-            return
+            return model
 
-        self.model = self.model.to(self.device)
-        return
+        model = model.to(self.device)
+        return model
 
-        total_bytes = 0
-        param_info, buf_info = [], []
-
-        for name, param in self.model.named_parameters():
-            num_bytes = param.numel() * param.element_size()
-            param_info.append(
-                {
-                    "name": name,
-                    "shape": param.shape,
-                    "dtype": param.dtype,
-                    "num_bytes": num_bytes,
-                    "offset": total_bytes,
-                    "param": param,
-                }
-            )
-            total_bytes += num_bytes
-
-        for name, buf in self.model.named_buffers():
-            num_bytes = buf.numel() * buf.element_size()
-            buf_info.append(
-                {
-                    "name": name,
-                    "shape": buf.shape,
-                    "dtype": buf.dtype,
-                    "num_bytes": num_bytes,
-                    "offset": total_bytes,
-                    "buf": buf,
-                }
-            )
-            total_bytes += num_bytes
-
-        # make buffer 128-byte aligned
-        total_bytes = total_bytes - (total_bytes % 128) + 128
-
-        gpu_buffer = torch.empty(total_bytes, dtype=torch.uint8, device="cuda")
-
-        for info in param_info:
-            param_view = (
-                gpu_buffer[
-                    info["offset"] : (info["offset"] + info["num_bytes"])
-                ]
-                .view(info["dtype"])
-                .reshape(info["shape"])
-            )
-            param_view.copy_(info["param"], non_blocking=True)
-            info["param"].data = param_view
-
-        for info in buf_info:
-            buf_view = (
-                gpu_buffer[
-                    info["offset"] : (info["offset"] + info["num_bytes"])
-                ]
-                .view(info["dtype"])
-                .reshape(info["shape"])
-            )
-            buf_view.copy_(info["buf"], non_blocking=True)
-            info["buf"].data = buf_view
-
-    def _initialize_model(self):
+    def _initialize_model(self, model_config, inference_config):
         """
         Internal method to load and set up the model based on ModelConfig.
         """
         t0 = time.time()
-        self.model = get_model(
-            self.model_config.model_path,
+        model = get_model(
+            model_config.model_path,
             self.dtype,
-            max_sequence_length=self.inference_config.max_length,
+            max_sequence_length=inference_config.max_length,
             random_init=False,
-            use_intra_head_parallelism=self.inference_config.use_intra_head_parallelism,  # noqa: E501
-            attention_backend=self.inference_config.attention_backend,
-            use_paged_kv_caching=self.inference_config.use_paged_kv_caching,
-            prestore_kv_cache=self.inference_config.prestore_kv_cache,
+            use_intra_head_parallelism=inference_config.use_intra_head_parallelism,  # noqa: E501
+            attention_backend=inference_config.attention_backend,
+            use_paged_kv_caching=inference_config.use_paged_kv_caching,
+            prestore_kv_cache=inference_config.prestore_kv_cache,
+            disable_tp=model_config.disable_tp,
         )
-        self._make_params_contiguous()
-        self.model.set_kv_cache(
-            batch_size=self.inference_config.batch_size,
+        model = self._make_params_contiguous(model)
+        model.set_kv_cache(
+            batch_size=inference_config.batch_size,
             device=self.device,
             dtype=self.dtype,
         )
-        if self.inference_config.symmetric_allreduce_strategy is not None:
-            self.model.create_symmetric_memory_pool(
-                batch_size=self.inference_config.batch_size,
-                max_seq_length=self.inference_config.max_length,
+        if inference_config.symmetric_allreduce_strategy is not None:
+            model.create_symmetric_memory_pool(
+                batch_size=inference_config.batch_size,
+                max_seq_length=inference_config.max_length,
                 device=torch.device(torch.cuda.current_device()),
                 dtype=self.dtype,
-                algorithm=self.inference_config.symmetric_allreduce_strategy,
+                algorithm=inference_config.symmetric_allreduce_strategy,
             )
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            self.model_config.model_name
-        )
+        tokenizer = AutoTokenizer.from_pretrained(model_config.model_name)
         # Check if the tokenizer has a pad token, otherwise use eos_token
-        if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
             print_rank0(
                 "Pad token not found in the tokenizer."
                 "Using eos_token as pad token."
             )
         print_rank0(f"Initializing Model took {time.time() - t0} seconds")
+        return model, tokenizer
 
     def reset_kv_cache(self, batch_size):
         if not self.model:
@@ -279,6 +261,62 @@ class LLMEngine:
                 dtype=self.dtype,
                 algorithm=self.inference_config.symmetric_allreduce_strategy,
             )
+
+    def _tokenize_prompts(self, prompts):
+        """Tokenize the input prompts and return tokens and seq lengths."""
+        if isinstance(prompts, list) and all(
+            isinstance(p, str) for p in prompts
+        ):
+            prompt_tokens_and_mask = self.tokenizer(
+                prompts, return_tensors="pt", padding=True
+            )
+            prompt_tokens = prompt_tokens_and_mask.input_ids
+            prompt_sequence_lengths = (
+                prompt_tokens_and_mask.attention_mask.sum(dim=1)
+            )
+        elif isinstance(prompts, list) and all(
+            isinstance(p, list) and all(isinstance(x, int) for x in p)
+            for p in prompts
+        ):
+            max_length = max(len(p) for p in prompts)
+            prompt_tokens = torch.tensor(
+                [
+                    (
+                        p + [self.tokenizer.pad_token] * (max_length - len(p))
+                        if len(p) < max_length
+                        else p
+                    )
+                    for p in prompts
+                ]
+            )
+            prompt_sequence_lengths = torch.tensor([len(p) for p in prompts])
+        else:
+            raise TypeError(
+                "prompts must be a list of strings or a list of lists of ints"
+            )
+        return prompt_tokens, prompt_sequence_lengths
+
+    def _validate_sequence_lengths(
+        self, prompt_sequence_lengths, tokens_to_generate
+    ):
+        """Validate and adjust sequence lengths if necessary."""
+        if prompt_sequence_lengths.max() > self.model.max_seq_length:
+            raise ValueError(
+                f"Prompt sequence length ({prompt_sequence_lengths.max()})"
+                " exceeds model's maximum sequence length"
+                f" ({self.model.max_seq_length}). Unable to proceed."
+            )
+        if (
+            prompt_sequence_lengths.max() + tokens_to_generate
+            > self.model.max_seq_length
+        ):
+            tokens_to_generate = (
+                self.model.max_seq_length - prompt_sequence_lengths.max()
+            )
+            print_rank0(
+                f"tokens_to_generate has been adjusted to {tokens_to_generate}"
+            )
+        return tokens_to_generate
 
     def generate(
         self,
@@ -307,78 +345,32 @@ class LLMEngine:
                 Defaults to 50.
             report_throughput (bool, optional): A flag indicating whether to
                 report throughput. Defaults to False.
+            ignore_eos (bool, optional): Flag to ignore EOS.
+            enable_nvtx (bool, optional): Flag to enable NVTX annotations
+                around Prefill and Decode steps.
+            get_logits (bool, optional): Flag to return logits.
+                Defaults to False.
 
         Returns:
-            torch.Tensor: A tensor containing the generated tokens,
+            output_tensor (torch.Tensor): Tensor containing generated tokens,
                 with shape `(batch_size, tokens_to_generate)`.
-
+            metrics (dict, optional): Dictionary containing metrics.
+            output_logits (torch.Tensor, optional): Tensor containing logits.
         """
         timers = Timers()
-
         timers.start("tokenize")
-        if isinstance(prompts, list) and all(
-            isinstance(p, str) for p in prompts
-        ):
-            prompt_tokens_and_mask = self.tokenizer(
-                prompts, return_tensors="pt", padding=True
-            )
-            prompt_tokens = prompt_tokens_and_mask.input_ids
-            # prompt tokens contain padding tokens. Summing the attention mask
-            # gives us the actual sequence lengths of each prompt sans padding
-            prompt_sequence_lengths = (
-                prompt_tokens_and_mask.attention_mask.sum(dim=1)
-            )
-        elif isinstance(prompts, list) and all(
-            isinstance(p, list) and all(isinstance(x, int) for x in p)
-            for p in prompts
-        ):
-            # Get the maximum length of the sequences
-            max_length = max(len(p) for p in prompts)
-            prompt_tokens = torch.tensor(
-                [
-                    (
-                        p + [self.tokenizer.pad_token] * (max_length - len(p))
-                        if len(p) < max_length
-                        else p
-                    )
-                    for p in prompts
-                ]
-            )
-            prompt_sequence_lengths = torch.tensor([len(p) for p in prompts])
-        else:
-            raise TypeError(
-                "prompts must be either a list of strings or a list of lists of integers"  # noqa: E501
-            )
-
-        if prompt_sequence_lengths.max() > self.model.max_seq_length:
-            raise ValueError(
-                f"The prompt sequence length ({prompt_sequence_lengths.max()})"
-                f" exceeds the model's maximum sequence length"
-                f" ({self.model.max_seq_length}). Unable to proceed."
-            )
-
-        if (
-            prompt_sequence_lengths.max() + tokens_to_generate
-            > self.model.max_seq_length
-        ):
-            tokens_to_generate = (
-                self.model.max_seq_length - prompt_sequence_lengths.max()
-            )
-            print_rank0(
-                f"tokens_to_generate has been adjusted to {tokens_to_generate}"
-            )
-
+        prompt_tokens, prompt_sequence_lengths = self._tokenize_prompts(
+            prompts
+        )
+        tokens_to_generate = self._validate_sequence_lengths(
+            prompt_sequence_lengths, tokens_to_generate
+        )
         timers.stop("tokenize")
         print_rank0(
             f"Tokenization took {timers.get_times()[0][('tokenize',)]} ms"
         )
 
-        # Using tensor size instead of inference config object to
-        # allow users to choose batch sizes < max batch size
-        # (later defined in inference config).
         batch_size = prompt_tokens.size(0)
-        ignore_eos = ignore_eos
-        # Initialize done mask for multiple batches
         if not ignore_eos:
             done_mask = torch.zeros(
                 batch_size, dtype=torch.bool, device=self.device
@@ -386,7 +378,6 @@ class LLMEngine:
         finished_reason = "Max Token Length"
 
         nvtx_range_push, nvtx_range_pop = get_nvtx_funcs(enable_nvtx)
-
         output_tokens = []
         output_logits = []
         # Start timing the operations
@@ -506,3 +497,407 @@ class LLMEngine:
             return output_tensor, metrics, output_logits
         else:
             return output_tensor, metrics
+
+
+class SpeculativeLLMEngine(LLMEngine):
+    def __init__(
+        self,
+        target_model_config: ModelConfig,
+        draft_model_config: ModelConfig,
+        inference_config: InferenceConfig,
+        device="cuda",
+    ):
+        if inference_config.use_paged_kv_caching:
+            raise NotImplementedError(
+                "Paged KV Caching is not supported for SpeculativeLLMEngine"
+            )
+        if inference_config.attention_backend not in ["flash", "sdpa"]:
+            raise NotImplementedError(
+                "Attention backend must be either flash or sdpa"
+            )
+
+        super().__init__(target_model_config, inference_config, device)
+        print(f"Draft model config: {draft_model_config}")
+        self.draft_model, _ = super()._initialize_model(
+            draft_model_config, inference_config
+        )
+        self.draft_model_config = draft_model_config
+
+        print_rank0(
+            f"Memory Stats After Initializing Draft Model - "
+            f"{get_gpu_memory_info()}"
+        )
+
+        self.sampler = RejectionSampler()
+
+    # Logits to Probs
+    @torch.no_grad()
+    def logits_to_probs(
+        self, logits, token_ids, temperature: float = 1.0, top_p: float = 1.0
+    ):
+        if temperature > 0.0:
+            logits = logits / max(temperature, 1e-5)
+            if top_p > 0.0 and top_p < 1.0:
+                logits = sample_top_p(logits, top_p)
+            probs = torch.nn.functional.softmax(logits, dim=-1)
+        else:
+            probs = torch.zeros_like(logits)
+            probs.scatter_(-1, token_ids, 1.0)
+
+        return probs
+
+    def generate_speculative(
+        self,
+        input_tokens: torch.Tensor,
+        tokens_to_generate: int,
+        gamma: int,
+        report_throughput: bool = False,
+        ignore_eos: bool = True,
+        enable_nvtx: bool = False,
+    ):
+
+        assert (
+            tokens_to_generate > 0
+        ), "Tokens to generate must be greater than 0"
+        assert gamma > 0, "Gamma must be greater than 0"
+
+        timers = Timers()
+
+        timers.start("tokenize")
+        prompt_tokens, prompt_sequence_lengths = self._tokenize_prompts(
+            input_tokens
+        )
+        tokens_to_generate = self._validate_sequence_lengths(
+            prompt_sequence_lengths, tokens_to_generate
+        )
+        timers.stop("tokenize")
+
+        batch_size = prompt_tokens.size(0)
+        done_mask = torch.zeros(
+            batch_size, dtype=torch.bool, device=self.device
+        )
+        finished_reason = "Max Token Length"
+
+        nvtx_range_push, nvtx_range_pop = get_nvtx_funcs(enable_nvtx)
+
+        output_tokens = [[] for _ in range(batch_size)]
+
+        global_accepted_tokens = 0
+        generated_draft_tokens = 0
+
+        timers.start("generate")
+        self.model.token_counter.zero_()
+        self.draft_model.token_counter.zero_()
+
+        with torch.no_grad(), torch.autocast(
+            self.device, dtype=self.dtype, cache_enabled=False
+        ):
+            current_input_to_model = prompt_tokens.clone().to(
+                self.device
+            )  # Move prompt tokens to the device
+
+            prompt_sequence_lengths = prompt_sequence_lengths.to(self.device)
+
+            # Number of tokens generated per batch can be different,
+            # so we need to keep track of the tokens generated per batch
+            # Currently, we stop when all the batches have generated the
+            # required number of tokens. Might be sub-optimal
+            generated_tokens = torch.zeros(
+                batch_size, dtype=torch.int64, device=self.device
+            )
+
+            step = 0
+            while generated_tokens.min() < tokens_to_generate:
+                timer_key = None
+                step += 1
+                if step == 1:  # Prefill step
+                    timer_key = "prefill"
+                    timers.start(timer_key)
+                    nvtx_range_push("Prefill")
+
+                    # Calling prefill on draft model but not using its output
+                    draft_next_token, _ = prefill(
+                        self.draft_model,
+                        current_input_to_model,
+                        prompt_sequence_lengths,
+                        temperature=self.inference_config.temperature,
+                        top_k=self.inference_config.top_k,
+                        top_p=self.inference_config.top_p,
+                    )
+
+                    # Calling prefill on the target model
+                    next_token, _ = prefill(
+                        self.model,
+                        current_input_to_model,
+                        prompt_sequence_lengths,
+                        temperature=self.inference_config.temperature,
+                        top_k=self.inference_config.top_k,
+                        top_p=self.inference_config.top_p,
+                    )
+
+                    current_input_to_model = next_token.clone()
+                    accepted_tokens = list(torch.unbind(next_token, dim=0))
+                    num_accepted_tokens = torch.ones_like(
+                        next_token, dtype=torch.int64, device=self.device
+                    )
+                else:  # Generation step
+                    timer_key = "decode"
+                    timers.start(timer_key)
+                    nvtx_range_push("Decode")
+
+                    # Draft tokens
+                    current_input_to_draft_model = (
+                        current_input_to_model.clone()
+                    )
+                    draft_output_tokens = []
+
+                    # Adding the input tokens to the draft output tokens
+                    # This is needed in the Rejection Sampling step, we will
+                    # ignore this token when we store the final output tokens
+                    draft_output_tokens.append(
+                        current_input_to_draft_model.clone()
+                    )
+                    draft_probs = []
+
+                    with sdpa_kernel(SDPBackend.MATH):
+                        timers.start("draft_decode")
+                        for draft_step in range(gamma):
+                            next_token, logits = generate(
+                                self.draft_model,
+                                current_input_to_draft_model,
+                                top_k=self.inference_config.top_k,
+                                top_p=self.inference_config.top_p,
+                                temperature=self.inference_config.temperature,
+                                get_logits=True,
+                            )
+                            current_input_to_draft_model.copy_(next_token)
+
+                            # TODO: Need to take top_k into account as well
+                            probs = self.logits_to_probs(
+                                logits,
+                                token_ids=next_token,
+                                temperature=self.inference_config.temperature,
+                                top_p=self.inference_config.top_p,
+                            )
+
+                            draft_probs.append(probs.unsqueeze(1).clone())
+                            draft_output_tokens.append(next_token.clone())
+
+                        # Needed to add the last token to the draft model's
+                        # KV cache because the verify function will generate
+                        # one extra bonus token that will be the input to the
+                        # next step
+                        _ = generate(
+                            self.draft_model,
+                            current_input_to_draft_model,
+                            top_k=self.inference_config.top_k,
+                            top_p=self.inference_config.top_p,
+                            temperature=self.inference_config.temperature,
+                        )
+
+                        draft_probs = torch.cat(draft_probs, dim=1)
+                        draft_output_tokens = torch.cat(
+                            draft_output_tokens, dim=1
+                        )
+                        timers.stop("draft_decode")
+
+                        timers.start("verify")
+                        # print(f"[{dist.get_rank()}] Verify Step {step}")
+                        next_token, target_logits = verify(
+                            self.model,
+                            draft_output_tokens,
+                            top_k=self.inference_config.top_k,
+                            top_p=self.inference_config.top_p,
+                            temperature=self.inference_config.temperature,
+                        )
+                        target_probs = self.logits_to_probs(
+                            target_logits,
+                            token_ids=next_token,
+                            temperature=self.inference_config.temperature,
+                            top_p=self.inference_config.top_p,
+                        )
+                        timers.stop("verify")
+
+                    output_with_bonus_tokens = self.sampler(
+                        draft_probs,
+                        target_probs,
+                        draft_output_tokens[:, 1:],
+                        next_token[:, -1],
+                    )
+                    accepted_mask = output_with_bonus_tokens != -1
+
+                    # Get the accepted token ids per batch:
+                    #   list of chunks of accepted tokens per batch
+                    accepted_tokens = [
+                        tokens[mask]  # selects only valid tokens per batch
+                        for tokens, mask in zip(
+                            output_with_bonus_tokens, accepted_mask
+                        )
+                    ]
+
+                    # Do not accept any tokens if done
+                    accepted_mask = accepted_mask & (~done_mask.unsqueeze(-1))
+                    num_accepted_tokens = accepted_mask.sum(dim=-1)
+                    num_rejected_tokens = (
+                        draft_output_tokens.size(-1) - num_accepted_tokens
+                    )
+
+                    # Update model's KV cache
+                    # Need to handle the case where a certain batch is done
+                    self.model.rewind_kv_cache(num_rejected_tokens)
+                    self.draft_model.rewind_kv_cache(num_rejected_tokens)
+
+                    # If no tokens are accepted, use the first token as input
+                    # This only occurs for finished requests; the token isn’t
+                    # added to KV-cache or output, so it’s safe.
+                    current_input_to_model.copy_(
+                        torch.gather(
+                            output_with_bonus_tokens,
+                            -1,
+                            torch.clamp(
+                                num_accepted_tokens.unsqueeze(-1) - 1, min=0
+                            ),
+                        )
+                    )
+
+                    global_accepted_tokens += (
+                        torch.clamp(num_accepted_tokens - 1, min=0)
+                        .sum()
+                        .item()
+                    )
+                    # Count draft tokens only for unfinished sequences
+                    generated_draft_tokens += (
+                        (gamma * (1 - done_mask.to(dtype=torch.uint8)))
+                        .sum()
+                        .item()
+                    )
+
+                # Variables:
+                # - generated_tokens [batch_size]: tokens generated so far
+                # - num_accepted_tokens [batch_size]: tokens accepted this step
+                # - tokens_to_generate (int): max tokens per sequence
+                # - accepted_tokens list[tensor[int]]: ragged list of accepted
+                #                                       tokens per batch
+                # - done_mask [batch_size]: flags for finished sequences
+                # Expectation:
+                #   generated_tokens + num_accepted_tokens < tokens_to_generate
+                # Termination rules:
+                # - Truncate accepted tokens if exceeding tokens_to_generate
+                # - If EOS found, replace subsequent tokens with EOS
+                # - If already done, pad with EOS to tokens_to_generate
+                # - If done this step, set done_mask = True
+                for i in range(batch_size):
+                    if not ignore_eos:
+                        eos_mask = (
+                            accepted_tokens[i] == self.tokenizer.eos_token_id
+                        ).cumsum(dim=-1) > 0 | (done_mask[i].unsqueeze(-1))
+
+                        done_mask[i] = done_mask[i] | eos_mask.any(dim=-1)
+
+                        accepted_tokens[i].masked_fill_(
+                            eos_mask, self.tokenizer.eos_token_id
+                        )
+
+                    limit_mask = (
+                        generated_tokens[i]
+                        + torch.arange(
+                            accepted_tokens[i].size(0),
+                            device=generated_tokens.device,
+                        )
+                        < tokens_to_generate
+                    )
+
+                    done_mask[i] = done_mask[i] | ~limit_mask.all(dim=-1)
+
+                    output_tokens[i].append(accepted_tokens[i][limit_mask])
+                    generated_tokens[i] += accepted_tokens[i][limit_mask].size(
+                        0
+                    )
+
+                nvtx_range_pop()
+                timers.stop(timer_key)
+
+                # Break if every sequence is done
+                if not ignore_eos and done_mask.all():
+                    finished_reason = "EOS"
+                    break
+
+        output_tokens = [torch.cat(tokens, dim=0) for tokens in output_tokens]
+
+        # If EOS is not ignored, sequences may differ in length; pad to the
+        # longest in the batch
+        if not ignore_eos:
+            output_token_lengths = [
+                tokens.shape[0] for tokens in output_tokens
+            ]
+            max_length = max(output_token_lengths)
+            output_tokens = [
+                torch.nn.functional.pad(
+                    tokens,
+                    (0, max_length - tokens.shape[0]),
+                    "constant",
+                    self.tokenizer.pad_token_id,
+                )
+                for tokens in output_tokens
+            ]
+
+        output_tensor = torch.stack(output_tokens, dim=0)
+
+        timers.stop("generate")
+        times, events = timers.get_times()
+
+        tput = (
+            prompt_tokens.shape[0]
+            * tokens_to_generate
+            / (times[("generate",)] / 1000)
+        )
+        ttft = times[("generate", "prefill")] / events[("generate", "prefill")]
+        if events[("generate", "decode")] > 0:
+            tbs = (
+                times[("generate", "decode")] / events[("generate", "decode")]
+            )
+            tbs_draft = (
+                times[("generate", "decode", "draft_decode")]
+                / events[("generate", "decode", "draft_decode")]
+            )
+            tbs_verify = (
+                times[("generate", "decode", "verify")]
+                / events[("generate", "decode", "verify")]
+            )
+        else:
+            tbs = 0
+            tbs_draft = 0
+            tbs_verify = 0
+        acceptance_rate = global_accepted_tokens / generated_draft_tokens
+
+        metrics = {
+            "BatchSize": prompt_tokens.shape[0],
+            "PromptLength": prompt_tokens.shape[1],
+            "DecodeLength": tokens_to_generate,
+            "Throughput": tput,
+            "TTFT": ttft,
+            "TBS": tbs,
+            "TBS (Draft)": tbs_draft,
+            "TBS (Verify)": tbs_verify,
+            "E2E": times[("generate",)],
+            "TokenizationTime": times[("tokenize",)],
+            "AcceptanceRate": acceptance_rate,
+            # NOTE: This should be a list containing reasons for each batch but
+            # our EOS stopping currently is all-or-nothing.
+            "FinishedReason": finished_reason,
+        }
+        if dist.get_rank() == 0 and report_throughput:
+            print(
+                f"[Metrics] BatchSize = {prompt_tokens.shape[0]},"
+                f" PromptLength = {prompt_tokens.shape[1]},"
+                f" DecodeLength = {tokens_to_generate},"
+                f" Throughput = {tput:.2f} tok/s,"
+                f" TTFT = {ttft:.4f} ms,"
+                f" TBS = {tbs:.4f} ms,"
+                f" TBS (Draft) = {tbs_draft:.4f} ms,"
+                f" TBS (Verify) = {tbs_verify:.4f} ms,"
+                f" AcceptanceRate = {acceptance_rate:.4f},"
+                f" E2E = {times[('generate',)]:.4f} ms,"
+                f" FinishedReason = {finished_reason}"
+            )
+        return output_tensor, metrics

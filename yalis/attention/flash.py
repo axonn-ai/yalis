@@ -4,6 +4,7 @@ from typing import Sequence, Optional
 from .registry import register_attention
 from .update_kv_cache import update_paged_kv_cache
 from flash_attn.ops.triton.rotary import apply_rotary
+from yalis.constants import EnginePhase
 
 
 # A recent change (Commit a9a3170) added a wrap_triton call to the rotary
@@ -86,6 +87,7 @@ def flash_attention(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
+    phase: EnginePhase,
     k_cache: Optional[torch.Tensor] = None,
     v_cache: Optional[torch.Tensor] = None,
     cache_seqlens: Optional[torch.Tensor] = None,
@@ -114,12 +116,20 @@ def flash_attention(
     causal = T > 1
     if prestore_kv_cache:
         if block_table is None:
-            if T == 1:
+            if phase == EnginePhase.DECODE_SINGLE:
                 b_indices = torch.arange(B, device=k_cache.device)
                 t_indices = cache_seqlens.view(-1)
                 k_cache[b_indices, t_indices, :, :] = k[:, 0, :, :]
                 v_cache[b_indices, t_indices, :, :] = v[:, 0, :, :]
-            else:
+            elif phase == EnginePhase.DECODE_MULTI:
+                nh, hs = k.shape[2], k.shape[3]
+                index_kv = cache_seqlens.view(-1, 1) + torch.arange(
+                    T, device=cache_seqlens.device
+                ).view(1, -1)
+                index_kv = index_kv.view(B, T, 1, 1).expand(B, T, nh, hs)
+                k_cache.scatter_(dim=1, index=index_kv, src=k)
+                v_cache.scatter_(dim=1, index=index_kv, src=v)
+            else:  # Prefill
                 k_cache[:, :T, :, :] = k[:, :T, :, :]
                 v_cache[:, :T, :, :] = v[:, :T, :, :]
         else:

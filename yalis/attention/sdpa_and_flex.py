@@ -1,11 +1,15 @@
-from .registry import register_attention
-import torch
-from axonn import axonn as ax
 import math
-from axonn.intra_layer.communication import Drop, Gather
-import torch.distributed as dist
 from typing import Optional
+
+import torch
+import torch.distributed as dist
 from torch.nn.attention.flex_attention import flex_attention
+
+from axonn import axonn as ax
+from axonn.intra_layer.communication import Drop, Gather
+
+from .registry import register_attention
+from yalis.constants import EnginePhase
 
 
 def build_mask_from_index(index: torch.Tensor, t_max: int) -> torch.Tensor:
@@ -243,10 +247,67 @@ def rotary_kv_update_sdpa_prefill(
         return out
 
 
+def rotary_kv_update_sdpa_multi(
+    q: torch.Tensor,  # B,nh,T,hs
+    k: torch.Tensor,  # B,nh,T,hs
+    v: torch.Tensor,  # B,nh,T,hs
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+    token_counter: torch.Tensor,  # B,1
+    k_cache: torch.Tensor,  # B,nh,t_max,hs
+    v_cache: torch.Tensor,  # B,nh,t_max,hs,
+) -> torch.Tensor:
+    B, nh, t_max, hs = k_cache.shape
+    T = q.shape[-2]
+    index_pos = token_counter.view(B, 1) + torch.arange(
+        T, device=token_counter.device
+    ).view(1, -1)
+
+    if cos is not None and sin is not None:
+        index_rotary = index_pos.view(B, 1, T, 1).expand(B, 1, T, hs)
+        cos = cos[None, None, :, :].expand(B, 1, t_max, hs)
+        sin = sin[None, None, :, :].expand(B, 1, t_max, hs)
+        cos = torch.gather(cos, dim=2, index=index_rotary)
+        sin = torch.gather(sin, dim=2, index=index_rotary)
+
+        roped_tensors = []
+        for x in [q, k]:
+            head_size = x.size(-1)
+            x1 = x[..., : head_size // 2]  # (B, nh, T, hs/2)
+            x2 = x[..., head_size // 2 :]  # (B, nh, T, hs/2)
+            rotated = torch.cat((-x2, x1), dim=-1)  # (B, nh, T, hs)
+            roped = (x * cos) + (rotated * sin)
+            roped = roped.to(dtype=x.dtype)
+            roped_tensors.append(roped)
+
+        q, k = roped_tensors
+
+    index_kv = index_pos.view(B, 1, T, 1).expand(B, nh, T, hs)
+    k_cache.scatter_(dim=2, index=index_kv, src=k)
+    v_cache.scatter_(dim=2, index=index_kv, src=v)
+
+    # Create the mask
+    arange_t = torch.arange(k_cache.size(-2), device=k_cache.device).view(
+        1, 1, 1, -1
+    )
+    arange_l = token_counter.view(B, 1, 1, 1) + torch.arange(
+        T, device=k_cache.device
+    ).view(1, 1, -1, 1)
+    mask = arange_t <= arange_l
+
+    enable_gqa = q.size(1) != k.size(1)
+    out = torch.nn.functional.scaled_dot_product_attention(
+        q, k_cache, v_cache, attn_mask=mask, enable_gqa=enable_gqa
+    )
+
+    return out
+
+
 def sdpa_and_flex_attention(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
+    phase: EnginePhase,
     k_cache: Optional[torch.Tensor] = None,
     v_cache: Optional[torch.Tensor] = None,
     cache_seqlens: Optional[torch.Tensor] = None,
@@ -255,20 +316,19 @@ def sdpa_and_flex_attention(
     use_intra_head_parallelism: bool = False,
     use_flex: bool = False,
     flex_attention_block_mask=None,
-    **kwargs
+    **kwargs,
 ) -> torch.Tensor:
     if "block_table" in kwargs and kwargs["block_table"] is not None:
         raise ValueError(
             "'block_table' or paged kv-caching is not compatible with SDPA attention."  # noqa: E501
         )
-    T = q.shape[-2]
 
     if use_flex:
         assert (
             flex_attention_block_mask is not None
         ), "flex attention requires a block mask"
 
-    if T == 1:
+    if phase == EnginePhase.DECODE_SINGLE:
         y = rotary_kv_update_sdpa_gen(
             q,
             k,
@@ -282,7 +342,18 @@ def sdpa_and_flex_attention(
             use_flex,
             flex_attention_block_mask,
         )
-    else:
+    elif phase == EnginePhase.DECODE_MULTI:
+        y = rotary_kv_update_sdpa_multi(
+            q,
+            k,
+            v,
+            rotary_cos,
+            rotary_sin,
+            cache_seqlens,
+            k_cache,
+            v_cache,
+        )
+    else:  # Prefill
         y = rotary_kv_update_sdpa_prefill(
             q,
             k,
@@ -307,8 +378,9 @@ def sdpa_attention(
     rotary_cos: Optional[torch.Tensor] = None,
     rotary_sin: Optional[torch.Tensor] = None,
     use_intra_head_parallelism: bool = False,
-    **kwargs
+    **kwargs,
 ):
+    assert "phase" in kwargs, "phase is required for SDPA attention"
     return sdpa_and_flex_attention(
         q=q,
         k=k,
@@ -320,7 +392,7 @@ def sdpa_attention(
         rotary_sin=rotary_sin,
         use_intra_head_parallelism=use_intra_head_parallelism,
         use_flex=False,
-        **kwargs
+        **kwargs,
     )
 
 
@@ -335,7 +407,7 @@ def flex_attention_(
     rotary_cos: Optional[torch.Tensor] = None,
     rotary_sin: Optional[torch.Tensor] = None,
     use_intra_head_parallelism: bool = False,
-    **kwargs
+    **kwargs,
 ):
     assert (
         "flex_attention_block_mask" in kwargs
@@ -351,5 +423,5 @@ def flex_attention_(
         rotary_sin=rotary_sin,
         use_intra_head_parallelism=use_intra_head_parallelism,
         use_flex=True,
-        **kwargs
+        **kwargs,
     )

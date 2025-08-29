@@ -15,6 +15,7 @@ class ModelConfig:
         model_name: str,
         model_path: Optional[str] = None,
         precision: Literal["fp32", "fp16", "bf16"] = "fp16",
+        disable_tp: bool = False,
     ):
         """
         Initialize the model configuration.
@@ -23,12 +24,15 @@ class ModelConfig:
             model_name (str): Name of the pretrained model.
             model_path (Optional[str]): Path to custom model weights.
             precision (str): Model precision, default is 'fp16'.
+            disable_tp (bool): Disable tensor parallelism. Need model-specific
+                                TP for speculative decoding.
         """
         # Todo: make model_name optional. If only model_path is provided then
         # we should par
         self.model_name = model_name
         self.model_path = model_path
         self.precision = precision
+        self.disable_tp = disable_tp
         self._validate()
         self.model_path = self._resolve_model_path(self.model_path)
 

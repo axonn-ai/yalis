@@ -1,6 +1,7 @@
 import torch
 from typing import Optional
 
+from yalis.constants import EnginePhase
 from .registry import get_attention
 from .backends import AttentionBackend
 from .masking import create_block_mask  # noqa: F401
@@ -10,6 +11,7 @@ def attention_wrapper(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
+    phase: EnginePhase,
     k_cache: Optional[torch.Tensor] = None,
     v_cache: Optional[torch.Tensor] = None,
     cache_seqlens: Optional[torch.Tensor] = None,
@@ -26,6 +28,7 @@ def attention_wrapper(
         q=q,
         k=k,
         v=v,
+        phase=phase,
         k_cache=k_cache,
         v_cache=v_cache,
         cache_seqlens=cache_seqlens,

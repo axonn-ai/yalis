@@ -8,7 +8,9 @@ def multinomial_num_samples_1(probs: torch.Tensor) -> torch.Tensor:
         # This is also CUDAGraph friendly
         distribution = torch.empty_like(probs).exponential_(1)
         return torch.argmax(probs / distribution, dim=-1, keepdim=True)
-    return torch.multinomial(probs, num_samples=1)
+    return torch.multinomial(
+        probs.view(-1, probs.size(-1)), num_samples=1
+    ).view(*probs.shape[:-1], -1)
 
 
 def sample_top_p(logits: torch.Tensor, top_p: float) -> torch.Tensor:

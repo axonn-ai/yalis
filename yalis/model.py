@@ -16,8 +16,14 @@ def get_model(
     attention_backend=AttentionBackend.FLASH,
     use_paged_kv_caching=False,
     prestore_kv_cache=True,
+    disable_tp=False,
 ):
     tensor_parallel = dist.get_world_size() > 1
+    if disable_tp:
+        print(
+            f"Disabling tensor parallelism for {litgpt_checkpoint_directory}"
+        )
+        tensor_parallel = False
     if tensor_parallel and dist.get_rank() == 0:
         print(f"Using Tensor parallelism on {dist.get_world_size()} GPUs")
     checkpoint_dir = Path(litgpt_checkpoint_directory)
