@@ -242,19 +242,22 @@ class LLMEngine:
         return model, tokenizer
 
     def reset_kv_cache(self, batch_size):
-        if not self.model:
+        self._reset_kv_cache(self.model, batch_size)
+
+    def _reset_kv_cache(self, model, batch_size):
+        if not model:
             print_rank0(
                 "Model must be initialized before contiguous parameter buffer can be allocated"  # noqa: E501
             )
             return
-        self.model.clear_kv_cache()
-        self.model.set_kv_cache(
+        model.clear_kv_cache()
+        model.set_kv_cache(
             batch_size=batch_size,
             device=self.device,
             dtype=self.dtype,
         )
         if self.inference_config.symmetric_allreduce_strategy is not None:
-            self.model.create_symmetric_memory_pool(
+            model.create_symmetric_memory_pool(
                 batch_size=batch_size,
                 max_seq_length=self.inference_config.max_length,
                 device=torch.device(torch.cuda.current_device()),
@@ -530,6 +533,10 @@ class SpeculativeLLMEngine(LLMEngine):
 
         self.sampler = RejectionSampler()
 
+    def reset_kv_cache(self, batch_size, model=None):
+        super().reset_kv_cache(batch_size)
+        self._reset_kv_cache(self.draft_model, batch_size)
+
     # Logits to Probs
     @torch.no_grad()
     def logits_to_probs(
@@ -636,9 +643,9 @@ class SpeculativeLLMEngine(LLMEngine):
                     )
 
                     current_input_to_model = next_token.clone()
-                    accepted_tokens = list(torch.unbind(next_token, dim=0))
-                    num_accepted_tokens = torch.ones_like(
-                        next_token, dtype=torch.int64, device=self.device
+                    accepted_tokens = next_token
+                    accepted_mask = torch.ones_like(
+                        next_token, dtype=torch.bool, device=self.device
                     )
                 else:  # Generation step
                     timer_key = "decode"
@@ -725,15 +732,7 @@ class SpeculativeLLMEngine(LLMEngine):
                         next_token[:, -1],
                     )
                     accepted_mask = output_with_bonus_tokens != -1
-
-                    # Get the accepted token ids per batch:
-                    #   list of chunks of accepted tokens per batch
-                    accepted_tokens = [
-                        tokens[mask]  # selects only valid tokens per batch
-                        for tokens, mask in zip(
-                            output_with_bonus_tokens, accepted_mask
-                        )
-                    ]
+                    accepted_tokens = output_with_bonus_tokens
 
                     # Do not accept any tokens if done
                     accepted_mask = accepted_mask & (~done_mask.unsqueeze(-1))
@@ -766,53 +765,46 @@ class SpeculativeLLMEngine(LLMEngine):
                         .item()
                     )
                     # Count draft tokens only for unfinished sequences
-                    generated_draft_tokens += (
-                        (gamma * (1 - done_mask.to(dtype=torch.uint8)))
-                        .sum()
-                        .item()
+                    generated_draft_tokens += (gamma * ~done_mask).sum().item()
+
+                if not ignore_eos:
+                    # If EOS is found or already done, replace subsequent
+                    # tokens with EOS. Also mark the sequence as done
+                    eos_mask = (
+                        accepted_tokens == self.tokenizer.eos_token_id
+                    ).cumsum(dim=-1) > 0 | (done_mask.unsqueeze(-1))
+                    done_mask = done_mask | eos_mask.any(dim=-1)
+                    accepted_tokens.masked_fill_(
+                        eos_mask, self.tokenizer.eos_token_id
                     )
 
-                # Variables:
-                # - generated_tokens [batch_size]: tokens generated so far
-                # - num_accepted_tokens [batch_size]: tokens accepted this step
-                # - tokens_to_generate (int): max tokens per sequence
-                # - accepted_tokens list[tensor[int]]: ragged list of accepted
-                #                                       tokens per batch
-                # - done_mask [batch_size]: flags for finished sequences
-                # Expectation:
-                #   generated_tokens + num_accepted_tokens < tokens_to_generate
-                # Termination rules:
-                # - Truncate accepted tokens if exceeding tokens_to_generate
-                # - If EOS found, replace subsequent tokens with EOS
-                # - If already done, pad with EOS to tokens_to_generate
-                # - If done this step, set done_mask = True
+                # Limit the accepted tokens to tokens_to_generate
+                limit_mask = (
+                    generated_tokens.view(-1, 1)
+                    + torch.arange(
+                        accepted_tokens.size(-1),
+                        device=generated_tokens.device,
+                    ).view(1, -1)
+                ) < tokens_to_generate
+                keep_mask = limit_mask & accepted_mask
+
+                # Select the accepted tokens within limit into a jagged list
+                jagged_output_tokens = torch.nested.masked_select(
+                    accepted_tokens, keep_mask
+                ).unbind()
                 for i in range(batch_size):
-                    if not ignore_eos:
-                        eos_mask = (
-                            accepted_tokens[i] == self.tokenizer.eos_token_id
-                        ).cumsum(dim=-1) > 0 | (done_mask[i].unsqueeze(-1))
+                    output_tokens[i].append(jagged_output_tokens[i])
+                    generated_tokens[i] += jagged_output_tokens[i].size(0)
 
-                        done_mask[i] = done_mask[i] | eos_mask.any(dim=-1)
-
-                        accepted_tokens[i].masked_fill_(
-                            eos_mask, self.tokenizer.eos_token_id
-                        )
-
-                    limit_mask = (
-                        generated_tokens[i]
-                        + torch.arange(
-                            accepted_tokens[i].size(0),
-                            device=generated_tokens.device,
-                        )
-                        < tokens_to_generate
+                    assert generated_tokens[i] <= tokens_to_generate, (
+                        f"Generated tokens {generated_tokens[i]} is "
+                        f"greater than tokens to generate {tokens_to_generate}"
                     )
 
-                    done_mask[i] = done_mask[i] | ~limit_mask.all(dim=-1)
-
-                    output_tokens[i].append(accepted_tokens[i][limit_mask])
-                    generated_tokens[i] += accepted_tokens[i][limit_mask].size(
-                        0
-                    )
+                # Update done mask is sequence has finished generating
+                done_mask = done_mask | (
+                    generated_tokens >= tokens_to_generate
+                )
 
                 nvtx_range_pop()
                 timers.stop(timer_key)
