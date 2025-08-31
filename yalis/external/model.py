@@ -308,8 +308,12 @@ class GPT(nn.Module):
             batch_size, device=device, dtype=torch.int32
         )
 
-    def rewind_kv_cache(self, num_rejected_tokens: torch.Tensor) -> None:
-        self.token_counter -= num_rejected_tokens
+    def rewind_kv_cache(self, num_tokens: torch.Tensor) -> None:
+        """
+        Rewind the token counter and KV-cache by the num_tokens.
+        Used when rejecting tokens during speculative decoding.
+        """
+        self.token_counter -= num_tokens
 
     def clear_kv_cache(self) -> None:
         for block in self.transformer.h:

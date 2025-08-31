@@ -533,7 +533,7 @@ class SpeculativeLLMEngine(LLMEngine):
 
         self.sampler = RejectionSampler()
 
-    def reset_kv_cache(self, batch_size, model=None):
+    def reset_kv_cache(self, batch_size):
         super().reset_kv_cache(batch_size)
         self._reset_kv_cache(self.draft_model, batch_size)
 
