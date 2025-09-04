@@ -1,118 +1,11 @@
 import pytest
 import torch
-import random
-from transformers import AutoTokenizer, AutoModelForCausalLM
-from yalis import ModelConfig, InferenceConfig, LLMEngine
-from types import SimpleNamespace
-from tests.sample_dataset import AlpacaDataset
 import warnings
+from utils import alpaca_prompt
 
-MODEL_ID = "meta-llama/Llama-3.1-8B-Instruct"
-DEVICE = "cuda"
 NUM_LOGPROBS = 5
-
-
-@pytest.fixture(scope="module")
-def model_id(request):
-    return request.config.getini("model")
-
-
-@pytest.fixture(scope="module")
-def dtype(request):
-    dt = request.config.getini("dtype").lower()
-
-    yalis_dt = dt
-
-    hf_map = {
-        "bf16": torch.bfloat16,
-        "fp16": torch.float16,
-        "fp32": torch.float32,
-    }
-
-    hf_dt = hf_map[dt]
-
-    return SimpleNamespace(yalis=yalis_dt, hf=hf_dt)
-
-
-@pytest.fixture(scope="module")
-def attn_backend(request):
-    attnb = request.config.getini("attn_backend").lower()
-    yalis_attnb = attnb
-
-    hf_map = {
-        "sdpa": "sdpa",
-        "flash": "flash_attention_2",
-        # For some reason, flex does not work with in hf right now
-        "flex": "flash_attention_2",
-    }
-
-    hf_attnb = hf_map[attnb]
-
-    return SimpleNamespace(yalis=yalis_attnb, hf=hf_attnb)
-
-
-@pytest.fixture(scope="module")
-def tokenizer():
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
-    tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.padding_side = "left"
-    return tokenizer
-
-
-@pytest.fixture(scope="module")
-def alpaca_dataset():
-    dataset = AlpacaDataset(random_seed=42)
-    return dataset
-
-
-@pytest.fixture(scope="module")
-def hf_model(dtype, attn_backend):
-    model = AutoModelForCausalLM.from_pretrained(
-        MODEL_ID,
-        attn_implementation=attn_backend.hf,
-        torch_dtype=dtype.hf,
-        device_map="auto",
-        trust_remote_code=True,
-    ).to(DEVICE)
-    model.eval()
-    return model
-
-
-@pytest.fixture(scope="module", autouse=True)
-def yalis_engine(dtype, attn_backend):
-    model_config = ModelConfig(model_name=MODEL_ID, precision=dtype.yalis)
-    inference_config = InferenceConfig(
-        # initial batch size, will be changed with reset_kv_cache
-        batch_size=1,
-        max_length_of_generated_sequences=2048,
-        top_p=0.0,
-        temperature=0.0,
-        tp_dims=None,
-        attention_backend=attn_backend.yalis,
-        use_paged_kv_caching=False,
-    )
-    return LLMEngine(
-        model_config=model_config, inference_config=inference_config
-    )
-
-
-def random_prompt(tokenizer, length, seed=42):
-    random.seed(seed)
-    vocab = list(tokenizer.get_vocab().values())
-    special_ids = set(tokenizer.all_special_ids)
-    vocab = [tid for tid in vocab if tid not in special_ids]
-    token_ids = random.choices(vocab, k=length)
-    return tokenizer.decode(token_ids, skip_special_tokens=True)
-
-
-def alpaca_prompt(alpaca_dataset, tokenizer, length, batch_size):
-    samples = alpaca_dataset.sample(
-        tokenizer, batch_size, input_len=length, return_prompt_formatted=True
-    )
-    input_prompts = []
-    for sample in samples:
-        input_prompts.append(sample.prompt)
-    return input_prompts
+BATCH_SIZES = [1, 4, 8]
+PROMPT_LENGTHS = [128, 256, 512, 1024]
 
 
 def _get_logprobs(logits):
@@ -152,9 +45,11 @@ def _get_logprobs(logits):
 
 
 def _get_hf_output(tokenizer, model, prompts, num_tokens):
-    inputs = tokenizer(prompts, return_tensors="pt", padding=True).to(DEVICE)
+    inputs = tokenizer(prompts, return_tensors="pt", padding=True).to(
+        model.device
+    )
     with torch.no_grad(), torch.autocast(
-        DEVICE, dtype=torch.float16, cache_enabled=False
+        "cuda", dtype=torch.float16, cache_enabled=False
     ):
         output = model.generate(
             **inputs,
@@ -278,10 +173,6 @@ def _compare_logprobs(hf_logits, hf_tokens, yalis_logits, yalis_tokens):
 
                 # Now the tokens will diverge, so need to break
                 break
-
-
-BATCH_SIZES = [1, 4, 8]
-PROMPT_LENGTHS = [128, 256, 512, 1024]
 
 
 @pytest.mark.parametrize("batch_size", BATCH_SIZES)

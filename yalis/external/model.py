@@ -8,25 +8,24 @@ https://github.com/EleutherAI/gpt-neox/tree/main/megatron/model.
 """
 
 from typing import Any, Optional, Tuple
+from typing_extensions import Self
+from copy import deepcopy
+import warnings
+import sys
 
 import torch
 import torch.nn as nn
-from typing_extensions import Self
-
-from yalis.attention import attention_wrapper
-
-from yalis.external.config import Config
-import sys
-
-from yalis.tensor_parallel import TPLinear
-from copy import deepcopy
 from axonn import axonn as ax
 from axonn.intra_layer.communication import Drop, Gather
+
+from yalis.attention import attention_wrapper
+from yalis.external.config import Config
+from yalis.tensor_parallel import TPLinear
+from yalis.constants import EnginePhase
 from kvcache_manager import KVCacheManager
 from yalis.attention.flash import flash_apply_rotary as apply_rotary
 from yalis.attention.backends import AttentionBackend
 from yalis.attention.masking import create_causal_block_mask_for_flex_attention
-import warnings
 
 # TODO: these should be dynamically set during engine initialization
 NUM_BLOCKS, PAGE_BLOCK_SIZE = 1024, 256
@@ -117,6 +116,7 @@ class GPT(nn.Module):
     def forward(
         self,
         input_ids: torch.Tensor,
+        phase: EnginePhase,
         actual_sequence_lengths: torch.Tensor = None,
     ) -> torch.Tensor:
         idx = input_ids
@@ -173,6 +173,7 @@ class GPT(nn.Module):
                 x,
                 self.cos,
                 self.sin,
+                phase,
                 self.token_counter,
                 block_table,
                 flex_attention_block_mask,
@@ -307,6 +308,13 @@ class GPT(nn.Module):
             batch_size, device=device, dtype=torch.int32
         )
 
+    def rewind_kv_cache(self, num_tokens: torch.Tensor) -> None:
+        """
+        Rewind the token counter and KV-cache by the num_tokens.
+        Used when rejecting tokens during speculative decoding.
+        """
+        self.token_counter -= num_tokens
+
     def clear_kv_cache(self) -> None:
         for block in self.transformer.h:
             block.attn.kv_cache = None
@@ -387,6 +395,7 @@ class Block(nn.Module):
         x: torch.Tensor,
         cos: torch.Tensor,
         sin: torch.Tensor,
+        phase: EnginePhase,
         token_counter: Optional[torch.Tensor] = None,
         block_table: Optional[torch.Tensor] = None,
         flex_attention_block_mask=None,
@@ -417,12 +426,15 @@ class Block(nn.Module):
             x_normed,
             cos,
             sin,
+            phase,
             token_counter,
             block_table,
             flex_attention_block_mask,
         )
         attention_output = self.post_attention_norm(attention_output)
 
+        # Currently, MLP does not need to be phase-aware
+        # but we might add it in the future
         if self.config.parallel_residual:
             x_normed = (
                 x_normed
@@ -512,6 +524,7 @@ class CausalSelfAttention(nn.Module):
         x: torch.Tensor,
         cos: torch.Tensor,
         sin: torch.Tensor,
+        phase: EnginePhase,
         token_counter: torch.Tensor,
         block_table: torch.Tensor = None,
         flex_attention_block_mask=None,
@@ -564,6 +577,7 @@ class CausalSelfAttention(nn.Module):
             v_cache=v_cache,
             k=k,
             v=v,
+            phase=phase,
             cache_seqlens=token_counter,
             block_table=block_table,
             rotary_cos=cos,
