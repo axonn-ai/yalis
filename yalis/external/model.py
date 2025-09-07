@@ -210,7 +210,9 @@ class GPT(nn.Module):
         )
         if (
             self.config.use_paged_kv_caching
-        ):  # NOTE: Full token_counter tensor is supposed to passed, hence not slicing.
+        ):  # NOTE: Full token_counter tensor is supposed to passed,
+            # hence not slicing.
+
             # readjusting the token counters of the block table
             # to exclude padded tokens.
             # we can exclude this for generation
@@ -348,7 +350,7 @@ class GPT(nn.Module):
         Rewind the token counter and KV-cache by the num_tokens.
         Used when rejecting tokens during speculative decoding.
         """
-        self.token_counter[:num_tokens.size(0)] -= num_tokens
+        self.token_counter[: num_tokens.size(0)] -= num_tokens
 
     def clear_kv_cache(self) -> None:
         for block in self.transformer.h:

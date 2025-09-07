@@ -5,7 +5,7 @@ from utils import alpaca_prompt
 
 NUM_LOGPROBS = 5
 BATCH_SIZES = [1, 4, 8]
-PROMPT_LENGTHS = [128, 256] # 512, 1024]
+PROMPT_LENGTHS = [128, 256, 512, 1024]
 
 
 def _get_logprobs(logits):

@@ -111,10 +111,12 @@ class InferenceConfig:
         Initialize the inference configuration.
 
         Args:
-            max_batch_size (int): Maximum number of inputs processed in parallel.
-                            The model will allocate KV cache for this many sequences.
-                            During inference, any batch size <= max_batch_size can be used.
-                            This enables dynamic batching for efficient resource utilization.
+            max_batch_size (int): Maximum number of inputs processed in
+                            parallel. The model will allocate KV cache
+                            for this many sequences. During inference,
+                            any batch size <= max_batch_size can be used.
+                            This enables dynamic batching for efficient
+                            resource utilization.
             max_length_of_generated_sequences (int): Max generated seq length
             decoding_strategy (str): Decoding strategy, default is 'greedy'.
             num_beams (Optional[int]): Number of beams for beam search.
