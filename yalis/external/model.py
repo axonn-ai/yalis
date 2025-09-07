@@ -176,21 +176,23 @@ class GPT(nn.Module):
         )
 
         # TODO: Implement token_counter slicing for flex attention.
+        n = x.size(0)
         flex_attention_block_mask = (
             create_causal_block_mask_for_flex_attention(
-                self.token_counter, self.kv_length, self.batch_size
+                self.token_counter[:n], self.kv_length, n
             )
             if self.config.attention_backend == AttentionBackend.FLEX
             else None
         )
-
+        
+        token_counter_slice = self.token_counter[:n]
         for block in self.transformer.h:
             x = block(
                 x,
                 self.cos,
                 self.sin,
                 phase,
-                self.token_counter[: x.size(0)],
+                token_counter_slice,
                 block_table,
                 flex_attention_block_mask,
             )
@@ -205,7 +207,7 @@ class GPT(nn.Module):
                 torch.tanh(x / self.config.final_logit_softcapping)
                 * self.config.final_logit_softcapping
             )
-        self.token_counter[: x.size(0)].add_(
+        self.token_counter[:n].add_(
             T if actual_sequence_lengths is None else actual_sequence_lengths
         )
         if (
@@ -350,7 +352,8 @@ class GPT(nn.Module):
         Rewind the token counter and KV-cache by the num_tokens.
         Used when rejecting tokens during speculative decoding.
         """
-        self.token_counter[: num_tokens.size(0)] -= num_tokens
+        n = num_tokens.size(0)
+        self.token_counter[:n] -= num_tokens
 
     def clear_kv_cache(self) -> None:
         for block in self.transformer.h:
@@ -594,8 +597,9 @@ class CausalSelfAttention(nn.Module):
         ), "partial rope is not supported yet"
 
         # Index KV cache for current batch size
-        k_cache = self.kv_cache.k[: (x.size(0))]
-        v_cache = self.kv_cache.v[: (x.size(0))]
+        n = x.size(0)
+        k_cache = self.kv_cache.k[:n]
+        v_cache = self.kv_cache.v[:n]
 
         if self.config.attention_backend == AttentionBackend.FLASH:
             q = q.contiguous()
