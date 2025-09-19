@@ -104,7 +104,7 @@ class RecursiveLL8Coll: public CollBase<RecursiveLL8Coll> {
 
     RecursiveLL8Coll() = default;
 
-    ~RecursiveLL8Coll() noexcept { 
+    ~RecursiveLL8Coll() noexcept override { 
         cleanup(); 
     }
 

@@ -14,6 +14,8 @@ from axonn.intra_layer.communication import Drop
 from yalis.external.nccl_comm import CommHandler
 from yalis.tensor_parallel.all_reduce_op import tp_all_reduce
 from yalis.utils import is_process_group_within_node, print_rank0
+from yalis.tensor_parallel.nvshmem_comm import NVSHMEMCommHandler
+import nvshmem_comm_cuda
 
 from typing import Optional, Sequence
 import gc
@@ -150,6 +152,13 @@ class TPLinear(torch.nn.Module):
                 self.inner_group
             )
         )
+
+        self.inner_nvshmem_comm_idx = (
+            NVSHMEMCommHandler.create_communicator_from_process_group(
+                self.inner_group
+            )
+        )
+
         # We do not need NCCL communicators for the outer and depth group
         # as no collective is performed on them during the forward pass
 
@@ -247,7 +256,8 @@ class TPLinear(torch.nn.Module):
         self.symmetric_memory_tensor = None
 
     def all_reduce(self, x):
-        tp_all_reduce(x, self.inner_nccl_comm_idx)
+        #tp_all_reduce(x, self.inner_nccl_comm_idx)
+        dist.all_reduce(x, op=torch.distributed.ReduceOp.SUM, group=self.inner_group)
         return x
 
     def matmul(self, w, x):
@@ -277,8 +287,8 @@ class TPLinear(torch.nn.Module):
         )
 
         if (
-            not is_process_group_within_node(self.inner_group)
-            or self.inner_group_size <= 1
+            #not is_process_group_within_node(self.inner_group)
+            self.inner_group_size <= 1
             or not HAS_TORCH_SYMMETRIC
         ):
             self.symmetric_memory_tensor = None
@@ -293,19 +303,23 @@ class TPLinear(torch.nn.Module):
             nelem = (
                 max_batch_size * self.local_out_features
             )  # * max_seq_length -> not needed as we only use it for decode
-            msg = symm_mem.empty(
-                nelem,
-                dtype=dtype,
-                device=device,
-            )
-            symm_mem.rendezvous(msg, group=self.inner_group)
-            symmetric_memory_pool[cache_key] = msg
+
+            nvshmem_comm = NVSHMEMCommHandler.get_communicator_from_idx(self.inner_nvshmem_comm_idx)
+            msg, msg_id = nvshmem_comm.core.allocate_tensor(nelem, dtype, device, nvshmem_comm_cuda.Protocol.SIMPLE)
+            #msg = symm_mem.empty(
+            #    nelem,
+            #    dtype=dtype,
+            #    device=device,
+            #)
+            #symm_mem.rendezvous(msg, group=self.inner_group)
+            symmetric_memory_pool[cache_key] = (msg, msg_id)
             memory_size = nelem * dtype.itemsize
             print_rank0(
                 f"Created symmetric memory tensor for {cache_key} - {memory_size / 1024 / 1024} MB"  # noqa: E501
             )
-
-        self.symmetric_memory_tensor = symmetric_memory_pool[cache_key]
+            nvshmem_comm.core.set_kernel_params(nvshmem_comm_cuda.Protocol.SIMPLE, 1, 512, memory_size)
+        self.symmetric_memory_tensor = symmetric_memory_pool[cache_key][0]
+        self.symmetric_memory_tensor_id = symmetric_memory_pool[cache_key][1]
         if algorithm == "two-shot":
             self.symmetric_allreduce_matmul_fn = matmul_with_two_shot_allreduce
         elif algorithm == "one-shot":
@@ -322,9 +336,11 @@ class TPLinear(torch.nn.Module):
             offset = x.shape[0] * x.shape[1] * self.local_out_features
             x = self.symmetric_allreduce_matmul_fn(
                 self.symmetric_memory_tensor[:offset],
+                self.symmetric_memory_tensor_id,
                 x,
                 self.weight,
                 self.inner_group.group_name,
+                self.inner_nccl_comm_idx,
             ).view(*x.shape[:-1], self.local_out_features)
         else:
             x = self.matmul(self.weight, x)

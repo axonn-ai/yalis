@@ -12,7 +12,7 @@
 #include <nvshmemx.h>
 
 #include "nvshmem_comm/nvshmem_utils.h"
-#include "nvshmem_comm/ll8_coll.cuh"
+#include "nvshmem_comm/coll_factory.h"
 
 class NVSHMEMCommWrapper {
 public:
@@ -27,14 +27,14 @@ public:
 
     void destroy();
 
-    std::tuple<torch::Tensor, uint64_t> allocate_tensor(size_t size, torch::Dtype dtype, torch::Device device);
+    std::tuple<torch::Tensor, uint64_t> allocate_tensor(size_t size, torch::Dtype dtype, torch::Device device, Protocol protocol);
     void free_tensor(uint64_t id);
 
     // Collective operations
     void allreduce_preallocated(torch::Tensor& tensor, uint64_t id, uint64_t stream_ptr, std::string alg = "recursive");
 
     // Configuration methods
-    void set_kernel_params(int num_blocks, int threads_per_block, size_t chunk_size);
+    void set_kernel_params(Protocol protocol, int num_blocks, int threads_per_block, size_t chunk_size);
 
     // Getter methods
     int get_rank() const { return rank_; }
@@ -47,7 +47,7 @@ public:
 
 private:
 
-    void initialize_coll();
+    void initialize_coll(Protocol protocol);
 
     int rank_;
     int world_size_;
@@ -59,5 +59,5 @@ private:
     nvshmemx_uniqueid_t uid_ = NVSHMEMX_UNIQUEID_INITIALIZER;
 
     std::unordered_map<uint64_t, Protocol> tensor_to_protocol_map_;
-    std::unique_ptr<RecursiveLL8Coll> coll_;
+    std::unordered_map<Protocol, std::unique_ptr<IColl>> coll_map_;
 }; 

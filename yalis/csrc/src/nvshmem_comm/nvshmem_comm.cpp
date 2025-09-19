@@ -1,4 +1,5 @@
 #include "nvshmem_comm/nvshmem_comm.h"
+#include "nvshmem_comm/coll_factory.h"
 #include <nvshmem.h>
 #include <nvshmemx.h>
 #include <mpi.h>
@@ -43,9 +44,8 @@ NVSHMEMCommWrapper::NVSHMEMCommWrapper(int rank, int world_size, int device)
         throw std::runtime_error("MPI rank/world_size mismatch with NVSHMEM PE info");
     }
 
-    // Initialize the colls
-    coll_ = std::make_unique<RecursiveLL8Coll>();
-    initialize_coll();
+    // Initialize default protocol
+    initialize_coll(Protocol::LL8);
 
     initialized_ = true;
     std::cout << "NVSHMEM initialized for PE " << mype_ << " on " << npes_ << " PEs" << std::endl;
@@ -75,8 +75,8 @@ NVSHMEMCommWrapper::NVSHMEMCommWrapper(int rank, int world_size, int device, con
         throw std::runtime_error("Rank/world_size mismatch with NVSHMEM PE info");
     }
 
-    coll_ = std::make_unique<RecursiveLL8Coll>();
-    initialize_coll();
+    // Initialize default protocol
+    initialize_coll(Protocol::LL8);
 
     initialized_ = true;
     std::cout << "NVSHMEM initialized for PE " << mype_ << " on " << npes_ << " PEs" << std::endl;
@@ -92,22 +92,33 @@ void NVSHMEMCommWrapper::destroy() {
     if (initialized_) {
         std::cout << "NVSHMEMCommWrapper destroying" << std::endl;
         nvshmem_barrier_all();
-        coll_.reset();
+        coll_map_.clear();  // This will automatically delete all unique_ptr objects
         nvshmem_finalize();
         initialized_ = false;
     }
 }
 
-void NVSHMEMCommWrapper::initialize_coll() {
-    // Initialize the kernel params to some default values
-    coll_->init(32, 512, 262144);
+void NVSHMEMCommWrapper::initialize_coll(Protocol protocol) {
+    if (coll_map_.find(protocol) == coll_map_.end()) {
+        // Create the coll object using factory
+        coll_map_[protocol] = std::unique_ptr<IColl>(CollFactory::create_coll(protocol));
+
+        // Initialize with default kernel parameters
+        coll_map_[protocol]->init(32, 512, 262144);
+    }
 }
 
-std::tuple<torch::Tensor, uint64_t> NVSHMEMCommWrapper::allocate_tensor(size_t size, torch::Dtype dtype, torch::Device device) {
-    // return value is a tuple of (tensor, id)
-    auto ret = coll_->allocate_tensor(size, dtype, device);
-    auto &[tensor, id] = ret;         
-    tensor_to_protocol_map_[id] = Protocol::LL8;
+std::tuple<torch::Tensor, uint64_t> NVSHMEMCommWrapper::allocate_tensor(size_t size, torch::Dtype dtype, torch::Device device, Protocol protocol) {
+    // Ensure the protocol-specific coll object exists
+    initialize_coll(protocol);
+
+    // Allocate tensor using the appropriate coll object
+    auto& coll = coll_map_[protocol];
+    auto ret = coll->allocate_tensor(size, dtype, device);
+    auto& [tensor, id] = ret;
+
+    // Record which protocol this tensor uses
+    tensor_to_protocol_map_[id] = protocol;
 
     return ret;
 }
@@ -119,33 +130,32 @@ void NVSHMEMCommWrapper::free_tensor(uint64_t id) {
     Protocol protocol = tensor_to_protocol_map_[id];
     tensor_to_protocol_map_.erase(id);
 
-    // TODO: Support other protocols
-    coll_->free_tensor(id);
+    // Free tensor using the appropriate coll object
+    auto& coll = coll_map_[protocol];
+    coll->free_tensor(id);
 }
 
 void NVSHMEMCommWrapper::allreduce_preallocated(torch::Tensor& tensor, uint64_t id, uint64_t stream_ptr, std::string alg) {
     cudaStream_t stream = reinterpret_cast<cudaStream_t>(stream_ptr);
 
-    // Dispatch to the appropriate type-specific implementation
-    auto dtype = tensor.dtype();
-    Protocol protocol = tensor_to_protocol_map_[id];
-    if (protocol == Protocol::LL8) {
-        if (dtype == torch::kFloat32) {
-            coll_->allreduce_preallocated<float>(tensor, id, stream, alg);
-        } else if (dtype == torch::kBFloat16) {
-            coll_->allreduce_preallocated<__nv_bfloat16>(tensor, id, stream, alg);
-        } else if (dtype == torch::kFloat16) {
-            coll_->allreduce_preallocated<__half>(tensor, id, stream, alg);
-        } else if (dtype == torch::kInt32) {
-            coll_->allreduce_preallocated<int>(tensor, id, stream, alg);
-        } else {
-            throw std::runtime_error("Unsupported tensor dtype for allreduce");
-        }
+    // Get the protocol for this tensor
+    if (tensor_to_protocol_map_.find(id) == tensor_to_protocol_map_.end()) {
+        throw std::runtime_error("Invalid tensor ID");
     }
+    Protocol protocol = tensor_to_protocol_map_[id];
+
+    // Get the appropriate coll object
+    auto& coll = coll_map_[protocol];
+    coll->dispatch_allreduce_preallocated(tensor, id, stream, alg);
 }
 
-void NVSHMEMCommWrapper::set_kernel_params(int num_blocks, int threads_per_block, size_t chunk_size) {
-    coll_->set_kernel_params(num_blocks, threads_per_block, chunk_size);
+void NVSHMEMCommWrapper::set_kernel_params(Protocol protocol, int num_blocks, int threads_per_block, size_t chunk_size) {
+    // Apply kernel parameters to the specified protocol
+    if (coll_map_.find(protocol) == coll_map_.end()) {
+        throw std::runtime_error("Protocol is not initialized");
+    }
+    auto& coll = coll_map_[protocol];
+    coll->set_kernel_params(num_blocks, threads_per_block, chunk_size);
 }
 
 torch::Tensor NVSHMEMCommWrapper::get_unique_id_bytes() {

@@ -1,4 +1,5 @@
 #include "nvshmem_comm/nvshmem_comm.h"
+#include "nvshmem_comm/coll.h"
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <memory>
@@ -6,6 +7,11 @@
 namespace py = pybind11;
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+    // Expose the Protocol enum
+    py::enum_<Protocol>(m, "Protocol")
+        .value("SIMPLE", Protocol::SIMPLE)
+        .value("LL8", Protocol::LL8);
+
     py::class_<NVSHMEMCommWrapper, std::shared_ptr<NVSHMEMCommWrapper>>(m, "NVSHMEMCommWrapper")
         .def(py::init<int, int, int>())
         .def(py::init<int, int, int, torch::Tensor>())
