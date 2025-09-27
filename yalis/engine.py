@@ -458,6 +458,7 @@ class LLMEngine:
                 # Break if every sequence is done
                 if not ignore_eos and done_mask.all():
                     finished_reason = "EOS"
+                    print("AKARSH LOGS: EOS hit batch ending!!!")
                     break
 
         output_tensor = torch.cat(output_tokens, dim=1)

@@ -11,7 +11,7 @@ _KinetoProfile._get_distributed_info = lambda self: None
 
 if __name__ == "__main__":
     # Model ID from Hugging Face
-    model_id = "meta-llama/Meta-Llama-3-8B-Instruct"
+    model_id = "meta-llama/Llama-3.1-8B-Instruct"
 
     # Available prompts for testing different batch sizes
     user_prompts = [

@@ -184,7 +184,7 @@ class GPT(nn.Module):
             if self.config.attention_backend == AttentionBackend.FLEX
             else None
         )
-        
+
         token_counter_slice = self.token_counter[:n]
         for block in self.transformer.h:
             x = block(
