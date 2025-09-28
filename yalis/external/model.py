@@ -175,24 +175,27 @@ class GPT(nn.Module):
             else None
         )
 
-        # TODO: Implement token_counter slicing for flex attention.
-        n = x.size(0)
+        bs = x.size(0)
+
+        # One-time index_select for active batch -> propagate through all layers
+        bs_idx = torch.arange(bs, device=self.token_counter.device)
+        bs_token_counter = self.token_counter.index_select(0, bs_idx)
+
         flex_attention_block_mask = (
             create_causal_block_mask_for_flex_attention(
-                self.token_counter[:n], self.kv_length, n
+                bs_token_counter, self.kv_length, bs
             )
             if self.config.attention_backend == AttentionBackend.FLEX
             else None
         )
 
-        token_counter_slice = self.token_counter[:n]
         for block in self.transformer.h:
             x = block(
                 x,
                 self.cos,
                 self.sin,
                 phase,
-                token_counter_slice,
+                bs_token_counter,
                 block_table,
                 flex_attention_block_mask,
             )
@@ -207,15 +210,13 @@ class GPT(nn.Module):
                 torch.tanh(x / self.config.final_logit_softcapping)
                 * self.config.final_logit_softcapping
             )
-        self.token_counter[:n].add_(
-            T if actual_sequence_lengths is None else actual_sequence_lengths
-        )
+        # NOTE: token_counter update moved to engine to avoid in-graph mutation of views
         if (
             self.config.use_paged_kv_caching
         ):  # NOTE: Full token_counter tensor is supposed to passed,
             # hence not slicing.
 
-            # readjusting the token counters of the block table
+            # NOTE: Paged KV: readjusting the token counters of the block table
             # to exclude padded tokens.
             # we can exclude this for generation
             torch.ops.yalis.force_update_tokens_assigned_(
@@ -352,8 +353,8 @@ class GPT(nn.Module):
         Rewind the token counter and KV-cache by the num_tokens.
         Used when rejecting tokens during speculative decoding.
         """
-        n = num_tokens.size(0)
-        self.token_counter[:n] -= num_tokens
+        bs = num_tokens.size(0)
+        self.token_counter[:bs] -= num_tokens
 
     def clear_kv_cache(self) -> None:
         for block in self.transformer.h:
@@ -597,9 +598,17 @@ class CausalSelfAttention(nn.Module):
         ), "partial rope is not supported yet"
 
         # Index KV cache for current batch size
-        n = x.size(0)
-        k_cache = self.kv_cache.k[:n]
-        v_cache = self.kv_cache.v[:n]
+        bs = x.size(0)
+        k_cache = self.kv_cache.k[:bs]
+        v_cache = self.kv_cache.v[:bs]
+
+        # NOTE: confirm attention sees active batch size (once per forward)
+        # try:
+        #     from yalis.utils import print_rank0
+        #     print_rank0(f"[AKARSH LOGS] bs={bs} k_cache.shape[0]={k_cache.shape[0]} v_cache.shape[0]={v_cache.shape[0]}")
+        # except Exception as e:
+        #     print(f"AKARSH LOGS: Failed to print rank 0: {e}")
+        #     pass 
 
         if self.config.attention_backend == AttentionBackend.FLASH:
             q = q.contiguous()
@@ -1005,18 +1014,18 @@ class KVCache(nn.Module):
         self.k = self.k.to(k.dtype)
         self.v = self.v.to(v.dtype)
         # update the cache
-        n = k.size(0)
-        # k = batched_index_copy_(self.k[:n, ...], -2, input_pos, k)
-        # v = batched_index_copy_(self.v[:n, ...], -2, input_pos, v)
+        bs = k.size(0)
+        # k = batched_index_copy_(self.k[:bs, ...], -2, input_pos, k)
+        # v = batched_index_copy_(self.v[:bs, ...], -2, input_pos, v)
         if input_pos.size(1) > 1:
             # prefill phase
             sequence_length = k.shape[2]
-            self.k[:n, :, :sequence_length, :] = k[:n, :, :sequence_length, :]
-            self.v[:n, :, :sequence_length, :] = v[:n, :, :sequence_length, :]
+            self.k[:bs, :, :sequence_length, :] = k[:bs, :, :sequence_length, :]
+            self.v[:bs, :, :sequence_length, :] = v[:bs, :, :sequence_length, :]
         else:
-            batched_index_copy_(self.k[:n, ...], -2, input_pos, k)
-            batched_index_copy_(self.v[:n, ...], -2, input_pos, v)
-        return self.k[:n], self.v[:n]
+            batched_index_copy_(self.k[:bs, ...], -2, input_pos, k)
+            batched_index_copy_(self.v[:bs, ...], -2, input_pos, v)
+        return self.k[:bs], self.v[:bs]
 
     def reset_parameters(self) -> None:
         torch.nn.init.zeros_(self.k)

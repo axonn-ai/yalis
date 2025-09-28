@@ -172,8 +172,6 @@ class LLMEngine:
         self.model = None  # Placeholder for the loaded model
         self.device = device
         self.dtype = precision_to_dtype[model_config.precision]
-        self.model_config = model_config
-        self.inference_config = inference_config
         init_distributed(tp_dims=inference_config.tp_dims)
         print_rank0(f"Model Config: {model_config}")
         print_rank0(f"Inference Config: {inference_config}")
@@ -181,6 +179,8 @@ class LLMEngine:
         self.model, self.tokenizer = self._initialize_model(
             model_config, inference_config
         )
+        self.model_config = model_config
+        self.inference_config = inference_config
 
         # return extra memory to CUDA. Can prevent NCCL init OOMs
         torch.cuda.empty_cache()
@@ -218,7 +218,7 @@ class LLMEngine:
         )
         model = self._make_params_contiguous(model)
         model.set_kv_cache(
-            max_batch_size=self.inference_config.max_batch_size,
+            max_batch_size=inference_config.max_batch_size,
             device=self.device,
             dtype=self.dtype,
         )
@@ -418,12 +418,34 @@ class LLMEngine:
                         get_logits=get_logits,
                     )  # Call prefill function
 
+                    # Update token counters outside the compiled forward
+                    bs = current_input_to_model.size(0)
+                    self.model.token_counter[:bs].add_(
+                        prompt_sequence_lengths.to(
+                            dtype=self.model.token_counter.dtype,
+                            device=self.model.token_counter.device,
+                        )
+                    )
+
                     current_input_to_model = next_token.clone()
                     nvtx_range_pop()
                 else:  # Generation step
                     timer_key = "decode"
                     timers.start(timer_key)
                     nvtx_range_push("Decode")
+
+                    # # NOTE: confirm active batch size vs configured max
+                    # if step == 1:
+                    #     try:
+                    #         active_bs = int(current_input_to_model.size(0))
+                    #         configured_max_bs = int(getattr(self.model, "max_batch_size", -1))
+                    #         print_rank0(
+                    #         f"[AKARSH LOGS] active_bs={active_bs} configured_max_bs={configured_max_bs}"
+                    #         )
+                    #     except Exception as e:
+                    #         print(f"AKARSH LOGS: Failed to print rank 0: {e}")
+                    #         raise e
+
                     with sdpa_kernel(SDPBackend.MATH):
                         next_token, logits = generate(
                             self.model,
@@ -433,6 +455,15 @@ class LLMEngine:
                             top_p=self.inference_config.top_p,
                             get_logits=get_logits,
                         )  # Call generate function
+
+                    # Increment token counters by 1 for active batch
+                    bs = current_input_to_model.size(0)
+                    one = torch.ones(
+                        (bs,),
+                        dtype=self.model.token_counter.dtype,
+                        device=self.model.token_counter.device,
+                    )
+                    self.model.token_counter[:bs].add_(one)
 
                     current_input_to_model.copy_(
                         next_token
@@ -458,7 +489,6 @@ class LLMEngine:
                 # Break if every sequence is done
                 if not ignore_eos and done_mask.all():
                     finished_reason = "EOS"
-                    print("AKARSH LOGS: EOS hit batch ending!!!")
                     break
 
         output_tensor = torch.cat(output_tokens, dim=1)
