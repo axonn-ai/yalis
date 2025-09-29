@@ -202,7 +202,7 @@ def main():
         with torch.cuda.stream(stream):
             start_event.record()
             for _ in range(args.iterations):
-                tensor.fill_(1)
+                tensor.fill_(0.01)
                 comm_wrapper.allreduce_preallocated(tensor, tensor_id, stream_ptr, args.alg)
             end_event.record()
 
@@ -217,11 +217,11 @@ def main():
 
         # Verify correctness once for this configuration
         with torch.cuda.stream(stream):
-            tensor.fill_(1)
+            tensor.fill_(0.01)
             comm_wrapper.allreduce_preallocated(tensor, tensor_id, stream_ptr, args.alg)
         torch.cuda.synchronize(device=local_device)
 
-        expected = torch.ones(num_elems, dtype=dtype, device=f"cuda:{local_device}") * world_size
+        expected = torch.ones(num_elems, dtype=dtype, device=f"cuda:{local_device}") * world_size * 0.01
         if tensor.dtype in (torch.float16, torch.bfloat16):
             ok = bool(torch.allclose(tensor, expected, rtol=1e-2, atol=1e-2))
         elif tensor.dtype == torch.float32:
@@ -232,8 +232,7 @@ def main():
         # Reduce correctness across ranks (all must pass)
         ok_tensor = torch.tensor([1 if ok else 0], device=f"cuda:{local_device}", dtype=torch.int)
         dist.all_reduce(ok_tensor, op=dist.ReduceOp.MIN)
-        #all_ok = (int(ok_tensor.item()) == 1)
-        all_ok = True
+        all_ok = (int(ok_tensor.item()) == 1)
 
         if rank == 0:
             status = "OK" if all_ok else "FAIL"

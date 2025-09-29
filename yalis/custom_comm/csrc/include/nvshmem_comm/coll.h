@@ -1,3 +1,7 @@
+// Copyright 2025 Parallel Software and Systems Group, University of Maryland.
+// See the top-level LICENSE file for details.
+//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #pragma once
 
 #include <torch/extension.h>
@@ -79,6 +83,7 @@ class CollBase : public IColl {
         }
         nvshmem_free(allocated_tensors_[id]);
         derived()->deregister_tensor(id);
+
         allocated_tensors_.erase(id);
     }
 
@@ -117,3 +122,5 @@ protected:
     int mype_node_;
     int npes_node_;
 };
+
+

@@ -15,7 +15,7 @@ from yalis.external.nccl_comm import CommHandler
 from yalis.tensor_parallel.all_reduce_op import tp_all_reduce
 from yalis.utils import is_process_group_within_node, print_rank0
 from yalis.tensor_parallel.nvshmem_comm import NVSHMEMCommHandler
-import nvshmem_comm_cuda
+from yalis_nvshmem_collectives import nvshmem_comm_cuda
 
 from typing import Optional, Sequence
 import gc
@@ -256,8 +256,8 @@ class TPLinear(torch.nn.Module):
         self.symmetric_memory_tensor = None
 
     def all_reduce(self, x):
-        #tp_all_reduce(x, self.inner_nccl_comm_idx)
-        dist.all_reduce(x, op=torch.distributed.ReduceOp.SUM, group=self.inner_group)
+        tp_all_reduce(x, self.inner_nccl_comm_idx)
+        #dist.all_reduce(x, op=torch.distributed.ReduceOp.SUM, group=self.inner_group)
         return x
 
     def matmul(self, w, x):
@@ -305,7 +305,7 @@ class TPLinear(torch.nn.Module):
             )  # * max_seq_length -> not needed as we only use it for decode
 
             nvshmem_comm = NVSHMEMCommHandler.get_communicator_from_idx(self.inner_nvshmem_comm_idx)
-            msg, msg_id = nvshmem_comm.core.allocate_tensor(nelem, dtype, device, nvshmem_comm_cuda.Protocol.SIMPLE)
+            msg, msg_id = nvshmem_comm.core.allocate_tensor(nelem, dtype, device, nvshmem_comm_cuda.Protocol.LL8)
             #msg = symm_mem.empty(
             #    nelem,
             #    dtype=dtype,
@@ -317,7 +317,9 @@ class TPLinear(torch.nn.Module):
             print_rank0(
                 f"Created symmetric memory tensor for {cache_key} - {memory_size / 1024 / 1024} MB"  # noqa: E501
             )
-            nvshmem_comm.core.set_kernel_params(nvshmem_comm_cuda.Protocol.SIMPLE, 1, 512, memory_size)
+            num_blocks = max(1, memory_size // 8192)
+            num_blocks = min(num_blocks, 16)
+            nvshmem_comm.core.set_kernel_params(nvshmem_comm_cuda.Protocol.LL8, num_blocks, 512, 8192)
         self.symmetric_memory_tensor = symmetric_memory_pool[cache_key][0]
         self.symmetric_memory_tensor_id = symmetric_memory_pool[cache_key][1]
         if algorithm == "two-shot":

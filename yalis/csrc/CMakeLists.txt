@@ -53,6 +53,7 @@ message(STATUS "Using NVSHMEM_ROOT = ${NVSHMEM_ROOT}")
 add_library(nvshmem_comm_cuda MODULE
     src/nvshmem_comm/nvshmem_comm.cpp
     src/nvshmem_comm/ll8_coll.cu
+    src/nvshmem_comm/simple_coll.cu
     src/nvshmem_comm/nvshmem_comm_bindings.cpp   # your PYBIND11_MODULE(...)
 )
 

@@ -13,14 +13,19 @@ import numpy as np
 # Add the build directory to the Python path so we can import the extension
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'build'))
 
-try:
-    import nvshmem_comm_cuda
-    print("✓ Successfully imported nvshmem_comm_cuda extension")
-except ImportError as e:
-    print(f"✗ Failed to import nvshmem_comm_cuda extension: {e}")
+from yalis_nvshmem_collectives import HAS_NVSHMEM
+if HAS_NVSHMEM:
+  try:
+      from yalis_nvshmem_collectives import nvshmem_comm_cuda
+      print("✓ Successfully imported nvshmem_comm_cuda extension")
+  except ImportError as e:
+        print(f"✗ Failed to import nvshmem_comm_cuda extension: {e}")
+        sys.exit(1)
+else:
+    print("✗ NVSHMEM is not available")
     sys.exit(1)
 
-def test_constructor():
+def test_allreduce():
     """Test creating NVSHMEMCommWrapper and getting rank/world size."""
     
     rank = torch.distributed.get_rank()
@@ -59,9 +64,9 @@ def test_constructor():
 
         torch.distributed.barrier()
         
-        # Test All Reduce
+        # Test All Reduce with all 1s
         local_rank = rank % 4
-        tensor, tensor_id = comm_wrapper.allocate_tensor(4096, torch.bfloat16, torch.device(f"cuda:{local_rank}"), nvshmem_comm_cuda.Protocol.SIMPLE)
+        tensor, tensor_id = comm_wrapper.allocate_tensor(4096, torch.float16, torch.device(f"cuda:{local_rank}"), nvshmem_comm_cuda.Protocol.SIMPLE)
         tensor.fill_(1)
         
         num_chunks = 1024 // 32 // 4
@@ -75,14 +80,36 @@ def test_constructor():
         torch.cuda.synchronize()
 
         # # Check if the tensor is all reduced
-        if not torch.allclose(tensor, torch.ones(4096, dtype=torch.bfloat16, device=f"cuda:{local_rank}") * world_size):
-            print(f"✗ All reduce failed on rank {rank}")
+        if not torch.allclose(tensor, torch.ones(4096, dtype=torch.float16, device=f"cuda:{local_rank}") * world_size):
+            print(f"✗ All reduce (all 1s) failed on rank {rank}")
             print(f"Tensor: {tensor}")
             return False
 
-        print(f"✓ All reduce completed on rank {rank}")
+        print(f"✓ All reduce (all 1s) completed on rank {rank}")
         print(f"Tensor: {tensor}")
         torch.distributed.barrier()
+
+        # Test All Reduce with random values
+        tensor_random_local = torch.randn(4096, dtype=torch.float16, device=f"cuda:{local_rank}")
+        tensor_random_global = torch.zeros(4096, dtype=torch.float16, device=f"cuda:{local_rank}")
+        tensor_random_global.copy_(tensor_random_local)
+        torch.distributed.all_reduce(tensor_random_global, op=torch.distributed.ReduceOp.SUM)
+
+
+        for i in range(10000):
+            tensor.copy_(tensor_random_local)
+            comm_wrapper.allreduce_preallocated(tensor, tensor_id, 0, "recursive")
+        
+        torch.cuda.synchronize()
+
+        if not torch.allclose(tensor, tensor_random_global, rtol=1e-2, atol=2e-2):
+            print(f"✗ All reduce (random values) failed on rank {rank}")
+            print(f"Tensor: {tensor}")
+            print(f"Tensor random global: {tensor_random_global}")
+            return False
+
+        print(f"✓ All reduce (random values) completed on rank {rank}")
+        print(f"Tensor: {tensor}")
         return True
         
     except Exception as e:
@@ -107,18 +134,15 @@ if __name__ == "__main__":
     # Synchronize all processes
     torch.distributed.barrier()
     
-    success = test_constructor()
-   
-    # Gather results from all processes
-    all_success = torch.distributed.all_gather(success)
-    
-    if rank == 0:
-        if all(all_success):
-            print("\n🎉 All tests passed successfully on all ranks!")
-        else:
-            print(f"\n❌ Some tests failed!")
-            print(f"Results: {all_success}")
-    
+    success = test_allreduce()
+
+    success_t = torch.tensor(int(success), device=f"cuda:{local_rank}", dtype=torch.int32)
+    torch.distributed.all_reduce(success_t, op=torch.distributed.ReduceOp.MIN)  # MIN==1 only if everyone had 1
+    if success_t.item() == 1:
+        print("\n🎉 All tests passed successfully on all ranks!")
+    else:
+        print("\n❌ Some tests failed!")    
+
     # Non-root processes wait for root to exit
     torch.distributed.barrier()
     torch.distributed.destroy_process_group()

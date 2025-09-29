@@ -1,0 +1,1327 @@
+{
+  "meta": {
+    "world_size": 16,
+    "dtype": "bfloat16",
+    "algorithm": "recursive",
+    "timestamp": "2025-09-25 13:27:34",
+    "device_name": "NVIDIA A100-SXM4-40GB",
+    "cuda_version": "12.9",
+    "grid": {
+      "num_blocks": [
+        1,
+        2,
+        4,
+        8,
+        16
+      ],
+      "threads_per_block": [
+        512
+      ],
+      "chunk_bytes": [
+        4096,
+        8192,
+        16384,
+        32768,
+        65536,
+        131072
+      ]
+    }
+  },
+  "per_size": {
+    "4096": {
+      "elements": 4096,
+      "bytes": 8192,
+      "results": [
+        {
+          "num_blocks": 1,
+          "threads_per_block": 512,
+          "chunk_bytes": 4096,
+          "avg_time_ms": 0.06397183895111085,
+          "valid": true
+        },
+        {
+          "num_blocks": 1,
+          "threads_per_block": 512,
+          "chunk_bytes": 8192,
+          "avg_time_ms": 0.06217984199523926,
+          "valid": true
+        },
+        {
+          "num_blocks": 2,
+          "threads_per_block": 512,
+          "chunk_bytes": 4096,
+          "avg_time_ms": 0.0636191987991333,
+          "valid": true
+        }
+      ],
+      "topk": [
+        {
+          "num_blocks": 1,
+          "threads_per_block": 512,
+          "chunk_bytes": 8192,
+          "avg_time_ms": 0.06217984199523926,
+          "valid": true
+        },
+        {
+          "num_blocks": 2,
+          "threads_per_block": 512,
+          "chunk_bytes": 4096,
+          "avg_time_ms": 0.0636191987991333,
+          "valid": true
+        },
+        {
+          "num_blocks": 1,
+          "threads_per_block": 512,
+          "chunk_bytes": 4096,
+          "avg_time_ms": 0.06397183895111085,
+          "valid": true
+        }
+      ]
+    },
+    "32768": {
+      "elements": 32768,
+      "bytes": 65536,
+      "results": [
+        {
+          "num_blocks": 1,
+          "threads_per_block": 512,
+          "chunk_bytes": 4096,
+          "avg_time_ms": 0.2085523223876953,
+          "valid": true
+        },
+        {
+          "num_blocks": 1,
+          "threads_per_block": 512,
+          "chunk_bytes": 8192,
+          "avg_time_ms": 0.1362515163421631,
+          "valid": true
+        },
+        {
+          "num_blocks": 1,
+          "threads_per_block": 512,
+          "chunk_bytes": 16384,
+          "avg_time_ms": 0.09896703720092774,
+          "valid": true
+        },
+        {
+          "num_blocks": 1,
+          "threads_per_block": 512,
+          "chunk_bytes": 32768,
+          "avg_time_ms": 0.08014656066894531,
+          "valid": true
+        },
+        {
+          "num_blocks": 1,
+          "threads_per_block": 512,
+          "chunk_bytes": 65536,
+          "avg_time_ms": 0.07960319995880127,
+          "valid": true
+        },
+        {
+          "num_blocks": 2,
+          "threads_per_block": 512,
+          "chunk_bytes": 4096,
+          "avg_time_ms": 0.13217151641845704,
+          "valid": true
+        },
+        {
+          "num_blocks": 2,
+          "threads_per_block": 512,
+          "chunk_bytes": 8192,
+          "avg_time_ms": 0.09578047752380371,
+          "valid": true
+        },
+        {
+          "num_blocks": 2,
+          "threads_per_block": 512,
+          "chunk_bytes": 16384,
+          "avg_time_ms": 0.0764857578277588,
+          "valid": true
+        },
+        {
+          "num_blocks": 2,
+          "threads_per_block": 512,
+          "chunk_bytes": 32768,
+          "avg_time_ms": 0.07583936214447022,
+          "valid": true
+        },
+        {
+          "num_blocks": 4,
+          "threads_per_block": 512,
+          "chunk_bytes": 4096,
+          "avg_time_ms": 0.0930508804321289,
+          "valid": true
+        },
+        {
+          "num_blocks": 4,
+          "threads_per_block": 512,
+          "chunk_bytes": 8192,
+          "avg_time_ms": 0.07592959880828858,
+          "valid": true
+        },
+        {
+          "num_blocks": 4,
+          "threads_per_block": 512,
+          "chunk_bytes": 16384,
+          "avg_time_ms": 0.07653503894805908,
+          "valid": true
+        },
+        {
+          "num_blocks": 8,
+          "threads_per_block": 512,
+          "chunk_bytes": 4096,
+          "avg_time_ms": 0.07204864025115967,
+          "valid": true
+        },
+        {
+          "num_blocks": 8,
+          "threads_per_block": 512,
+          "chunk_bytes": 8192,
+          "avg_time_ms": 0.07465087890625,
+          "valid": true
+        },
+        {
+          "num_blocks": 16,
+          "threads_per_block": 512,
+          "chunk_bytes": 4096,
+          "avg_time_ms": 0.07550528049468994,
+          "valid": true
+        }
+      ],
+      "topk": [
+        {
+          "num_blocks": 8,
+          "threads_per_block": 512,
+          "chunk_bytes": 4096,
+          "avg_time_ms": 0.07204864025115967,
+          "valid": true
+        },
+        {
+          "num_blocks": 8,
+          "threads_per_block": 512,
+          "chunk_bytes": 8192,
+          "avg_time_ms": 0.07465087890625,
+          "valid": true
+        },
+        {
+          "num_blocks": 16,
+          "threads_per_block": 512,
+          "chunk_bytes": 4096,
+          "avg_time_ms": 0.07550528049468994,
+          "valid": true
+        },
+        {
+          "num_blocks": 2,
+          "threads_per_block": 512,
+          "chunk_bytes": 32768,
+          "avg_time_ms": 0.07583936214447022,
+          "valid": true
+        },
+        {
+          "num_blocks": 4,
+          "threads_per_block": 512,
+          "chunk_bytes": 8192,
+          "avg_time_ms": 0.07592959880828858,
+          "valid": true
+        },
+        {
+          "num_blocks": 2,
+          "threads_per_block": 512,
+          "chunk_bytes": 16384,
+          "avg_time_ms": 0.0764857578277588,
+          "valid": true
+        },
+        {
+          "num_blocks": 4,
+          "threads_per_block": 512,
+          "chunk_bytes": 16384,
+          "avg_time_ms": 0.07653503894805908,
+          "valid": true
+        },
+        {
+          "num_blocks": 1,
+          "threads_per_block": 512,
+          "chunk_bytes": 65536,
+          "avg_time_ms": 0.07960319995880127,
+          "valid": true
+        },
+        {
+          "num_blocks": 1,
+          "threads_per_block": 512,
+          "chunk_bytes": 32768,
+          "avg_time_ms": 0.08014656066894531,
+          "valid": true
+        },
+        {
+          "num_blocks": 4,
+          "threads_per_block": 512,
+          "chunk_bytes": 4096,
+          "avg_time_ms": 0.0930508804321289,
+          "valid": true
+        }
+      ]
+    },
+    "65536": {
+      "elements": 65536,
+      "bytes": 131072,
+      "results": [
+        {
+          "num_blocks": 1,
+          "threads_per_block": 512,
+          "chunk_bytes": 4096,
+          "avg_time_ms": 0.3630092620849609,
+          "valid": true
+        },
+        {
+          "num_blocks": 1,
+          "threads_per_block": 512,
+          "chunk_bytes": 8192,
+          "avg_time_ms": 0.2227199935913086,
+          "valid": true
+        },
+        {
+          "num_blocks": 1,
+          "threads_per_block": 512,
+          "chunk_bytes": 16384,
+          "avg_time_ms": 0.15057472229003907,
+          "valid": true
+        },
+        {
+          "num_blocks": 1,
+          "threads_per_block": 512,
+          "chunk_bytes": 32768,
+          "avg_time_ms": 0.11424639701843262,
+          "valid": true
+        },
+        {
+          "num_blocks": 1,
+          "threads_per_block": 512,
+          "chunk_bytes": 65536,
+          "avg_time_ms": 0.09455231666564941,
+          "valid": true
+        },
+        {
+          "num_blocks": 1,
+          "threads_per_block": 512,
+          "chunk_bytes": 131072,
+          "avg_time_ms": 0.09442815780639649,
+          "valid": true
+        },
+        {
+          "num_blocks": 2,
+          "threads_per_block": 512,
+          "chunk_bytes": 4096,
+          "avg_time_ms": 0.21420160293579102,
+          "valid": true
+        },
+        {
+          "num_blocks": 2,
+          "threads_per_block": 512,
+          "chunk_bytes": 8192,
+          "avg_time_ms": 0.14163840293884278,
+          "valid": true
+        },
+        {
+          "num_blocks": 2,
+          "threads_per_block": 512,
+          "chunk_bytes": 16384,
+          "avg_time_ms": 0.10445759773254394,
+          "valid": true
+        },
+        {
+          "num_blocks": 2,
+          "threads_per_block": 512,
+          "chunk_bytes": 32768,
+          "avg_time_ms": 0.08499456405639648,
+          "valid": true
+        },
+        {
+          "num_blocks": 2,
+          "threads_per_block": 512,
+          "chunk_bytes": 65536,
+          "avg_time_ms": 0.08496255874633789,
+          "valid": true
+        },
+        {
+          "num_blocks": 4,
+          "threads_per_block": 512,
+          "chunk_bytes": 4096,
+          "avg_time_ms": 0.1817888069152832,
+          "valid": true
+        },
+        {
+          "num_blocks": 4,
+          "threads_per_block": 512,
+          "chunk_bytes": 8192,
+          "avg_time_ms": 0.09969728469848632,
+          "valid": true
+        },
+        {
+          "num_blocks": 4,
+          "threads_per_block": 512,
+          "chunk_bytes": 16384,
+          "avg_time_ms": 0.07965504169464112,
+          "valid": true
+        },
+        {
+          "num_blocks": 4,
+          "threads_per_block": 512,
+          "chunk_bytes": 32768,
+          "avg_time_ms": 0.07912255764007568,
+          "valid": true
+        },
+        {
+          "num_blocks": 8,
+          "threads_per_block": 512,
+          "chunk_bytes": 4096,
+          "avg_time_ms": 0.09595328330993652,
+          "valid": true
+        },
+        {
+          "num_blocks": 8,
+          "threads_per_block": 512,
+          "chunk_bytes": 8192,
+          "avg_time_ms": 0.07689792156219483,
+          "valid": true
+        },
+        {
+          "num_blocks": 8,
+          "threads_per_block": 512,
+          "chunk_bytes": 16384,
+          "avg_time_ms": 0.08092864036560059,
+          "valid": true
+        },
+        {
+          "num_blocks": 16,
+          "threads_per_block": 512,
+          "chunk_bytes": 4096,
+          "avg_time_ms": 0.07671616077423096,
+          "valid": true
+        },
+        {
+          "num_blocks": 16,
+          "threads_per_block": 512,
+          "chunk_bytes": 8192,
+          "avg_time_ms": 0.08000127792358398,
+          "valid": true
+        }
+      ],
+      "topk": [
+        {
+          "num_blocks": 16,
+          "threads_per_block": 512,
+          "chunk_bytes": 4096,
+          "avg_time_ms": 0.07671616077423096,
+          "valid": true
+        },
+        {
+          "num_blocks": 8,
+          "threads_per_block": 512,
+          "chunk_bytes": 8192,
+          "avg_time_ms": 0.07689792156219483,
+          "valid": true
+        },
+        {
+          "num_blocks": 4,
+          "threads_per_block": 512,
+          "chunk_bytes": 32768,
+          "avg_time_ms": 0.07912255764007568,
+          "valid": true
+        },
+        {
+          "num_blocks": 4,
+          "threads_per_block": 512,
+          "chunk_bytes": 16384,
+          "avg_time_ms": 0.07965504169464112,
+          "valid": true
+        },
+        {
+          "num_blocks": 16,
+          "threads_per_block": 512,
+          "chunk_bytes": 8192,
+          "avg_time_ms": 0.08000127792358398,
+          "valid": true
+        },
+        {
+          "num_blocks": 8,
+          "threads_per_block": 512,
+          "chunk_bytes": 16384,
+          "avg_time_ms": 0.08092864036560059,
+          "valid": true
+        },
+        {
+          "num_blocks": 2,
+          "threads_per_block": 512,
+          "chunk_bytes": 65536,
+          "avg_time_ms": 0.08496255874633789,
+          "valid": true
+        },
+        {
+          "num_blocks": 2,
+          "threads_per_block": 512,
+          "chunk_bytes": 32768,
+          "avg_time_ms": 0.08499456405639648,
+          "valid": true
+        },
+        {
+          "num_blocks": 1,
+          "threads_per_block": 512,
+          "chunk_bytes": 131072,
+          "avg_time_ms": 0.09442815780639649,
+          "valid": true
+        },
+        {
+          "num_blocks": 1,
+          "threads_per_block": 512,
+          "chunk_bytes": 65536,
+          "avg_time_ms": 0.09455231666564941,
+          "valid": true
+        }
+      ]
+    },
+    "131072": {
+      "elements": 131072,
+      "bytes": 262144,
+      "results": [
+        {
+          "num_blocks": 1,
+          "threads_per_block": 512,
+          "chunk_bytes": 4096,
+          "avg_time_ms": 0.6766194915771484,
+          "valid": true
+        },
+        {
+          "num_blocks": 1,
+          "threads_per_block": 512,
+          "chunk_bytes": 8192,
+          "avg_time_ms": 0.3930873489379883,
+          "valid": true
+        },
+        {
+          "num_blocks": 1,
+          "threads_per_block": 512,
+          "chunk_bytes": 16384,
+          "avg_time_ms": 0.2513126373291016,
+          "valid": true
+        },
+        {
+          "num_blocks": 1,
+          "threads_per_block": 512,
+          "chunk_bytes": 32768,
+          "avg_time_ms": 0.1785305595397949,
+          "valid": true
+        },
+        {
+          "num_blocks": 1,
+          "threads_per_block": 512,
+          "chunk_bytes": 65536,
+          "avg_time_ms": 0.14744192123413086,
+          "valid": true
+        },
+        {
+          "num_blocks": 1,
+          "threads_per_block": 512,
+          "chunk_bytes": 131072,
+          "avg_time_ms": 0.1233612823486328,
+          "valid": true
+        },
+        {
+          "num_blocks": 2,
+          "threads_per_block": 512,
+          "chunk_bytes": 4096,
+          "avg_time_ms": 0.3796236801147461,
+          "valid": true
+        },
+        {
+          "num_blocks": 2,
+          "threads_per_block": 512,
+          "chunk_bytes": 8192,
+          "avg_time_ms": 0.22987136840820313,
+          "valid": true
+        },
+        {
+          "num_blocks": 2,
+          "threads_per_block": 512,
+          "chunk_bytes": 16384,
+          "avg_time_ms": 0.157640323638916,
+          "valid": true
+        },
+        {
+          "num_blocks": 2,
+          "threads_per_block": 512,
+          "chunk_bytes": 32768,
+          "avg_time_ms": 0.1210591983795166,
+          "valid": true
+        },
+        {
+          "num_blocks": 2,
+          "threads_per_block": 512,
+          "chunk_bytes": 65536,
+          "avg_time_ms": 0.1015174388885498,
+          "valid": true
+        },
+        {
+          "num_blocks": 2,
+          "threads_per_block": 512,
+          "chunk_bytes": 131072,
+          "avg_time_ms": 0.10381823539733886,
+          "valid": true
+        },
+        {
+          "num_blocks": 4,
+          "threads_per_block": 512,
+          "chunk_bytes": 4096,
+          "avg_time_ms": 0.2250931167602539,
+          "valid": true
+        },
+        {
+          "num_blocks": 4,
+          "threads_per_block": 512,
+          "chunk_bytes": 8192,
+          "avg_time_ms": 0.14704959869384765,
+          "valid": true
+        },
+        {
+          "num_blocks": 4,
+          "threads_per_block": 512,
+          "chunk_bytes": 16384,
+          "avg_time_ms": 0.10987071990966797,
+          "valid": true
+        },
+        {
+          "num_blocks": 4,
+          "threads_per_block": 512,
+          "chunk_bytes": 32768,
+          "avg_time_ms": 0.09307200431823731,
+          "valid": true
+        },
+        {
+          "num_blocks": 4,
+          "threads_per_block": 512,
+          "chunk_bytes": 65536,
+          "avg_time_ms": 0.09357312202453613,
+          "valid": true
+        },
+        {
+          "num_blocks": 8,
+          "threads_per_block": 512,
+          "chunk_bytes": 4096,
+          "avg_time_ms": 0.14056960105895996,
+          "valid": true
+        },
+        {
+          "num_blocks": 8,
+          "threads_per_block": 512,
+          "chunk_bytes": 8192,
+          "avg_time_ms": 0.10483519554138183,
+          "valid": true
+        },
+        {
+          "num_blocks": 8,
+          "threads_per_block": 512,
+          "chunk_bytes": 16384,
+          "avg_time_ms": 0.0856383991241455,
+          "valid": true
+        },
+        {
+          "num_blocks": 8,
+          "threads_per_block": 512,
+          "chunk_bytes": 32768,
+          "avg_time_ms": 0.08443072319030762,
+          "valid": true
+        },
+        {
+          "num_blocks": 16,
+          "threads_per_block": 512,
+          "chunk_bytes": 4096,
+          "avg_time_ms": 0.10293248176574707,
+          "valid": true
+        },
+        {
+          "num_blocks": 16,
+          "threads_per_block": 512,
+          "chunk_bytes": 8192,
+          "avg_time_ms": 0.08242367744445801,
+          "valid": true
+        },
+        {
+          "num_blocks": 16,
+          "threads_per_block": 512,
+          "chunk_bytes": 16384,
+          "avg_time_ms": 0.08155136108398438,
+          "valid": true
+        }
+      ],
+      "topk": [
+        {
+          "num_blocks": 16,
+          "threads_per_block": 512,
+          "chunk_bytes": 16384,
+          "avg_time_ms": 0.08155136108398438,
+          "valid": true
+        },
+        {
+          "num_blocks": 16,
+          "threads_per_block": 512,
+          "chunk_bytes": 8192,
+          "avg_time_ms": 0.08242367744445801,
+          "valid": true
+        },
+        {
+          "num_blocks": 8,
+          "threads_per_block": 512,
+          "chunk_bytes": 32768,
+          "avg_time_ms": 0.08443072319030762,
+          "valid": true
+        },
+        {
+          "num_blocks": 8,
+          "threads_per_block": 512,
+          "chunk_bytes": 16384,
+          "avg_time_ms": 0.0856383991241455,
+          "valid": true
+        },
+        {
+          "num_blocks": 4,
+          "threads_per_block": 512,
+          "chunk_bytes": 32768,
+          "avg_time_ms": 0.09307200431823731,
+          "valid": true
+        },
+        {
+          "num_blocks": 4,
+          "threads_per_block": 512,
+          "chunk_bytes": 65536,
+          "avg_time_ms": 0.09357312202453613,
+          "valid": true
+        },
+        {
+          "num_blocks": 2,
+          "threads_per_block": 512,
+          "chunk_bytes": 65536,
+          "avg_time_ms": 0.1015174388885498,
+          "valid": true
+        },
+        {
+          "num_blocks": 16,
+          "threads_per_block": 512,
+          "chunk_bytes": 4096,
+          "avg_time_ms": 0.10293248176574707,
+          "valid": true
+        },
+        {
+          "num_blocks": 2,
+          "threads_per_block": 512,
+          "chunk_bytes": 131072,
+          "avg_time_ms": 0.10381823539733886,
+          "valid": true
+        },
+        {
+          "num_blocks": 8,
+          "threads_per_block": 512,
+          "chunk_bytes": 8192,
+          "avg_time_ms": 0.10483519554138183,
+          "valid": true
+        }
+      ]
+    },
+    "262144": {
+      "elements": 262144,
+      "bytes": 524288,
+      "results": [
+        {
+          "num_blocks": 1,
+          "threads_per_block": 512,
+          "chunk_bytes": 4096,
+          "avg_time_ms": 1.300136260986328,
+          "valid": true
+        },
+        {
+          "num_blocks": 1,
+          "threads_per_block": 512,
+          "chunk_bytes": 8192,
+          "avg_time_ms": 0.741409912109375,
+          "valid": true
+        },
+        {
+          "num_blocks": 1,
+          "threads_per_block": 512,
+          "chunk_bytes": 16384,
+          "avg_time_ms": 0.45270782470703125,
+          "valid": true
+        },
+        {
+          "num_blocks": 1,
+          "threads_per_block": 512,
+          "chunk_bytes": 32768,
+          "avg_time_ms": 0.31240320205688477,
+          "valid": true
+        },
+        {
+          "num_blocks": 1,
+          "threads_per_block": 512,
+          "chunk_bytes": 65536,
+          "avg_time_ms": 0.24113983154296875,
+          "valid": true
+        },
+        {
+          "num_blocks": 1,
+          "threads_per_block": 512,
+          "chunk_bytes": 131072,
+          "avg_time_ms": 0.20521408081054687,
+          "valid": true
+        },
+        {
+          "num_blocks": 2,
+          "threads_per_block": 512,
+          "chunk_bytes": 4096,
+          "avg_time_ms": 0.7382495880126954,
+          "valid": true
+        },
+        {
+          "num_blocks": 2,
+          "threads_per_block": 512,
+          "chunk_bytes": 8192,
+          "avg_time_ms": 0.4148761749267578,
+          "valid": true
+        },
+        {
+          "num_blocks": 2,
+          "threads_per_block": 512,
+          "chunk_bytes": 16384,
+          "avg_time_ms": 0.26948352813720705,
+          "valid": true
+        },
+        {
+          "num_blocks": 2,
+          "threads_per_block": 512,
+          "chunk_bytes": 32768,
+          "avg_time_ms": 0.19281984329223634,
+          "valid": true
+        },
+        {
+          "num_blocks": 2,
+          "threads_per_block": 512,
+          "chunk_bytes": 65536,
+          "avg_time_ms": 0.15841343879699707,
+          "valid": true
+        },
+        {
+          "num_blocks": 2,
+          "threads_per_block": 512,
+          "chunk_bytes": 131072,
+          "avg_time_ms": 0.14238271713256836,
+          "valid": true
+        },
+        {
+          "num_blocks": 4,
+          "threads_per_block": 512,
+          "chunk_bytes": 4096,
+          "avg_time_ms": 0.3908076858520508,
+          "valid": true
+        },
+        {
+          "num_blocks": 4,
+          "threads_per_block": 512,
+          "chunk_bytes": 8192,
+          "avg_time_ms": 0.2451545524597168,
+          "valid": true
+        },
+        {
+          "num_blocks": 4,
+          "threads_per_block": 512,
+          "chunk_bytes": 16384,
+          "avg_time_ms": 0.16932352066040038,
+          "valid": true
+        },
+        {
+          "num_blocks": 4,
+          "threads_per_block": 512,
+          "chunk_bytes": 32768,
+          "avg_time_ms": 0.13957119941711427,
+          "valid": true
+        },
+        {
+          "num_blocks": 4,
+          "threads_per_block": 512,
+          "chunk_bytes": 65536,
+          "avg_time_ms": 0.12594688415527344,
+          "valid": true
+        },
+        {
+          "num_blocks": 4,
+          "threads_per_block": 512,
+          "chunk_bytes": 131072,
+          "avg_time_ms": 0.12346048355102539,
+          "valid": true
+        },
+        {
+          "num_blocks": 8,
+          "threads_per_block": 512,
+          "chunk_bytes": 4096,
+          "avg_time_ms": 0.23285312652587892,
+          "valid": true
+        },
+        {
+          "num_blocks": 8,
+          "threads_per_block": 512,
+          "chunk_bytes": 8192,
+          "avg_time_ms": 0.15975168228149414,
+          "valid": true
+        },
+        {
+          "num_blocks": 8,
+          "threads_per_block": 512,
+          "chunk_bytes": 16384,
+          "avg_time_ms": 0.12324288368225098,
+          "valid": true
+        },
+        {
+          "num_blocks": 8,
+          "threads_per_block": 512,
+          "chunk_bytes": 32768,
+          "avg_time_ms": 0.11100288391113282,
+          "valid": true
+        },
+        {
+          "num_blocks": 8,
+          "threads_per_block": 512,
+          "chunk_bytes": 65536,
+          "avg_time_ms": 0.11196672439575195,
+          "valid": true
+        },
+        {
+          "num_blocks": 16,
+          "threads_per_block": 512,
+          "chunk_bytes": 4096,
+          "avg_time_ms": 0.15330368041992187,
+          "valid": true
+        },
+        {
+          "num_blocks": 16,
+          "threads_per_block": 512,
+          "chunk_bytes": 8192,
+          "avg_time_ms": 0.11749183654785156,
+          "valid": true
+        },
+        {
+          "num_blocks": 16,
+          "threads_per_block": 512,
+          "chunk_bytes": 16384,
+          "avg_time_ms": 0.10540287971496581,
+          "valid": true
+        },
+        {
+          "num_blocks": 16,
+          "threads_per_block": 512,
+          "chunk_bytes": 32768,
+          "avg_time_ms": 0.10703871726989746,
+          "valid": true
+        }
+      ],
+      "topk": [
+        {
+          "num_blocks": 16,
+          "threads_per_block": 512,
+          "chunk_bytes": 16384,
+          "avg_time_ms": 0.10540287971496581,
+          "valid": true
+        },
+        {
+          "num_blocks": 16,
+          "threads_per_block": 512,
+          "chunk_bytes": 32768,
+          "avg_time_ms": 0.10703871726989746,
+          "valid": true
+        },
+        {
+          "num_blocks": 8,
+          "threads_per_block": 512,
+          "chunk_bytes": 32768,
+          "avg_time_ms": 0.11100288391113282,
+          "valid": true
+        },
+        {
+          "num_blocks": 8,
+          "threads_per_block": 512,
+          "chunk_bytes": 65536,
+          "avg_time_ms": 0.11196672439575195,
+          "valid": true
+        },
+        {
+          "num_blocks": 16,
+          "threads_per_block": 512,
+          "chunk_bytes": 8192,
+          "avg_time_ms": 0.11749183654785156,
+          "valid": true
+        },
+        {
+          "num_blocks": 8,
+          "threads_per_block": 512,
+          "chunk_bytes": 16384,
+          "avg_time_ms": 0.12324288368225098,
+          "valid": true
+        },
+        {
+          "num_blocks": 4,
+          "threads_per_block": 512,
+          "chunk_bytes": 131072,
+          "avg_time_ms": 0.12346048355102539,
+          "valid": true
+        },
+        {
+          "num_blocks": 4,
+          "threads_per_block": 512,
+          "chunk_bytes": 65536,
+          "avg_time_ms": 0.12594688415527344,
+          "valid": true
+        },
+        {
+          "num_blocks": 4,
+          "threads_per_block": 512,
+          "chunk_bytes": 32768,
+          "avg_time_ms": 0.13957119941711427,
+          "valid": true
+        },
+        {
+          "num_blocks": 2,
+          "threads_per_block": 512,
+          "chunk_bytes": 131072,
+          "avg_time_ms": 0.14238271713256836,
+          "valid": true
+        }
+      ]
+    },
+    "524288": {
+      "elements": 524288,
+      "bytes": 1048576,
+      "results": [
+        {
+          "num_blocks": 1,
+          "threads_per_block": 512,
+          "chunk_bytes": 4096,
+          "avg_time_ms": 2.5698776245117188,
+          "valid": true
+        },
+        {
+          "num_blocks": 1,
+          "threads_per_block": 512,
+          "chunk_bytes": 8192,
+          "avg_time_ms": 1.4156198120117187,
+          "valid": true
+        },
+        {
+          "num_blocks": 1,
+          "threads_per_block": 512,
+          "chunk_bytes": 16384,
+          "avg_time_ms": 0.8533299255371094,
+          "valid": true
+        },
+        {
+          "num_blocks": 1,
+          "threads_per_block": 512,
+          "chunk_bytes": 32768,
+          "avg_time_ms": 0.5737145614624023,
+          "valid": true
+        },
+        {
+          "num_blocks": 1,
+          "threads_per_block": 512,
+          "chunk_bytes": 65536,
+          "avg_time_ms": 0.43070014953613284,
+          "valid": true
+        },
+        {
+          "num_blocks": 1,
+          "threads_per_block": 512,
+          "chunk_bytes": 131072,
+          "avg_time_ms": 0.3622937774658203,
+          "valid": true
+        },
+        {
+          "num_blocks": 2,
+          "threads_per_block": 512,
+          "chunk_bytes": 4096,
+          "avg_time_ms": 1.3627725219726563,
+          "valid": true
+        },
+        {
+          "num_blocks": 2,
+          "threads_per_block": 512,
+          "chunk_bytes": 8192,
+          "avg_time_ms": 0.7758214569091797,
+          "valid": true
+        },
+        {
+          "num_blocks": 2,
+          "threads_per_block": 512,
+          "chunk_bytes": 16384,
+          "avg_time_ms": 0.4900204849243164,
+          "valid": true
+        },
+        {
+          "num_blocks": 2,
+          "threads_per_block": 512,
+          "chunk_bytes": 32768,
+          "avg_time_ms": 0.32997310638427735,
+          "valid": true
+        },
+        {
+          "num_blocks": 2,
+          "threads_per_block": 512,
+          "chunk_bytes": 65536,
+          "avg_time_ms": 0.2601094436645508,
+          "valid": true
+        },
+        {
+          "num_blocks": 2,
+          "threads_per_block": 512,
+          "chunk_bytes": 131072,
+          "avg_time_ms": 0.22807167053222657,
+          "valid": true
+        },
+        {
+          "num_blocks": 4,
+          "threads_per_block": 512,
+          "chunk_bytes": 4096,
+          "avg_time_ms": 0.7459827423095703,
+          "valid": true
+        },
+        {
+          "num_blocks": 4,
+          "threads_per_block": 512,
+          "chunk_bytes": 8192,
+          "avg_time_ms": 0.43674110412597655,
+          "valid": true
+        },
+        {
+          "num_blocks": 4,
+          "threads_per_block": 512,
+          "chunk_bytes": 16384,
+          "avg_time_ms": 0.2887692832946777,
+          "valid": true
+        },
+        {
+          "num_blocks": 4,
+          "threads_per_block": 512,
+          "chunk_bytes": 32768,
+          "avg_time_ms": 0.21297727584838866,
+          "valid": true
+        },
+        {
+          "num_blocks": 4,
+          "threads_per_block": 512,
+          "chunk_bytes": 65536,
+          "avg_time_ms": 0.18665599822998047,
+          "valid": true
+        },
+        {
+          "num_blocks": 4,
+          "threads_per_block": 512,
+          "chunk_bytes": 131072,
+          "avg_time_ms": 0.1780076789855957,
+          "valid": true
+        },
+        {
+          "num_blocks": 8,
+          "threads_per_block": 512,
+          "chunk_bytes": 4096,
+          "avg_time_ms": 0.4106515121459961,
+          "valid": true
+        },
+        {
+          "num_blocks": 8,
+          "threads_per_block": 512,
+          "chunk_bytes": 8192,
+          "avg_time_ms": 0.26524736404418947,
+          "valid": true
+        },
+        {
+          "num_blocks": 8,
+          "threads_per_block": 512,
+          "chunk_bytes": 16384,
+          "avg_time_ms": 0.19585216522216797,
+          "valid": true
+        },
+        {
+          "num_blocks": 8,
+          "threads_per_block": 512,
+          "chunk_bytes": 32768,
+          "avg_time_ms": 0.17076736450195312,
+          "valid": true
+        },
+        {
+          "num_blocks": 8,
+          "threads_per_block": 512,
+          "chunk_bytes": 65536,
+          "avg_time_ms": 0.16566463470458984,
+          "valid": true
+        },
+        {
+          "num_blocks": 8,
+          "threads_per_block": 512,
+          "chunk_bytes": 131072,
+          "avg_time_ms": 0.16691583633422852,
+          "valid": true
+        },
+        {
+          "num_blocks": 16,
+          "threads_per_block": 512,
+          "chunk_bytes": 4096,
+          "avg_time_ms": 0.2583622360229492,
+          "valid": true
+        },
+        {
+          "num_blocks": 16,
+          "threads_per_block": 512,
+          "chunk_bytes": 8192,
+          "avg_time_ms": 0.18634239196777344,
+          "valid": true
+        },
+        {
+          "num_blocks": 16,
+          "threads_per_block": 512,
+          "chunk_bytes": 16384,
+          "avg_time_ms": 0.16363391876220704,
+          "valid": true
+        },
+        {
+          "num_blocks": 16,
+          "threads_per_block": 512,
+          "chunk_bytes": 32768,
+          "avg_time_ms": 0.15752320289611815,
+          "valid": true
+        },
+        {
+          "num_blocks": 16,
+          "threads_per_block": 512,
+          "chunk_bytes": 65536,
+          "avg_time_ms": 0.15754240036010742,
+          "valid": true
+        }
+      ],
+      "topk": [
+        {
+          "num_blocks": 16,
+          "threads_per_block": 512,
+          "chunk_bytes": 32768,
+          "avg_time_ms": 0.15752320289611815,
+          "valid": true
+        },
+        {
+          "num_blocks": 16,
+          "threads_per_block": 512,
+          "chunk_bytes": 65536,
+          "avg_time_ms": 0.15754240036010742,
+          "valid": true
+        },
+        {
+          "num_blocks": 16,
+          "threads_per_block": 512,
+          "chunk_bytes": 16384,
+          "avg_time_ms": 0.16363391876220704,
+          "valid": true
+        },
+        {
+          "num_blocks": 8,
+          "threads_per_block": 512,
+          "chunk_bytes": 65536,
+          "avg_time_ms": 0.16566463470458984,
+          "valid": true
+        },
+        {
+          "num_blocks": 8,
+          "threads_per_block": 512,
+          "chunk_bytes": 131072,
+          "avg_time_ms": 0.16691583633422852,
+          "valid": true
+        },
+        {
+          "num_blocks": 8,
+          "threads_per_block": 512,
+          "chunk_bytes": 32768,
+          "avg_time_ms": 0.17076736450195312,
+          "valid": true
+        },
+        {
+          "num_blocks": 4,
+          "threads_per_block": 512,
+          "chunk_bytes": 131072,
+          "avg_time_ms": 0.1780076789855957,
+          "valid": true
+        },
+        {
+          "num_blocks": 16,
+          "threads_per_block": 512,
+          "chunk_bytes": 8192,
+          "avg_time_ms": 0.18634239196777344,
+          "valid": true
+        },
+        {
+          "num_blocks": 4,
+          "threads_per_block": 512,
+          "chunk_bytes": 65536,
+          "avg_time_ms": 0.18665599822998047,
+          "valid": true
+        },
+        {
+          "num_blocks": 8,
+          "threads_per_block": 512,
+          "chunk_bytes": 16384,
+          "avg_time_ms": 0.19585216522216797,
+          "valid": true
+        }
+      ]
+    }
+  },
+  "best_map": {
+    "8192": {
+      "num_blocks": 1,
+      "threads_per_block": 512,
+      "chunk_bytes": 8192,
+      "avg_time_ms": 0.06217984199523926,
+      "algorithm": "recursive",
+      "dtype": "bfloat16"
+    },
+    "65536": {
+      "num_blocks": 8,
+      "threads_per_block": 512,
+      "chunk_bytes": 4096,
+      "avg_time_ms": 0.07204864025115967,
+      "algorithm": "recursive",
+      "dtype": "bfloat16"
+    },
+    "131072": {
+      "num_blocks": 16,
+      "threads_per_block": 512,
+      "chunk_bytes": 4096,
+      "avg_time_ms": 0.07671616077423096,
+      "algorithm": "recursive",
+      "dtype": "bfloat16"
+    },
+    "262144": {
+      "num_blocks": 16,
+      "threads_per_block": 512,
+      "chunk_bytes": 16384,
+      "avg_time_ms": 0.08155136108398438,
+      "algorithm": "recursive",
+      "dtype": "bfloat16"
+    },
+    "524288": {
+      "num_blocks": 16,
+      "threads_per_block": 512,
+      "chunk_bytes": 16384,
+      "avg_time_ms": 0.10540287971496581,
+      "algorithm": "recursive",
+      "dtype": "bfloat16"
+    },
+    "1048576": {
+      "num_blocks": 16,
+      "threads_per_block": 512,
+      "chunk_bytes": 32768,
+      "avg_time_ms": 0.15752320289611815,
+      "algorithm": "recursive",
+      "dtype": "bfloat16"
+    }
+  }
+}

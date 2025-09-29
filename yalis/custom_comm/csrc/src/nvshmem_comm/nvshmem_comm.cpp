@@ -1,3 +1,7 @@
+// Copyright 2025 Parallel Software and Systems Group, University of Maryland.
+// See the top-level LICENSE file for details.
+//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 #include "nvshmem_comm/nvshmem_comm.h"
 #include "nvshmem_comm/coll_factory.h"
 #include <nvshmem.h>
@@ -93,7 +97,6 @@ void NVSHMEMCommWrapper::destroy() {
         std::cout << "NVSHMEMCommWrapper destroying" << std::endl;
         nvshmem_barrier_all();
         coll_map_.clear();  // This will automatically delete all unique_ptr objects
-        tensor_to_protocol_map_.clear();
         nvshmem_finalize();
         initialized_ = false;
     }
@@ -167,3 +170,5 @@ torch::Tensor NVSHMEMCommWrapper::get_unique_id_bytes() {
     std::memcpy((void*)uid_tensor.data_ptr(), (void*)&uid, sizeof(uid));
     return uid_tensor;
 }
+
+
