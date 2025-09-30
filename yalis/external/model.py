@@ -176,10 +176,7 @@ class GPT(nn.Module):
         )
 
         bs = x.size(0)
-
-        # One-time index_select for active batch -> propagate through all layers
-        bs_idx = torch.arange(bs, device=self.token_counter.device)
-        bs_token_counter = self.token_counter.index_select(0, bs_idx)
+        bs_token_counter = self.token_counter[:bs]
 
         flex_attention_block_mask = (
             create_causal_block_mask_for_flex_attention(
@@ -210,12 +207,12 @@ class GPT(nn.Module):
                 torch.tanh(x / self.config.final_logit_softcapping)
                 * self.config.final_logit_softcapping
             )
-        # NOTE: token_counter update moved to engine to avoid in-graph mutation of views
+        bs_token_counter.add_(
+            T if actual_sequence_lengths is None else actual_sequence_lengths
+        )
         if (
             self.config.use_paged_kv_caching
-        ):  # NOTE: Full token_counter tensor is supposed to passed,
-            # hence not slicing.
-
+        ):
             # NOTE: Paged KV: readjusting the token counters of the block table
             # to exclude padded tokens.
             # we can exclude this for generation
@@ -597,20 +594,8 @@ class CausalSelfAttention(nn.Module):
             self.config.rope_n_elem == self.config.head_size
         ), "partial rope is not supported yet"
 
-        # Index KV cache for current batch size
-        bs = x.size(0)
-        k_cache = self.kv_cache.k[:bs]
-        v_cache = self.kv_cache.v[:bs]
-
-        # NOTE: confirm attention sees active batch size (once per forward)
-        # try:
-        #     from yalis.utils import print_rank0
-        #     print_rank0(f"[AKARSH LOGS] bs={bs} k_cache.shape[0]={k_cache.shape[0]} v_cache.shape[0]={v_cache.shape[0]}")
-        # except Exception as e:
-        #     print(f"AKARSH LOGS: Failed to print rank 0: {e}")
-        #     pass 
-
         if self.config.attention_backend == AttentionBackend.FLASH:
+            k_cache, v_cache = self.kv_cache.k, self.kv_cache.v
             q = q.contiguous()
             k = k.contiguous()
             v = v.contiguous()
@@ -619,6 +604,9 @@ class CausalSelfAttention(nn.Module):
 
             cos, sin = None, None
         else:
+            bs = x.size(0)
+            k_cache = self.kv_cache.k[:bs]
+            v_cache = self.kv_cache.v[:bs]
             q = q.transpose(1, 2).contiguous()
             k = k.transpose(1, 2).contiguous()
             v = v.transpose(1, 2).contiguous()

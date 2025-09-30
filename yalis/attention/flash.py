@@ -46,6 +46,11 @@ def torch_compile_compatible_flash_attention(
     window_size: Sequence[int],
     block_table: Optional[torch.Tensor],
 ) -> torch.Tensor:
+    # NOTE: printing q, k, v shapes
+    # print(f"[AKARSH LOGS] q.shape={q.shape[0]}")
+    # print(f"[AKARSH LOGS] cache_seqlens.shape={cache_seqlens.shape}")
+    # print(f"[AKARSH LOGS] k_cache.shape={k_cache.shape}, v_cache.shape={v_cache.shape}")
+    
     y = flash_attn_with_kvcache(
         q=q,
         k_cache=k_cache,
@@ -130,8 +135,8 @@ def flash_attention(
                 k_cache.scatter_(dim=1, index=index_kv, src=k)
                 v_cache.scatter_(dim=1, index=index_kv, src=v)
             else:  # Prefill
-                k_cache[:, :T, :, :] = k[:, :T, :, :]
-                v_cache[:, :T, :, :] = v[:, :T, :, :]
+                k_cache[:B, :T, :, :] = k[:, :T, :, :]
+                v_cache[:B, :T, :, :] = v[:, :T, :, :]
         else:
             update_paged_kv_cache(
                 k=k,

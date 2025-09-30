@@ -418,34 +418,12 @@ class LLMEngine:
                         get_logits=get_logits,
                     )  # Call prefill function
 
-                    # Update token counters outside the compiled forward
-                    bs = current_input_to_model.size(0)
-                    self.model.token_counter[:bs].add_(
-                        prompt_sequence_lengths.to(
-                            dtype=self.model.token_counter.dtype,
-                            device=self.model.token_counter.device,
-                        )
-                    )
-
                     current_input_to_model = next_token.clone()
                     nvtx_range_pop()
                 else:  # Generation step
                     timer_key = "decode"
                     timers.start(timer_key)
                     nvtx_range_push("Decode")
-
-                    # # NOTE: confirm active batch size vs configured max
-                    # if step == 1:
-                    #     try:
-                    #         active_bs = int(current_input_to_model.size(0))
-                    #         configured_max_bs = int(getattr(self.model, "max_batch_size", -1))
-                    #         print_rank0(
-                    #         f"[AKARSH LOGS] active_bs={active_bs} configured_max_bs={configured_max_bs}"
-                    #         )
-                    #     except Exception as e:
-                    #         print(f"AKARSH LOGS: Failed to print rank 0: {e}")
-                    #         raise e
-
                     with sdpa_kernel(SDPBackend.MATH):
                         next_token, logits = generate(
                             self.model,
@@ -455,16 +433,7 @@ class LLMEngine:
                             top_p=self.inference_config.top_p,
                             get_logits=get_logits,
                         )  # Call generate function
-
-                    # Increment token counters by 1 for active batch
-                    bs = current_input_to_model.size(0)
-                    one = torch.ones(
-                        (bs,),
-                        dtype=self.model.token_counter.dtype,
-                        device=self.model.token_counter.device,
-                    )
-                    self.model.token_counter[:bs].add_(one)
-
+                    
                     current_input_to_model.copy_(
                         next_token
                     )  # Copy the new token into tokens

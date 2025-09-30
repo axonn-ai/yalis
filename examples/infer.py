@@ -65,7 +65,7 @@ if __name__ == "__main__":
     tokens_to_gen = 512
 
     # Max batch size
-    MAX_BATCH_SIZE = 16
+    MAX_BATCH_SIZE = 64
 
     if len(input_prompts) > MAX_BATCH_SIZE:
         raise ValueError(
@@ -81,8 +81,9 @@ if __name__ == "__main__":
         top_p=0.80,
         temperature=1.0,
         tp_dims=None,
-        attention_backend="sdpa",
+        attention_backend="flash",
         use_paged_kv_caching=False,
+        prestore_kv_cache=True,
     )
 
     engine = LLMEngine(
