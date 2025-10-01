@@ -1,10 +1,20 @@
 import torch
 import torch.distributed as dist
-from yalis_nvshmem_collectives import nvshmem_comm_cuda
-#import nvshmem_comm_cuda
+
+from nvrar import NVRAR_AVAILABLE as NVRAR_AVAILABLE
+from nvrar import nvshmem_comm_cuda as nvshmem_comm_cuda
+
+def SimpleProtocol():
+    if not NVRAR_AVAILABLE:
+        raise RuntimeError("NVRAR is not available")
+    return nvshmem_comm_cuda.Protocol.SIMPLE
+
+def LL8Protocol():
+    if not NVRAR_AVAILABLE:
+        raise RuntimeError("NVRAR is not available")
+    return nvshmem_comm_cuda.Protocol.LL8
 
 class NVSHMEMCommHandler:
-
     process_group_to_idx = {}
     idx_to_comm = {}
     num_comms = 0
@@ -15,6 +25,8 @@ class NVSHMEMCommHandler:
         process_group: torch.distributed.ProcessGroup,
     ) -> int:
         if process_group not in NVSHMEMCommHandler.process_group_to_idx:
+            if NVSHMEMCommHandler.num_comms != 0:
+                raise RuntimeError("NVSHMEMCommHandler can only be used for one process group")
             NVSHMEMCommHandler.process_group_to_idx[process_group] = NVSHMEMCommHandler.num_comms
             NVSHMEMCommHandler.idx_to_comm[NVSHMEMCommHandler.num_comms] = NVSHMEMCommunicator(process_group)
             NVSHMEMCommHandler.num_comms += 1
@@ -26,7 +38,6 @@ class NVSHMEMCommHandler:
 
 
 class NVSHMEMCommunicator:
-
     def __init__(self, process_group: torch.distributed.ProcessGroup):
         rank = torch.distributed.get_rank(process_group)
         nranks = torch.distributed.get_world_size(process_group)
@@ -35,7 +46,6 @@ class NVSHMEMCommunicator:
             return
 
         device = torch.cuda.current_device()
-
 
         unique_id = nvshmem_comm_cuda.NVSHMEMCommWrapper.get_unique_id_bytes()
 
@@ -52,6 +62,7 @@ class NVSHMEMCommunicator:
     @property
     def core(self):
         return self.comm_wrapper
+
 
 
 

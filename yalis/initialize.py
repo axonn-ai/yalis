@@ -11,8 +11,12 @@ def init_distributed(tp_dims=None):
     device_count = torch.cuda.device_count()
     local_rank = rank % device_count
 
-    torch.cuda.set_device(local_rank)
-    dist.init_process_group(backend="nccl", device_id=local_rank)
+    # Passing device_id=local_rank will results in slighlty higher memory usage
+    # - around 1GB This causes OOMs for some runs. For now, we are not passing
+    # device_id which leads to a warning but it works fine. Ideally, we need to
+    # find a way to do this to avoid the warning without OOMs.
+    dist.init_process_group(backend="nccl")
+    torch.cuda.set_device(dist.get_rank() % torch.cuda.device_count())
     print(
         f"[{dist.get_rank()}] Current Device - {torch.cuda.get_device_properties(torch.cuda.current_device())}"  # noqa: E501
     )
