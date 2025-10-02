@@ -126,14 +126,14 @@ def flash_attention(
                 t_indices = cache_seqlens.view(-1)
                 k_cache[b_indices, t_indices, :, :] = k[:, 0, :, :]
                 v_cache[b_indices, t_indices, :, :] = v[:, 0, :, :]
-            elif phase == EnginePhase.DECODE_MULTI:
-                nh, hs = k.shape[2], k.shape[3]
-                index_kv = cache_seqlens.view(-1, 1) + torch.arange(
-                    T, device=cache_seqlens.device
-                ).view(1, -1)
-                index_kv = index_kv.view(B, T, 1, 1).expand(B, T, nh, hs)
-                k_cache.scatter_(dim=1, index=index_kv, src=k)
-                v_cache.scatter_(dim=1, index=index_kv, src=v)
+            # elif phase == EnginePhase.DECODE_MULTI:
+            #     nh, hs = k.shape[2], k.shape[3]
+            #     index_kv = cache_seqlens.view(-1, 1) + torch.arange(
+            #         T, device=cache_seqlens.device
+            #     ).view(1, -1)
+            #     index_kv = index_kv.view(B, T, 1, 1).expand(B, T, nh, hs)
+            #     k_cache.scatter_(dim=1, index=index_kv, src=k)
+            #     v_cache.scatter_(dim=1, index=index_kv, src=v)
             else:  # Prefill
                 k_cache[:B, :T, :, :] = k[:, :T, :, :]
                 v_cache[:B, :T, :, :] = v[:, :T, :, :]

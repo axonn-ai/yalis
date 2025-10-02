@@ -594,8 +594,12 @@ class CausalSelfAttention(nn.Module):
             self.config.rope_n_elem == self.config.head_size
         ), "partial rope is not supported yet"
 
+        # bs = x.size(0)
+        # k_cache = self.kv_cache.k[:bs]
+        # v_cache = self.kv_cache.v[:bs]
+        k_cache, v_cache = self.kv_cache.k, self.kv_cache.v
         if self.config.attention_backend == AttentionBackend.FLASH:
-            k_cache, v_cache = self.kv_cache.k, self.kv_cache.v
+            # k_cache, v_cache = self.kv_cache.k, self.kv_cache.v
             q = q.contiguous()
             k = k.contiguous()
             v = v.contiguous()

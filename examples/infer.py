@@ -34,7 +34,7 @@ if __name__ == "__main__":
     ]
 
     # take 16 prompts from this dataset
-    user_prompts = user_prompts[:16]
+    user_prompts = user_prompts[:8]
     print(f"Number of prompts = {len(user_prompts)}")
 
     system_prompt = (
@@ -65,7 +65,7 @@ if __name__ == "__main__":
     tokens_to_gen = 512
 
     # Max batch size
-    MAX_BATCH_SIZE = 64
+    MAX_BATCH_SIZE = 16
 
     if len(input_prompts) > MAX_BATCH_SIZE:
         raise ValueError(
@@ -81,9 +81,9 @@ if __name__ == "__main__":
         top_p=0.80,
         temperature=1.0,
         tp_dims=None,
-        attention_backend="flash",
+        attention_backend="sdpa",
         use_paged_kv_caching=False,
-        prestore_kv_cache=True,
+        prestore_kv_cache=False,
     )
 
     engine = LLMEngine(
