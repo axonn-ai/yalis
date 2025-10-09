@@ -15,7 +15,7 @@ from yalis.external.nccl_comm import CommHandler
 from yalis.tensor_parallel.all_reduce_op import tp_all_reduce
 from yalis.utils import is_process_group_within_node, print_rank0
 
-from yalis.tensor_parallel.nvshmem_comm import NVRAR_AVAILABLE, NVSHMEMCommHandler, SimpleProtocol, LL8Protocol
+from yalis.tensor_parallel.nvshmem_comm import NVRAR_AVAILABLE, NVSHMEMCommHandler, SimpleProtocol, LL8Protocol, get_launch_config
 
 from typing import Optional, Sequence
 import gc
@@ -252,8 +252,8 @@ class TPLinear(torch.nn.Module):
         self.symmetric_memory_tensor = None
 
     def all_reduce(self, x):
-        tp_all_reduce(x, self.inner_nccl_comm_idx)
-        #dist.all_reduce(x, op=torch.distributed.ReduceOp.SUM, group=self.inner_group)
+        #tp_all_reduce(x, self.inner_nccl_comm_idx)
+        dist.all_reduce(x, op=torch.distributed.ReduceOp.SUM, group=self.inner_group)
         return x
 
     def matmul(self, w, x):
@@ -314,7 +314,10 @@ class TPLinear(torch.nn.Module):
                 )
                 num_blocks = max(1, memory_size // 8192)
                 num_blocks = min(num_blocks, 16)
-                nvshmem_comm.core.set_kernel_params(LL8Protocol(), num_blocks, 512, 8192)
+                
+                launch_config = get_launch_config(num_gpus=self.inner_group_size, message_bytes=memory_size, dtype=dtype)
+                print_rank0(f"Launch config: {launch_config}")
+                nvshmem_comm.core.set_kernel_params(LL8Protocol(), launch_config["num_blocks"], launch_config["threads_per_block"], launch_config["chunk_bytes"])
         else: # Torch Symmetric Memory : one-shot and two-shot allreduce
             if (
                 not is_process_group_within_node(self.inner_group)

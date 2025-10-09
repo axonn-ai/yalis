@@ -1,8 +1,18 @@
 import torch
 import torch.distributed as dist
 
-from nvrar import NVRAR_AVAILABLE as NVRAR_AVAILABLE
-from nvrar import nvshmem_comm_cuda as nvshmem_comm_cuda
+try:
+    from nvrar import NVRAR_AVAILABLE as NVRAR_AVAILABLE
+    from nvrar import nvshmem_comm_cuda as nvshmem_comm_cuda
+    from nvrar import resolve_params
+except ImportError as e:
+    print(f"NVRAR is not available: {e}")
+    NVRAR_AVAILABLE = False
+    nvshmem_comm_cuda = None
+
+def get_launch_config(num_gpus: int, message_bytes: int, dtype: torch.dtype):
+    dtype_str = str(dtype).split(".")[-1]
+    return resolve_params(num_gpus, dtype_str).for_message_bytes(message_bytes)
 
 def SimpleProtocol():
     if not NVRAR_AVAILABLE:
