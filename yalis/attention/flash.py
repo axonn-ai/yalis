@@ -22,7 +22,8 @@ def flash_apply_rotary(
     """
     Applies rotary embeddings to the input tensor
     """
-    return apply_rotary(x, rotary_cos, rotary_sin, token_counter)
+    B = x.size(0)
+    return apply_rotary(x, rotary_cos, rotary_sin, token_counter[:B])
 
 
 # We are registering the flash_attn_with_kv_cache kernel as a custom pytorch
@@ -46,11 +47,7 @@ def torch_compile_compatible_flash_attention(
     window_size: Sequence[int],
     block_table: Optional[torch.Tensor],
 ) -> torch.Tensor:
-    # NOTE: printing q, k, v shapes
-    # print(f"[AKARSH LOGS] q.shape={q.shape[0]}")
-    # print(f"[AKARSH LOGS] cache_seqlens.shape={cache_seqlens.shape}")
-    # print(f"[AKARSH LOGS] k_cache.shape={k_cache.shape}, v_cache.shape={v_cache.shape}")
-    
+    B = q.size(0)
     y = flash_attn_with_kvcache(
         q=q,
         k_cache=k_cache,
@@ -58,7 +55,7 @@ def torch_compile_compatible_flash_attention(
         k=k,
         v=v,
         causal=causal,
-        cache_seqlens=cache_seqlens,
+        cache_seqlens=cache_seqlens[:B],
         rotary_cos=rotary_cos,
         rotary_sin=rotary_sin,
         rotary_interleaved=rotary_interleaved,
@@ -123,20 +120,22 @@ def flash_attention(
         if block_table is None:
             if phase == EnginePhase.DECODE_SINGLE:
                 b_indices = torch.arange(B, device=k_cache.device)
-                t_indices = cache_seqlens.view(-1)
+                t_indices = cache_seqlens[:B].view(-1)
+                # Slice cache for current batch size
                 k_cache[b_indices, t_indices, :, :] = k[:, 0, :, :]
                 v_cache[b_indices, t_indices, :, :] = v[:, 0, :, :]
-            # elif phase == EnginePhase.DECODE_MULTI:
-            #     nh, hs = k.shape[2], k.shape[3]
-            #     index_kv = cache_seqlens.view(-1, 1) + torch.arange(
-            #         T, device=cache_seqlens.device
-            #     ).view(1, -1)
-            #     index_kv = index_kv.view(B, T, 1, 1).expand(B, T, nh, hs)
-            #     k_cache.scatter_(dim=1, index=index_kv, src=k)
-            #     v_cache.scatter_(dim=1, index=index_kv, src=v)
+            elif phase == EnginePhase.DECODE_MULTI:
+                nh, hs = k.shape[2], k.shape[3]
+                index_kv = cache_seqlens[:B].view(-1, 1) + torch.arange(
+                    T, device=cache_seqlens.device
+                ).view(1, -1)
+                index_kv = index_kv.view(B, T, 1, 1).expand(B, T, nh, hs)
+                k_cache[:B].scatter_(dim=1, index=index_kv, src=k)
+                v_cache[:B].scatter_(dim=1, index=index_kv, src=v)
             else:  # Prefill
-                k_cache[:B, :T, :, :] = k[:, :T, :, :]
-                v_cache[:B, :T, :, :] = v[:, :T, :, :]
+                # Slice cache for current batch size
+                k_cache[:B, :T, :, :] = k[:B, :T, :, :]
+                v_cache[:B, :T, :, :] = v[:B, :T, :, :]
         else:
             update_paged_kv_cache(
                 k=k,

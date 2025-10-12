@@ -175,12 +175,11 @@ class GPT(nn.Module):
             else None
         )
 
-        bs = x.size(0)
-        bs_token_counter = self.token_counter[:bs]
+        B = x.size(0)
 
         flex_attention_block_mask = (
             create_causal_block_mask_for_flex_attention(
-                bs_token_counter, self.kv_length, bs
+                self.token_counter, self.kv_length, B
             )
             if self.config.attention_backend == AttentionBackend.FLEX
             else None
@@ -192,7 +191,7 @@ class GPT(nn.Module):
                 self.cos,
                 self.sin,
                 phase,
-                bs_token_counter,
+                self.token_counter,
                 block_table,
                 flex_attention_block_mask,
             )
@@ -207,7 +206,7 @@ class GPT(nn.Module):
                 torch.tanh(x / self.config.final_logit_softcapping)
                 * self.config.final_logit_softcapping
             )
-        bs_token_counter.add_(
+        self.token_counter[:B].add_(
             T if actual_sequence_lengths is None else actual_sequence_lengths
         )
         if (
@@ -217,7 +216,7 @@ class GPT(nn.Module):
             # to exclude padded tokens.
             # we can exclude this for generation
             torch.ops.yalis.force_update_tokens_assigned_(
-                self.tokens_assigned, self.token_counter
+                self.tokens_assigned[:B], self.token_counter[:B]
             )
         return {"logits": x}
 
@@ -350,8 +349,8 @@ class GPT(nn.Module):
         Rewind the token counter and KV-cache by the num_tokens.
         Used when rejecting tokens during speculative decoding.
         """
-        bs = num_tokens.size(0)
-        self.token_counter[:bs] -= num_tokens
+        B = num_tokens.size(0)
+        self.token_counter[:B] -= num_tokens
 
     def clear_kv_cache(self) -> None:
         for block in self.transformer.h:
@@ -593,13 +592,8 @@ class CausalSelfAttention(nn.Module):
         assert (
             self.config.rope_n_elem == self.config.head_size
         ), "partial rope is not supported yet"
-
-        # bs = x.size(0)
-        # k_cache = self.kv_cache.k[:bs]
-        # v_cache = self.kv_cache.v[:bs]
         k_cache, v_cache = self.kv_cache.k, self.kv_cache.v
         if self.config.attention_backend == AttentionBackend.FLASH:
-            # k_cache, v_cache = self.kv_cache.k, self.kv_cache.v
             q = q.contiguous()
             k = k.contiguous()
             v = v.contiguous()
@@ -608,13 +602,12 @@ class CausalSelfAttention(nn.Module):
 
             cos, sin = None, None
         else:
-            bs = x.size(0)
-            k_cache = self.kv_cache.k[:bs]
-            v_cache = self.kv_cache.v[:bs]
             q = q.transpose(1, 2).contiguous()
             k = k.transpose(1, 2).contiguous()
             v = v.transpose(1, 2).contiguous()
 
+        # NOTE: Pass full k_cache, v_cache, and token_counter.
+        # Slicing for current batch size is done in the respective backends.
         y = attention_wrapper(
             q=q,
             k_cache=k_cache,
@@ -1006,18 +999,18 @@ class KVCache(nn.Module):
         self.k = self.k.to(k.dtype)
         self.v = self.v.to(v.dtype)
         # update the cache
-        bs = k.size(0)
-        # k = batched_index_copy_(self.k[:bs, ...], -2, input_pos, k)
-        # v = batched_index_copy_(self.v[:bs, ...], -2, input_pos, v)
+        B = k.size(0)
+        # k = batched_index_copy_(self.k[:B, ...], -2, input_pos, k)
+        # v = batched_index_copy_(self.v[:B, ...], -2, input_pos, v)
         if input_pos.size(1) > 1:
             # prefill phase
             sequence_length = k.shape[2]
-            self.k[:bs, :, :sequence_length, :] = k[:bs, :, :sequence_length, :]
-            self.v[:bs, :, :sequence_length, :] = v[:bs, :, :sequence_length, :]
+            self.k[:B, :, :sequence_length, :] = k[:B, :, :sequence_length, :]
+            self.v[:B, :, :sequence_length, :] = v[:B, :, :sequence_length, :]
         else:
-            batched_index_copy_(self.k[:bs, ...], -2, input_pos, k)
-            batched_index_copy_(self.v[:bs, ...], -2, input_pos, v)
-        return self.k[:bs], self.v[:bs]
+            batched_index_copy_(self.k[:B, ...], -2, input_pos, k)
+            batched_index_copy_(self.v[:B, ...], -2, input_pos, v)
+        return self.k[:B], self.v[:B]
 
     def reset_parameters(self) -> None:
         torch.nn.init.zeros_(self.k)
