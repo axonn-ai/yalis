@@ -433,7 +433,7 @@ class LLMEngine:
                             top_p=self.inference_config.top_p,
                             get_logits=get_logits,
                         )  # Call generate function
-                    
+
                     current_input_to_model.copy_(
                         next_token
                     )  # Copy the new token into tokens

@@ -12,7 +12,7 @@ from yalis.constants import EnginePhase
 # otherwise compilation breaks. Ideally, this should be fixed in the
 # flash attention repo but for now, this workaround works
 # TODO: Once flash attention fixes this, remove this
-# @torch.library.triton_op("yalis::flash_apply_rotary", mutates_args=())
+@torch.library.triton_op("yalis::flash_apply_rotary", mutates_args=())
 def flash_apply_rotary(
     x: torch.Tensor,
     rotary_cos: Optional[torch.Tensor] = None,
