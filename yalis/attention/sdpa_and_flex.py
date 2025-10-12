@@ -130,7 +130,7 @@ def rotary_kv_update_sdpa_gen(
             roped_tensors.append(roped)
 
         q, k = roped_tensors
-    
+
     b_indices = torch.arange(B, device=k_cache.device)
     t_indices = token_counter[:B].view(-1)
 

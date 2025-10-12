@@ -209,9 +209,7 @@ class GPT(nn.Module):
         self.token_counter[:B].add_(
             T if actual_sequence_lengths is None else actual_sequence_lengths
         )
-        if (
-            self.config.use_paged_kv_caching
-        ):
+        if self.config.use_paged_kv_caching:
             # NOTE: Paged KV: readjusting the token counters of the block table
             # to exclude padded tokens.
             # we can exclude this for generation
