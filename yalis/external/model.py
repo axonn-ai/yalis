@@ -155,7 +155,7 @@ class GPT(nn.Module):
             self.sin = self.sin.to(x.dtype)
 
         block_table = (
-            self.kv_cache_manager.block_table()
+            self.kvcache_block_table    #self.kv_cache_manager.block_table()
             if self.config.use_paged_kv_caching
             else None
         )
@@ -196,9 +196,10 @@ class GPT(nn.Module):
             # readjusting the token counters of the block table
             # to exclude padded tokens.
             # we can exclude this for generation
-            self.kv_cache_manager.force_update_tokens_assigned(
-                self.token_counter
-            )
+            #self.kv_cache_manager.force_update_tokens_assigned(
+            #    self.token_counter
+            #)
+            torch.ops.yalis.force_update_tokens_assigned_(self.tokens_assigned, self.token_counter)
         return {"logits": x}
 
     @classmethod
@@ -303,6 +304,8 @@ class GPT(nn.Module):
                 NUM_BLOCKS,
                 PAGE_BLOCK_SIZE,
             )
+            self.tokens_assigned = self.kv_cache_manager.tokens_assigned_tensor()
+            self.kvcache_block_table = self.kv_cache_manager.block_table()
 
         self.token_counter = torch.zeros(
             batch_size, device=device, dtype=torch.int32

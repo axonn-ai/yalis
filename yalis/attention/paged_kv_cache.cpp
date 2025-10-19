@@ -3,6 +3,7 @@
 #include <stdexcept>
 #include <torch/extension.h>
 #include <torch/torch.h>
+#include <torch/library.h>
 
 // KVCacheManager manages the assignment of global pages (blocks) for each
 // sequence in the batch. It maintains a block table (a tensor of shape
@@ -33,13 +34,20 @@ public:
     // Initialize tokens_assigned_ which tracks how many tokens are currently
     // in the KV cache for each sequence. Initially, every sequence has 0
     // tokens.
-    tokens_assigned_ = torch::zeros({batch_size_}, torch::kInt64);
+    tokens_assigned_ = torch::zeros({batch_size_}, torch::TensorOptions()
+            .dtype(torch::kInt64).device(torch::kCUDA));
+            //torch::kInt64);
 
     // Initialize the FIFO queue of free pages with indices from 0 to num_blocks
     // - 1.
     for (int32_t i = 0; i < static_cast<int32_t>(num_blocks_); i++) {
       free_pages_.push_back(i);
     }
+  }
+
+  // to expose to python for avoiding graph breaks
+  torch::Tensor tokens_assigned_tensor() const {
+    return tokens_assigned_;
   }
 
   // update_block_table:
@@ -183,6 +191,22 @@ private:
   std::deque<int32_t> free_pages_;
 };
 
+static torch::Tensor force_update_tokens_assigned_impl(
+  torch::Tensor tokens_assigned, const torch::Tensor &new_counts
+) {
+  TORCH_CHECK(tokens_assigned.size(0) == new_counts.size(0), "batch mismatch");
+  tokens_assigned.copy_(new_counts);
+  return tokens_assigned;
+}
+
+TORCH_LIBRARY(yalis, m) {
+    m.def("force_update_tokens_assigned_(Tensor(a!) tokens_assigned, Tensor new_counts) -> Tensor(a!)");
+}
+
+TORCH_LIBRARY_IMPL(yalis, CompositeImplicitAutograd, m) {
+    m.impl("force_update_tokens_assigned_", force_update_tokens_assigned_impl);
+}
+
 // Expose the KVCacheManager as a custom class via PyBind11.
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   py::class_<KVCacheManager>(m, "KVCacheManager")
@@ -193,5 +217,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       .def("get_pages_for_sequence", &KVCacheManager::get_pages_for_sequence)
       .def("release_sequence_pages", &KVCacheManager::release_sequence_pages)
       .def("reset", &KVCacheManager::reset)
-      .def("block_table", &KVCacheManager::block_table);
+      .def("block_table", &KVCacheManager::block_table)
+      .def("tokens_assigned_tensor", &KVCacheManager::tokens_assigned_tensor);
 }
