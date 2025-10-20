@@ -135,8 +135,19 @@ class GPT(nn.Module):
             # Note that T includes padding tokens in prefill.
             # we will readjust the token counters of the block table
             # at the end to exclude padded tokens.
-            self.kv_cache_manager.update_block_table(
-                torch.full((input_ids.shape[0],), T, dtype=torch.int64)
+            #self.kv_cache_manager.update_block_table(
+            #    torch.full((input_ids.shape[0],), T, dtype=torch.int64)
+            #)
+            B = input_ids.shape[0]
+            seq_lengths = torch.full((B,), T, dtype=torch.int64, device=self.kvcache_block_table.device)
+            torch.ops.yalis.update_block_table_(
+                self.kvcache_block_table,
+                self.tokens_assigned,
+                self.kvcache_next_page,
+                self.kvcache_free_pages,
+                seq_lengths, 
+                PAGE_BLOCK_SIZE,
+                16384 // PAGE_BLOCK_SIZE # TODO: set dynamically
             )
 
         x = self.transformer.wte(
@@ -306,6 +317,8 @@ class GPT(nn.Module):
             )
             self.tokens_assigned = self.kv_cache_manager.tokens_assigned_tensor()
             self.kvcache_block_table = self.kv_cache_manager.block_table()
+            self.kvcache_free_pages = self.kv_cache_manager.free_pages_tensor()
+            self.kvcache_next_page = self.kv_cache_manager.next_page_tensor()
 
         self.token_counter = torch.zeros(
             batch_size, device=device, dtype=torch.int32
