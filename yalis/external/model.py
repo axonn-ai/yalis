@@ -135,19 +135,21 @@ class GPT(nn.Module):
             # Note that T includes padding tokens in prefill.
             # we will readjust the token counters of the block table
             # at the end to exclude padded tokens.
-            #self.kv_cache_manager.update_block_table(
-            #    torch.full((input_ids.shape[0],), T, dtype=torch.int64)
-            #)
             B = input_ids.shape[0]
-            seq_lengths = torch.full((B,), T, dtype=torch.int64, device=self.kvcache_block_table.device)
+            seq_lengths = torch.full(
+                (B,),
+                T,
+                dtype=torch.int64,
+                device=self.kvcache_block_table.device
+            )
             torch.ops.yalis.update_block_table_(
                 self.kvcache_block_table,
                 self.tokens_assigned,
                 self.kvcache_next_page,
                 self.kvcache_free_pages,
-                seq_lengths, 
+                seq_lengths,
                 PAGE_BLOCK_SIZE,
-                16384 // PAGE_BLOCK_SIZE # TODO: set dynamically
+                16384 // PAGE_BLOCK_SIZE
             )
 
         x = self.transformer.wte(
@@ -166,7 +168,7 @@ class GPT(nn.Module):
             self.sin = self.sin.to(x.dtype)
 
         block_table = (
-            self.kvcache_block_table    #self.kv_cache_manager.block_table()
+            self.kvcache_block_table
             if self.config.use_paged_kv_caching
             else None
         )
@@ -207,10 +209,9 @@ class GPT(nn.Module):
             # readjusting the token counters of the block table
             # to exclude padded tokens.
             # we can exclude this for generation
-            #self.kv_cache_manager.force_update_tokens_assigned(
-            #    self.token_counter
-            #)
-            torch.ops.yalis.force_update_tokens_assigned_(self.tokens_assigned, self.token_counter)
+            torch.ops.yalis.force_update_tokens_assigned_(
+                self.tokens_assigned, self.token_counter
+            )
         return {"logits": x}
 
     @classmethod
@@ -315,7 +316,10 @@ class GPT(nn.Module):
                 NUM_BLOCKS,
                 PAGE_BLOCK_SIZE,
             )
-            self.tokens_assigned = self.kv_cache_manager.tokens_assigned_tensor()
+            # TODO: move to separate Python class
+            self.tokens_assigned = (
+                self.kv_cache_manager.tokens_assigned_tensor()
+            )
             self.kvcache_block_table = self.kv_cache_manager.block_table()
             self.kvcache_free_pages = self.kv_cache_manager.free_pages_tensor()
             self.kvcache_next_page = self.kv_cache_manager.next_page_tensor()

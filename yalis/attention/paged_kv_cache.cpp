@@ -58,8 +58,6 @@ public:
   torch::Tensor next_page_tensor() const { return next_free; }
   torch::Tensor block_table() const { return block_table_; }
 
-  
-
   void force_update_tokens_assigned(const torch::Tensor &new_token_counts) {
     // Ensure new_token_counts tensor has the correct batch size.
     if (new_token_counts.sizes()[0] != batch_size_) {
@@ -149,7 +147,7 @@ static void force_update_tokens_assigned_impl(
   tokens_assigned.copy_(new_counts);
 }
 
-static inline at::Tensor ceil_div_tensor(const at::Tensor& x, int64_t d) {
+static inline at::Tensor ceil_div_tensor(const at::Tensor &x, int64_t d) {
   return at::floor_divide(x + (d - 1), d);
 }
 
@@ -163,7 +161,7 @@ static inline at::Tensor ceil_div_tensor(const at::Tensor& x, int64_t d) {
 static void update_block_table_impl(
   const at::Tensor &block_table,      // int32/int64, [B, M], contiguous
   const at::Tensor &tokens_assigned,  // int64, [B]
-  const at::Tensor &next_page,        // int64, [1] or [B]
+  const at::Tensor &next_page,        // int64, [1]
   const at::Tensor &free_pages,       // int32, [N_pages]
   const at::Tensor &seq_lengths,      // int32/int64, [B]
   int64_t page_block_size,
@@ -187,19 +185,33 @@ static void update_block_table_impl(
   auto table_dtype = block_table.scalar_type();
 
   const int64_t K = next_page.numel();
-  TORCH_CHECK(K == 1 && next_page.numel() == 1, "next_page must have numel 1 or B; got ", K, " vs B=", B);
+  TORCH_CHECK(K == 1 && next_page.numel() == 1, "next_page must have numel 1; got ", K);
   auto next_per = next_page.view({1}).expand({B});
 
-  // Page math (shape-stable)
+  // same as original impl except vectorized
   auto inc_tokens = seq_lengths.to(at::kLong);        // [B]
   auto old_tokens = tokens_assigned;                  // [B]
   auto new_tokens = old_tokens + inc_tokens;          // [B]
   auto old_pages  = ceil_div_tensor(old_tokens, page_block_size);  // [B]
   auto new_pages  = ceil_div_tensor(new_tokens, page_block_size);  // [B]
-  auto room       = (at::full({B}, (long)M, long_opts) - old_pages).clamp_min(0);
-  auto delta      = at::minimum((new_pages - old_pages).clamp_min(0), room);     // [B]
+  // how many additional pages to assign
+  auto delta      = (new_pages - old_pages).clamp_min(0);
 
-  // Base offsets into the FIFO window
+#ifndef NDEBUG // .item calls will break graphs, so not in release
+  TORCH_CHECK(
+    (new_pages <= at::full({B}, (long)M, long_opts)).all().item<bool>(),
+    "Exceeded maximum number of blocks per sequence."
+  );
+  // just for safety check
+  auto need_total = delta.sum();
+  const long next_host = next_page.item<long>();
+  TORCH_CHECK(
+    next_host + need_total.item<long>() <= N_pages,
+    "No free pages available in the global KV cache."
+  );
+#endif
+
+  // offsets into the FIFO window, which pages each seq should take
   auto csum       = at::cumsum(delta, 0);             // [B]
   auto start_excl = csum - delta;                     // [B]
   auto base_per   = next_per + start_excl;            // [B]
@@ -217,8 +229,7 @@ static void update_block_table_impl(
 
   // Compute page indices, clamp to stay in-bounds (avoid OOB during capture)
   auto base2d   = base_per.view({B,1}).expand({B,M});                // [B, M]
-  auto page_idx = (base2d + k_in_row).clamp(0, (long) N_pages - 1)
-                    .reshape({B * M}).to(at::kLong);                 // [B*M]
+  auto page_idx = (base2d + k_in_row).reshape({B * M}).to(at::kLong);
 
   // Gather and blend (no variable-length selects)
   auto gathered = free_pages.index_select(0, page_idx).to(table_dtype)
@@ -263,7 +274,7 @@ TORCH_LIBRARY(yalis, m) {
   );
 }
 
-TORCH_LIBRARY_IMPL(yalis, CUDA /*CompositeImplicitAutograd*/, m) {
+TORCH_LIBRARY_IMPL(yalis, CUDA, m) {
   m.impl("force_update_tokens_assigned_", force_update_tokens_assigned_impl);
   m.impl("update_block_table_", update_block_table_impl);
 }
