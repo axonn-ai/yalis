@@ -140,7 +140,7 @@ class GPT(nn.Module):
                 (B,),
                 T,
                 dtype=torch.int64,
-                device=self.kvcache_block_table.device
+                device=self.kvcache_block_table.device,
             )
             torch.ops.yalis.update_block_table_(
                 self.kvcache_block_table,
@@ -149,7 +149,7 @@ class GPT(nn.Module):
                 self.kvcache_free_pages,
                 seq_lengths,
                 PAGE_BLOCK_SIZE,
-                16384 // PAGE_BLOCK_SIZE
+                16384 // PAGE_BLOCK_SIZE,
             )
 
         x = self.transformer.wte(
