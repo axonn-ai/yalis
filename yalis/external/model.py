@@ -28,7 +28,7 @@ from yalis.attention.backends import AttentionBackend
 from yalis.attention.masking import create_causal_block_mask_for_flex_attention
 
 # TODO: these should be dynamically set during engine initialization
-NUM_BLOCKS, PAGE_BLOCK_SIZE = 1024, 256
+NUM_BLOCKS, PAGE_BLOCK_SIZE = 512, 256
 
 
 # switch sequential norm classes to TP norm classes if needed
@@ -299,6 +299,15 @@ class GPT(nn.Module):
 
         self.kv_length = max_seq_length
         self.batch_size = batch_size
+
+        max_tokens = max_seq_length * batch_size
+
+        global NUM_BLOCKS
+        if self.config.use_paged_kv_caching:
+            if max_tokens > PAGE_BLOCK_SIZE * NUM_BLOCKS:
+                print(f"Increasing NUM_BLOCKS to 1024")
+                NUM_BLOCKS = 1024
+
 
         # initialize the kv cache for all blocks
         for block in self.transformer.h:
