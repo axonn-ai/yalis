@@ -1,5 +1,4 @@
 import torch
-import torch.distributed as dist
 
 try:
     from nvrar import NVRAR_AVAILABLE as NVRAR_AVAILABLE
@@ -10,25 +9,28 @@ except ImportError as e:
     NVRAR_AVAILABLE = False
     nvshmem_comm_cuda = None
 
+
 def get_launch_config(num_gpus: int, message_bytes: int, dtype: torch.dtype):
     dtype_str = str(dtype).split(".")[-1]
     return resolve_params(num_gpus, dtype_str).for_message_bytes(message_bytes)
+
 
 def SimpleProtocol():
     if not NVRAR_AVAILABLE:
         raise RuntimeError("NVRAR is not available")
     return nvshmem_comm_cuda.Protocol.SIMPLE
 
+
 def LL8Protocol():
     if not NVRAR_AVAILABLE:
         raise RuntimeError("NVRAR is not available")
     return nvshmem_comm_cuda.Protocol.LL8
 
+
 class NVSHMEMCommHandler:
     process_group_to_idx = {}
     idx_to_comm = {}
     num_comms = 0
-
 
     @staticmethod
     def create_communicator_from_process_group(
@@ -36,12 +38,18 @@ class NVSHMEMCommHandler:
     ) -> int:
         if process_group not in NVSHMEMCommHandler.process_group_to_idx:
             if NVSHMEMCommHandler.num_comms != 0:
-                raise RuntimeError("NVSHMEMCommHandler can only be used for one process group")
-            NVSHMEMCommHandler.process_group_to_idx[process_group] = NVSHMEMCommHandler.num_comms
-            NVSHMEMCommHandler.idx_to_comm[NVSHMEMCommHandler.num_comms] = NVSHMEMCommunicator(process_group)
+                raise RuntimeError(
+                    "NVSHMEMCommHandler can only be used for one process group"
+                )
+            NVSHMEMCommHandler.process_group_to_idx[process_group] = (
+                NVSHMEMCommHandler.num_comms
+            )
+            NVSHMEMCommHandler.idx_to_comm[NVSHMEMCommHandler.num_comms] = (
+                NVSHMEMCommunicator(process_group)
+            )
             NVSHMEMCommHandler.num_comms += 1
         return NVSHMEMCommHandler.process_group_to_idx[process_group]
-    
+
     @staticmethod
     def get_communicator_from_idx(idx: int):
         return NVSHMEMCommHandler.idx_to_comm[idx]
@@ -66,19 +74,14 @@ class NVSHMEMCommunicator:
 
         unique_id = uid_gpu.to("cpu")
 
-        self.comm_wrapper = nvshmem_comm_cuda.NVSHMEMCommWrapper(rank, nranks, device, unique_id)
-        print(f"NVSHMEMCommunicator created for process group {process_group} with rank {rank} and nranks {nranks}")
+        self.comm_wrapper = nvshmem_comm_cuda.NVSHMEMCommWrapper(
+            rank, nranks, device, unique_id
+        )
+        print(
+            f"NVSHMEMCommunicator created for process group {process_group}",
+            f"with rank {rank} and nranks {nranks}",
+        )
 
     @property
     def core(self):
         return self.comm_wrapper
-
-
-
-
-
-
-
-
-        
-    

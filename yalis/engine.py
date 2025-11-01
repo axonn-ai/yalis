@@ -187,7 +187,7 @@ class LLMEngine:
         gc.collect()
 
         print_rank0(
-            f"Memory Stats After Initializing Model - {get_gpu_memory_info()} "
+            f"Memory Stats after Initializing Model - {get_gpu_memory_info()} "
         )
 
     def _make_params_contiguous(self, model):
@@ -223,7 +223,7 @@ class LLMEngine:
             dtype=self.dtype,
         )
         print_rank0(
-            f"Memory Stats After KV Cache Initialization- {get_gpu_memory_info()} "
+            f"Memory Stats after KV Cache Init - {get_gpu_memory_info()} "
         )
         if inference_config.symmetric_allreduce_strategy is not None:
             model.create_symmetric_memory_pool(
@@ -234,7 +234,7 @@ class LLMEngine:
                 algorithm=inference_config.symmetric_allreduce_strategy,
             )
         print_rank0(
-            f"Memory Stats After Symmetric Memory Pool Creation - {get_gpu_memory_info()} "
+            f"Memory Stats after Symm Pool Creation - {get_gpu_memory_info()} "
         )
         tokenizer = AutoTokenizer.from_pretrained(model_config.model_name)
         # Check if the tokenizer has a pad token, otherwise use eos_token
@@ -533,7 +533,7 @@ class SpeculativeLLMEngine(LLMEngine):
         self.draft_model_config = draft_model_config
 
         print_rank0(
-            f"Memory Stats After Initializing Draft Model - "
+            f"Memory Stats after Initializing Draft Model - "
             f"{get_gpu_memory_info()}"
         )
 

@@ -302,12 +302,13 @@ class GPT(nn.Module):
 
         max_tokens = max_seq_length * batch_size
 
+        # TODO (Prajwal): This is a hack to not over allocated
+        # KV-cache by default.Fix with dynamic page calculation logic
         global NUM_BLOCKS
         if self.config.use_paged_kv_caching:
             if max_tokens > PAGE_BLOCK_SIZE * NUM_BLOCKS:
-                print(f"Increasing NUM_BLOCKS to 1024")
+                print("Increasing NUM_BLOCKS to 1024")
                 NUM_BLOCKS = 1024
-
 
         # initialize the kv cache for all blocks
         for block in self.transformer.h:
