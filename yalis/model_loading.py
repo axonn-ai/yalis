@@ -159,9 +159,8 @@ class LazySafeTensorDict(MutableMapping):
         shard = self._map[name]
         f = self._open_handle(shard)
         # Load CPU tensor first
-        t = f.get_tensor(
-            name if name in f.keys() else f.keys().get(name, name)
-        )
+        t = f.get_tensor(name)
+
         # Move & cast to expected device/dtype if known
         dev, dt = self._name_to_devdtype.get(name, (None, None))
         if (
@@ -179,11 +178,6 @@ class LazySafeTensorDict(MutableMapping):
         return t
 
     def close(self):
-        for h in self._opened.values():
-            try:
-                h.close()
-            except Exception:
-                pass
         self._opened.clear()
 
 

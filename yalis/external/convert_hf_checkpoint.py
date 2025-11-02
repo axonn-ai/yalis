@@ -186,6 +186,7 @@ def copy_weights_hf_llama(
             1, len(hf_weights) + len(qkv_weights)
         )
 
+    transformer_wte_weight = None
     for name, param in hf_weights.items():
         if "model.layers" in name:
             from_name, l = layer_template(name, 2)
@@ -281,7 +282,7 @@ def copy_weights_hf_llama(
 
         if saver is not None:
             # For the tensors that have a to mapping, we use the same store early principle
-            # we store the reference and then we delete the loaded tensor from teh RAM
+            # we store the reference and then we delete the loaded tensor from the RAM
             param_saved = saver.store_early(to_name, param)
             del param
             gc.collect()
