@@ -116,10 +116,10 @@ def hf_model(model_id, dtype, attn_backend, device):
     model = AutoModelForCausalLM.from_pretrained(
         model_id,
         attn_implementation=attn_backend.hf,
-        torch_dtype=dtype.hf,
-        device_map=None,
+        dtype=dtype.hf,
+        device_map="auto",
         trust_remote_code=True,
-    ).to(device)
+    )
     model.eval()
     return model
 
