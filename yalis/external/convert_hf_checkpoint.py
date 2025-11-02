@@ -18,10 +18,11 @@ from lightning.fabric.utilities.load import (
 from config import Config
 from litgpt.utils import (
     extend_checkpoint_dir,
-    incremental_save,
     lazy_load,
     save_config,
+    # incremental_save,
 )
+from safetensor_saver import incremental_save
 
 
 def copy_weights_gpt_neox(
@@ -69,7 +70,7 @@ def copy_weights_gpt_neox(
             to_name = weight_map[name]
         param = load_param(param, name, dtype, verbose=debug_mode)
         if saver is not None:
-            param = saver.store_early(param)
+            param = saver.store_early(to_name, param)
         state_dict[to_name] = param
 
         if progress_per_file is not None:
@@ -127,7 +128,7 @@ def copy_weights_falcon(
             to_name = weight_map[name]
         param = load_param(param, name, dtype, verbose=debug_mode)
         if saver is not None:
-            param = saver.store_early(param)
+            param = saver.store_early(to_name, param)
         state_dict[to_name] = param
         if progress_per_file is not None:
             pbar.update(progress_per_file)
@@ -185,6 +186,7 @@ def copy_weights_hf_llama(
             1, len(hf_weights) + len(qkv_weights)
         )
 
+    transformer_wte_weight = None
     for name, param in hf_weights.items():
         if "model.layers" in name:
             from_name, l = layer_template(name, 2)
@@ -223,7 +225,9 @@ def copy_weights_hf_llama(
                 cycled = [t for group in zip(qs, ks, vs) for t in group]
                 qkv = torch.cat(cycled)
 
-                qkv_ref = saver.store_early(qkv)
+                qkv_ref = saver.store_early(
+                    f"transformer.h.{l}.attn.attn.weight", qkv
+                )
                 # store early returns a reference to the actual memory stored in the disk
                 # freeing up space from the RAM
                 state_dict[f"transformer.h.{l}.attn.attn.weight"] = qkv_ref
@@ -251,7 +255,9 @@ def copy_weights_hf_llama(
                 gate_up_proj = torch.stack(
                     (gate_proj, up_proj), dim=1
                 ).reshape(2 * gate_proj.size(0), -1)
-                gate_up_proj_ref = saver.store_early(gate_up_proj)
+                gate_up_proj_ref = saver.store_early(
+                    f"transformer.h.{l}.mlp.gate_up_proj.weight", gate_up_proj
+                )
                 state_dict[f"transformer.h.{l}.mlp.gate_up_proj.weight"] = (
                     gate_up_proj_ref
                 )
@@ -270,10 +276,14 @@ def copy_weights_hf_llama(
         else:
             to_name = weight_map[name]
         param = load_param(param, name, dtype, verbose=debug_mode)
+
+        if to_name == "transformer.wte.weight":
+            transformer_wte_weight = param
+
         if saver is not None:
             # For the tensors that have a to mapping, we use the same store early principle
-            # we store the reference and then we delete the loaded tensor from teh RAM
-            param_saved = saver.store_early(param)
+            # we store the reference and then we delete the loaded tensor from the RAM
+            param_saved = saver.store_early(to_name, param)
             del param
             gc.collect()
             state_dict[to_name] = param_saved
@@ -285,7 +295,13 @@ def copy_weights_hf_llama(
             pbar.update(progress_per_file)
 
     if "lm_head.weight" not in state_dict:
-        state_dict["lm_head.weight"] = state_dict["transformer.wte.weight"]
+        if transformer_wte_weight is not None:
+            param_saved = saver.store_early(
+                "lm_head.weight", transformer_wte_weight
+            )
+            del transformer_wte_weight
+            gc.collect()
+            state_dict["lm_head.weight"] = param_saved
 
     # convert separate gate proj and up proj into one tensor
     for i, (gate_proj, up_proj) in list(gate_up_proj_weights.items()):
@@ -380,6 +396,7 @@ def copy_weights_gemma_2(
             1, len(hf_weights) + len(qkv_weights)
         )
 
+    transformer_wte_weight = None
     for name, param in hf_weights.items():
         if "model.layers" in name:
             from_name, l_idx = layer_template(name, 2)
@@ -398,16 +415,26 @@ def copy_weights_gemma_2(
             to_name = to_name.format(l_idx)
         else:
             to_name = weight_map[name]
+
+        if to_name == "transformer.wte.weight":
+            transformer_wte_weight = param
+
         param = load_param(param, name, dtype)
         if saver is not None:
-            param = saver.store_early(param)
+            param = saver.store_early(to_name, param)
         state_dict[to_name] = param
 
         if progress_per_file is not None:
             pbar.update(progress_per_file)
 
     if "lm_head.weight" not in state_dict:
-        state_dict["lm_head.weight"] = state_dict["transformer.wte.weight"]
+        if transformer_wte_weight is not None:
+            param_saved = saver.store_early(
+                "lm_head.weight", transformer_wte_weight
+            )
+            del transformer_wte_weight
+            gc.collect()
+            state_dict["lm_head.weight"] = param_saved
 
     # convert separate q, k, v matrices into an interleaved qkv
     for i in list(qkv_weights):
@@ -555,7 +582,7 @@ def copy_weights_phi(
             to_name = weight_map[name]
         param = load_param(param, name, dtype, verbose=debug_mode)
         if saver is not None:
-            param = saver.store_early(param)
+            param = saver.store_early(to_name, param)
         state_dict[to_name] = param
         if progress_per_file is not None:
             pbar.update(progress_per_file)
@@ -735,7 +762,11 @@ def convert_hf_checkpoint(
             f"Expected {str(checkpoint_dir)!r} to contain .bin files"
         )
 
-    with incremental_save(checkpoint_dir / "lit_model.pth") as saver:
+    save_dir = checkpoint_dir / "yalis_checkpoints"
+    os.makedirs(save_dir, exist_ok=True)
+
+    # with incremental_save(checkpoint_dir / "lit_model.pth") as saver:
+    with incremental_save(save_dir) as saver:
         # for checkpoints that split the QKV across several files, we need to keep all the bin files
         # open, so we use `ExitStack` to close them all together at the end
 
