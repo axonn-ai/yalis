@@ -7,6 +7,9 @@ from typing_extensions import override
 from pathlib import Path
 from yalis.utils import print_rank0
 from tqdm.auto import tqdm
+import warnings
+
+warnings.filterwarnings("once", category=DeprecationWarning)
 
 
 # From https://lernapparat.de/faster-model-init by Thomas Viehmann
@@ -43,9 +46,13 @@ class _EmptyInit(TorchFunctionMode):
         return func(*args, **kwargs)
 
 
-def load_checkpoint(
+def load_litgpt_checkpoint(
     model: nn.Module, checkpoint_path: Path, strict: bool = True
 ) -> None:
+    warnings.warn(
+        "Loading .pth checkpoints is deprecated. Move to safetensors instead.",
+        DeprecationWarning,
+    )
     print_rank0(f"Loading checkpoint from {checkpoint_path}")
     state_dict = lazy_load(checkpoint_path)
     state_dict = state_dict.get("model", state_dict)
