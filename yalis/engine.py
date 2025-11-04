@@ -56,7 +56,7 @@ precision_to_dtype = {
 }
 
 
-@torch.no_grad()
+@torch.inference_mode()
 @torch.compile(disable=YALIS_DISABLE_COMPILE)
 def prefill(
     model,
@@ -95,7 +95,7 @@ def prefill(
         return token_id, None
 
 
-@torch.no_grad()
+@torch.inference_mode()
 @torch.compile(mode=YALIS_DECODE_MODE, disable=YALIS_DISABLE_COMPILE)
 def generate(
     model,
@@ -129,7 +129,7 @@ def generate(
         return token_id, None
 
 
-@torch.no_grad()
+@torch.inference_mode()
 @torch.compile(
     mode=YALIS_DECODE_MODE, disable=YALIS_DISABLE_COMPILE, fullgraph=True
 )
@@ -187,7 +187,7 @@ class LLMEngine:
         gc.collect()
 
         print_rank0(
-            f"Memory Stats After Initializing Model - {get_gpu_memory_info()} "
+            f"Memory Stats after Initializing Model - {get_gpu_memory_info()} "
         )
 
     def _make_params_contiguous(self, model):
@@ -222,6 +222,9 @@ class LLMEngine:
             device=self.device,
             dtype=self.dtype,
         )
+        print_rank0(
+            f"Memory Stats after KV Cache Init - {get_gpu_memory_info()} "
+        )
         if inference_config.symmetric_allreduce_strategy is not None:
             model.create_symmetric_memory_pool(
                 batch_size=inference_config.batch_size,
@@ -230,6 +233,9 @@ class LLMEngine:
                 dtype=self.dtype,
                 algorithm=inference_config.symmetric_allreduce_strategy,
             )
+        print_rank0(
+            f"Memory Stats after Symm Pool Creation - {get_gpu_memory_info()} "
+        )
         tokenizer = AutoTokenizer.from_pretrained(model_config.model_name)
         # Check if the tokenizer has a pad token, otherwise use eos_token
         if tokenizer.pad_token is None:
@@ -388,7 +394,7 @@ class LLMEngine:
         self.model.token_counter.zero_()
         if self.inference_config.use_paged_kv_caching:
             self.model.kv_cache_manager.reset()
-        with torch.no_grad(), torch.autocast(
+        with torch.inference_mode(), torch.autocast(
             self.device, dtype=self.dtype, cache_enabled=False
         ):
             current_input_to_model = prompt_tokens.clone().to(
@@ -527,7 +533,7 @@ class SpeculativeLLMEngine(LLMEngine):
         self.draft_model_config = draft_model_config
 
         print_rank0(
-            f"Memory Stats After Initializing Draft Model - "
+            f"Memory Stats after Initializing Draft Model - "
             f"{get_gpu_memory_info()}"
         )
 
@@ -538,7 +544,7 @@ class SpeculativeLLMEngine(LLMEngine):
         self._reset_kv_cache(self.draft_model, batch_size)
 
     # Logits to Probs
-    @torch.no_grad()
+    @torch.inference_mode()
     def logits_to_probs(
         self, logits, token_ids, temperature: float = 1.0, top_p: float = 1.0
     ):
@@ -596,7 +602,7 @@ class SpeculativeLLMEngine(LLMEngine):
         self.model.token_counter.zero_()
         self.draft_model.token_counter.zero_()
 
-        with torch.no_grad(), torch.autocast(
+        with torch.inference_mode(), torch.autocast(
             self.device, dtype=self.dtype, cache_enabled=False
         ):
             current_input_to_model = prompt_tokens.clone().to(

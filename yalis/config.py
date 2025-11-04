@@ -104,7 +104,7 @@ class InferenceConfig:
         use_paged_kv_caching: bool = False,
         prestore_kv_cache: bool = True,
         symmetric_allreduce_strategy: Optional[
-            Literal["one-shot", "two-shot"]
+            Literal["one-shot", "two-shot", "nvshmem"]
         ] = None,
     ):
         """
@@ -198,11 +198,11 @@ class InferenceConfig:
         if (
             self.symmetric_allreduce_strategy is not None
             and self.symmetric_allreduce_strategy
-            not in ["one-shot", "two-shot"]
+            not in ["one-shot", "two-shot", "nvshmem"]
         ):
             raise ValueError(
                 "symmetric_allreduce_strategy must be one of"
-                " 'one-shot', 'two-shot', or None."
+                " 'one-shot', 'two-shot', 'nvshmem', or None."
             )
 
     def __repr__(self):
