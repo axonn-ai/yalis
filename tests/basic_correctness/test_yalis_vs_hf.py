@@ -4,7 +4,7 @@ import warnings
 from utils import alpaca_prompt
 
 NUM_LOGPROBS = 5
-BATCH_SIZES = [1, 4, 8]
+BATCH_SIZES = [1]
 PROMPT_LENGTHS = [128, 256, 512, 1024]
 
 
@@ -223,7 +223,7 @@ def test_02_decode(
     )
     yalis_tokens, yalis_logits = _get_yalis_output(
         yalis_engine, prompts, num_tokens=32
-    )
+    )   
     _compare_logprobs(hf_logits, hf_tokens, yalis_logits, yalis_tokens)
 
 

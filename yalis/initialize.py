@@ -12,7 +12,7 @@ def init_distributed(tp_dims=None):
     local_rank = rank % device_count
 
     torch.cuda.set_device(local_rank)
-    dist.init_process_group(backend="nccl", device_id=local_rank)
+    dist.init_process_group(backend="nccl", device_id=torch.device(f"cuda:{local_rank}"))
     print(
         f"[{dist.get_rank()}] Current Device - {torch.cuda.get_device_properties(torch.cuda.current_device())}"  # noqa: E501
     )

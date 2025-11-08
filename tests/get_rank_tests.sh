@@ -6,9 +6,9 @@ export WORLD_SIZE=${SLURM_NTASKS}
 export LOCAL_RANK=${SLURM_LOCALID}
 export TORCHINDUCTOR_CACHE_DIR="${SCRATCH}/.cache/torch_inductor/rank_${RANK}"
 
-export HF_HOME=$SCRATCH/hf_cache
-export TRANSFORMERS_CACHE="$SCRATCH/hf_cache"
-export HF_DATASETS_CACHE="$SCRATCH/hf_cache"
+export HF_HOME="${SCRATCH}/.cache/huggingface"
+export TRANSFORMERS_CACHE="${HF_HOME}"
+export HF_DATASETS_CACHE="${HF_HOME}/datasets"
 
 #cmd="nsys profile -o ./yalistrace_${JOBID}_${RANK} -t cuda,nvtx --capture-range=cudaProfilerApi --capture-range-end=stop --cuda-graph-trace=node $*"
 cmd=$*

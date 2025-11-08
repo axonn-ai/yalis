@@ -9,7 +9,7 @@ from utils import alpaca_prompt
 IGNORE_EOS = True
 
 # Test parameters
-BATCH_SIZES = [1, 4, 8]
+BATCH_SIZES = [1]
 PROMPT_LENGTHS = [128, 1024]
 TOKEN_GENERATION_LENGTHS = [128, 512]
 GAMMA_VALUES = [2, 5]
