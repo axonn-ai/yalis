@@ -26,6 +26,7 @@ from kvcache_manager import KVCacheManager
 from yalis.attention.flash import flash_apply_rotary as apply_rotary
 from yalis.attention.backends import AttentionBackend
 from yalis.attention.masking import create_causal_block_mask_for_flex_attention
+from yalis.external.fused_moe import fused_moe
 
 # TODO: these should be dynamically set during engine initialization
 NUM_BLOCKS, PAGE_BLOCK_SIZE = 512, 256
@@ -1043,3 +1044,30 @@ class RMSNorm(torch.nn.Module):
 
     def reset_parameters(self) -> None:
         torch.nn.init.ones_(self.weight)
+
+
+class LLaMAMoE(nn.Module):
+    def __init__(self, config: Config) -> None:
+        super().__init__()
+        self.gate = nn.Linear(config.n_embd, config.n_expert, bias=False)
+        self.experts = nn.ModuleList(LLaMAMLP(config) for _ in range(config.n_expert))
+
+        self.config = config
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Derived from: https://github.com/mistralai/mistral-src/blob/b46d6/moe_one_file_ref.py#L203-L219
+        See also figure 1 in https://arxiv.org/abs/2211.15841
+        """
+        B, T, C = x.size()  # batch size, sequence length, embedding dimensionality (n_embd)
+        x = x.view(-1, C)  # (B*T, C)
+        router = self.gate(x)  # (B*T, n_expert)
+        probs, indices = torch.topk(router, self.config.n_expert_per_token)  # (B*T, n_expert_per_token)
+        probs = probs.softmax(dim=1, dtype=torch.float).to(dtype=x.dtype)
+        masks = indices.unsqueeze(-1) == torch.arange(self.config.n_expert, device=x.device)
+        masks = masks.permute(2, 0, 1)  # (n_expert, B*T, n_expert_per_token)
+        y = torch.zeros_like(x)  # (B*T, C)
+        for mask, expert in zip(masks, self.experts):
+            token_idx, expert_idx = torch.where(mask)
+            y[token_idx] += probs[token_idx, expert_idx, None] * expert(x[token_idx])
+        return y.view(B, T, C)

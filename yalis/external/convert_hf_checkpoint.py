@@ -165,8 +165,8 @@ def copy_weights_hf_llama(
         weight_map.update(
             {
                 "model.layers.{}.block_sparse_moe.gate.weight": "transformer.h.{l}.mlp.gate.weight",
-                "model.layers.{}.block_sparse_moe.experts.{}.w1.weight": "transformer.h.{l}.mlp.experts.{e}.fc_1.weight",
-                "model.layers.{}.block_sparse_moe.experts.{}.w3.weight": "transformer.h.{l}.mlp.experts.{e}.fc_2.weight",
+                "model.layers.{}.block_sparse_moe.experts.{}.w1.weight": None,  #"transformer.h.{l}.mlp.experts.{e}.fc_1.weight",
+                "model.layers.{}.block_sparse_moe.experts.{}.w3.weight": None,  #"transformer.h.{l}.mlp.experts.{e}.fc_2.weight",
                 "model.layers.{}.block_sparse_moe.experts.{}.w2.weight": "transformer.h.{l}.mlp.experts.{e}.proj.weight",
             }
         )
@@ -194,7 +194,11 @@ def copy_weights_hf_llama(
             if "block_sparse_moe.experts" in name:
                 from_name, e = layer_template(from_name, 5)
             qkv = qkv_weights.setdefault(l, [None, None, None])
-            gate_up_proj = gate_up_proj_weights.setdefault(l, [None, None])
+            if e is not None:
+                gate_up_proj = gate_up_proj_weights.setdefault((l, e), [None, None])
+            else:
+                gate_up_proj = gate_up_proj_weights.setdefault(l, [None, None])
+
             if "q_proj" in name:
                 qkv[0] = param
             elif "k_proj" in name:
@@ -205,7 +209,10 @@ def copy_weights_hf_llama(
                 gate_up_proj[0] = param
             elif "up_proj" in name:
                 gate_up_proj[1] = param
-
+            elif "experts" in name and "w1" in name:
+                gate_up_proj[0] = param
+            elif "experts" in name and "w3" in name:
+                gate_up_proj[1] = param
             # Here I can directly check if a layer is completed in which case I trigger the concatenation and the split for the reshaped tensor, store it to the disk and then delete the information fromt he qkv_weights dictionary which might be the one getting overloaded
 
             # incremental QKV reshaping
@@ -244,27 +251,38 @@ def copy_weights_hf_llama(
                 gate_proj, up_proj = gate_up_proj
                 gate_proj = load_param(
                     gate_proj,
-                    f"layer {l} gate_proj",
+                    f"layer {l} {e} gate_proj",
                     dtype,
                     verbose=debug_mode,
                 )
                 up_proj = load_param(
-                    up_proj, f"layer {l} up_proj", dtype, verbose=debug_mode
+                    up_proj, f"layer {l} {e} up_proj", dtype, verbose=debug_mode
                 )
 
                 gate_up_proj = torch.stack(
                     (gate_proj, up_proj), dim=1
                 ).reshape(2 * gate_proj.size(0), -1)
-                gate_up_proj_ref = saver.store_early(
-                    f"transformer.h.{l}.mlp.gate_up_proj.weight", gate_up_proj
-                )
-                state_dict[f"transformer.h.{l}.mlp.gate_up_proj.weight"] = (
-                    gate_up_proj_ref
-                )
 
-                gate_up_proj_weights[l] = None
+                if e is None:
+                    gate_up_proj_ref = saver.store_early(
+                        f"transformer.h.{l}.mlp.gate_up_proj.weight", gate_up_proj
+                    )
+                    state_dict[f"transformer.h.{l}.mlp.gate_up_proj.weight"] = (
+                        gate_up_proj_ref
+                    )
 
-                del gate_up_proj_weights[l]
+                    gate_up_proj_weights[l] = None
+
+                    del gate_up_proj_weights[l]
+                else:
+                    gate_up_proj_ref = saver.store_early(
+                        f"transformer.h.{l}.mlp.experts.{e}.gate_up_proj.weight", gate_up_proj
+                    )
+                    state_dict[f"transformer.h.{l}.mlp.experts.{e}.gate_up_proj.weight"] = gate_up_proj_ref
+
+                    gate_up_proj_weights[(l, e)] = None
+                    del gate_up_proj_weights[(l, e)]
+
                 if progress_per_file is not None:
                     pbar.update(progress_per_file)
             gc.collect()
@@ -308,14 +326,24 @@ def copy_weights_hf_llama(
         if gate_proj is None or up_proj is None:
             # split across different .bin files
             continue
-
-        gate_proj = load_param(
-            gate_proj, f"layer {i} gate_proj", dtype, verbose=debug_mode
-        )
-        up_proj = load_param(
-            up_proj, f"layer {i} up_proj", dtype, verbose=debug_mode
-        )
-
+        if isinstance(i, tuple):
+            i, e = i
+        else:
+            e = None
+        if e is None:
+            gate_proj = load_param(
+                gate_proj, f"layer {i} gate_proj", dtype, verbose=debug_mode
+            )
+            up_proj = load_param(
+                up_proj, f"layer {i} up_proj", dtype, verbose=debug_mode
+            )
+        else:
+            gate_proj = load_param(
+                gate_proj, f"layer {i} {e} gate_proj", dtype, verbose=debug_mode
+            )
+            up_proj = load_param(
+                up_proj, f"layer {i} {e} up_proj", dtype, verbose=debug_mode
+            )
         # shape of gate_proj -> intermediate x hidden
         # shape of up_proj -> intermediate x hidden
         # after stacking -> intermediate x 2 x hidden
@@ -331,11 +359,17 @@ def copy_weights_hf_llama(
 
         # Now doing proj reshaping with the same principle of incremental QKV reshaping
 
-        gate_up_proj = torch.stack((gate_proj, up_proj), dim=1).reshape(
-            2 * gate_proj.size(0), -1
-        )
-        state_dict[f"transformer.h.{i}.mlp.gate_up_proj.weight"] = gate_up_proj
-        del gate_up_proj_weights[i]
+        if e is None:
+            gate_up_proj = torch.stack((gate_proj, up_proj), dim=1).reshape(
+                2 * gate_proj.size(0), -1
+            )
+            state_dict[f"transformer.h.{i}.mlp.gate_up_proj.weight"] = gate_up_proj
+            del gate_up_proj_weights[i]
+        else:
+            gate_up_proj = torch.stack((gate_proj, up_proj), dim=1).reshape(
+                2 * gate_proj.size(0), -1)
+            state_dict[f"transformer.h.{i}.mlp.experts.{e}.gate_up_proj.weight"] = gate_up_proj
+            del gate_up_proj_weights[(i, e)]
 
         if progress_per_file is not None:
             pbar.update(progress_per_file)

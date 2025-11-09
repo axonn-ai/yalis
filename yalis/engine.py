@@ -239,7 +239,10 @@ class LLMEngine:
         tokenizer = AutoTokenizer.from_pretrained(model_config.model_name)
         # Check if the tokenizer has a pad token, otherwise use eos_token
         if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
+            if "Mistral" or "Mixtral" in model_config.model_name:
+                tokenizer.pad_token = tokenizer.unk_token
+            else:
+                tokenizer.pad_token = tokenizer.eos_token
             print_rank0(
                 "Pad token not found in the tokenizer."
                 "Using eos_token as pad token."
@@ -276,6 +279,11 @@ class LLMEngine:
         if isinstance(prompts, list) and all(
             isinstance(p, str) for p in prompts
         ):
+            old_padding = self.tokenizer.padding_side
+            self.tokenizer.padding_side = "right"
+            prompt_tokens_and_mask = self.tokenizer(
+                prompts, return_tensors="pt", padding=True
+            )
             prompt_tokens_and_mask = self.tokenizer(
                 prompts, return_tensors="pt", padding=True
             )
