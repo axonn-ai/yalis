@@ -116,6 +116,9 @@ def flash_attention(
     # pre-store in k_cache, v_cache - this should be under a conditional
     B, T = q.shape[0], q.shape[1]
     causal = T > 1
+    if block_table is not None:
+        block_table = block_table[:B]
+
     if prestore_kv_cache:
         if block_table is None:
             if phase == EnginePhase.DECODE_SINGLE:

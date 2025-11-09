@@ -145,8 +145,8 @@ class GPT(nn.Module):
                 device=self.kvcache_block_table.device,
             )
             torch.ops.yalis.update_block_table_(
-                self.kvcache_block_table,
-                self.tokens_assigned,
+                self.kvcache_block_table[:B],
+                self.tokens_assigned[:B],
                 self.kvcache_next_page,
                 self.kvcache_free_pages,
                 seq_lengths,
@@ -169,6 +169,8 @@ class GPT(nn.Module):
             self.cos = self.cos.to(x.dtype)
             self.sin = self.sin.to(x.dtype)
 
+        # Block table is not sliced and expected that
+        # the attention backend will handle the slicing.
         block_table = (
             self.kvcache_block_table
             if self.config.use_paged_kv_caching
@@ -304,7 +306,7 @@ class GPT(nn.Module):
         self.kv_length = max_seq_length
         self.max_batch_size = max_batch_size
 
-        max_tokens = max_seq_length * batch_size
+        max_tokens = max_seq_length * max_batch_size
 
         # TODO (Prajwal): This is a hack to not over allocated
         # KV-cache by default.Fix with dynamic page calculation logic
