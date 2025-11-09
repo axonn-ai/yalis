@@ -207,7 +207,7 @@ def copy_weights_qwen_3(
         param = load_param(param, from_name, dtype, verbose=debug_mode)
         
         if saver is not None:
-            param = saver.store_early(param)
+            param = saver.store_early(to_name, param)
         state_dict[to_name] = param
 
         if progress_per_file is not None:
@@ -323,7 +323,7 @@ def copy_weights_qwen_2_5(
         param = load_param(param, from_name, dtype, verbose=debug_mode)
         
         if saver is not None:
-            param = saver.store_early(param)
+            param = saver.store_early(to_name, param)
         state_dict[to_name] = param
 
         if progress_per_file is not None:
