@@ -264,7 +264,7 @@ class AlpacaDataset(BenchmarkDataset):
             [len(tokens) for tokens in tokenized_lines]
         ).item()
         min_len = len(tokenized_lines[index_min])
-        padding_line = self.data[index_min]
+        padding_line = self.data[int(index_min)]
         # print (f"Minimum length line: {padding_line}")
 
         # Build the base prompt.

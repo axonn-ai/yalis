@@ -107,9 +107,11 @@ def rotary_kv_update_sdpa_gen(
     use_flex: bool = False,
     flex_attention_block_mask=None,
 ) -> torch.Tensor:
+    # Get current batch size
+    B = q.size(0)
     if cos is not None and sin is not None:
-        cos = index_into_rope_cache_gen(cos, token_counter)
-        sin = index_into_rope_cache_gen(sin, token_counter)
+        cos = index_into_rope_cache_gen(cos, token_counter[:B])
+        sin = index_into_rope_cache_gen(sin, token_counter[:B])
 
         if cos.dim() > 1:
             # batch dimensions must align
@@ -129,9 +131,8 @@ def rotary_kv_update_sdpa_gen(
 
         q, k = roped_tensors
 
-    B = k_cache.size(0)
     b_indices = torch.arange(B, device=k_cache.device)
-    t_indices = token_counter.view(-1)
+    t_indices = token_counter[:B].view(-1)
 
     if ax.config.G_intra_c > 1 and use_intra_head_parallelism:
         k_cache[b_indices, :, t_indices, :] = Drop.apply(
@@ -143,9 +144,11 @@ def rotary_kv_update_sdpa_gen(
     else:
         k_cache[b_indices, :, t_indices, :] = k[:, :, 0, :]
         v_cache[b_indices, :, t_indices, :] = v[:, :, 0, :]
-    mask = build_mask_from_index(token_counter, t_max=k_cache.size(-2))
+    mask = build_mask_from_index(token_counter[:B], t_max=k_cache.size(-2))
 
     enable_gqa = q.size(1) != k.size(1)
+
+    # Pass sliced K V caches for current batch size
     if use_intra_head_parallelism:
         assert (
             not use_flex
@@ -156,8 +159,8 @@ def rotary_kv_update_sdpa_gen(
         mask_float = mask_float.unsqueeze(1)
         out = intra_head_sdpa(
             q,
-            k_cache,
-            v_cache,
+            k_cache[:B],
+            v_cache[:B],
             mask_float,
             ax.comm_handle.inner_intra_layer_parallel_group,
             enable_gqa,
@@ -171,16 +174,16 @@ def rotary_kv_update_sdpa_gen(
             ), "flex attention requires a block mask"
             out = flex_attention(
                 q,
-                k_cache,
-                v_cache,
+                k_cache[:B],
+                v_cache[:B],
                 enable_gqa=enable_gqa,
                 block_mask=flex_attention_block_mask,
             )
         else:
             out = torch.nn.functional.scaled_dot_product_attention(
                 q,
-                k_cache,
-                v_cache,
+                k_cache[:B],
+                v_cache[:B],
                 attn_mask=mask[:, None, None, :],
                 enable_gqa=enable_gqa,
             )
@@ -217,16 +220,20 @@ def rotary_kv_update_sdpa_prefill(
 
         q, k = roped_tensors
 
+    # Get current batch size
+    B = q.size(0)
+
+    # Index K V caches with respect to current batch size
     if ax.config.G_intra_c > 1 and use_intra_head_parallelism:
-        k_cache[:, :, :T, :] = Drop.apply(
-            k[:, :, :T, :], ax.comm_handle.inner_intra_layer_parallel_group
+        k_cache[:B, :, :T, :] = Drop.apply(
+            k[:B, :, :T, :], ax.comm_handle.inner_intra_layer_parallel_group
         )
-        v_cache[:, :, :T, :] = Drop.apply(
-            v[:, :, :T, :], ax.comm_handle.inner_intra_layer_parallel_group
+        v_cache[:B, :, :T, :] = Drop.apply(
+            v[:B, :, :T, :], ax.comm_handle.inner_intra_layer_parallel_group
         )
     else:
-        k_cache[:, :, :T, :] = k[:, :, :T, :]
-        v_cache[:, :, :T, :] = v[:, :, :T, :]
+        k_cache[:B, :, :T, :] = k[:B, :, :T, :]
+        v_cache[:B, :, :T, :] = v[:B, :, :T, :]
 
     enable_gqa = q.size(1) != k.size(1)
     if False:  # do not use intra head in
@@ -257,9 +264,13 @@ def rotary_kv_update_sdpa_multi(
     k_cache: torch.Tensor,  # B,nh,t_max,hs
     v_cache: torch.Tensor,  # B,nh,t_max,hs,
 ) -> torch.Tensor:
-    B, nh, t_max, hs = k_cache.shape
+    _, nh, t_max, hs = k_cache.shape
+
+    # Get current batch size
+    B = q.size(0)
+
     T = q.shape[-2]
-    index_pos = token_counter.view(B, 1) + torch.arange(
+    index_pos = token_counter[:B].view(B, 1) + torch.arange(
         T, device=token_counter.device
     ).view(1, -1)
 
@@ -283,21 +294,21 @@ def rotary_kv_update_sdpa_multi(
         q, k = roped_tensors
 
     index_kv = index_pos.view(B, 1, T, 1).expand(B, nh, T, hs)
-    k_cache.scatter_(dim=2, index=index_kv, src=k)
-    v_cache.scatter_(dim=2, index=index_kv, src=v)
+    k_cache[:B].scatter_(dim=2, index=index_kv, src=k)
+    v_cache[:B].scatter_(dim=2, index=index_kv, src=v)
 
     # Create the mask
     arange_t = torch.arange(k_cache.size(-2), device=k_cache.device).view(
         1, 1, 1, -1
     )
-    arange_l = token_counter.view(B, 1, 1, 1) + torch.arange(
+    arange_l = token_counter[:B].view(B, 1, 1, 1) + torch.arange(
         T, device=k_cache.device
     ).view(1, 1, -1, 1)
     mask = arange_t <= arange_l
 
     enable_gqa = q.size(1) != k.size(1)
     out = torch.nn.functional.scaled_dot_product_attention(
-        q, k_cache, v_cache, attn_mask=mask, enable_gqa=enable_gqa
+        q, k_cache[:B], v_cache[:B], attn_mask=mask, enable_gqa=enable_gqa
     )
 
     return out

@@ -27,6 +27,7 @@ from yalis.attention.flash import flash_apply_rotary as apply_rotary
 from yalis.attention.backends import AttentionBackend
 from yalis.attention.masking import create_causal_block_mask_for_flex_attention
 
+
 # TODO: these should be dynamically set during engine initialization
 NUM_BLOCKS, PAGE_BLOCK_SIZE = 512, 256
 
@@ -50,6 +51,7 @@ def get_norm_class(config):
 
 class GPT(nn.Module):
     def __init__(self, config: Config) -> None:
+
         super().__init__()
         assert config.padded_vocab_size is not None
         self.config = config
@@ -143,8 +145,8 @@ class GPT(nn.Module):
                 device=self.kvcache_block_table.device,
             )
             torch.ops.yalis.update_block_table_(
-                self.kvcache_block_table,
-                self.tokens_assigned,
+                self.kvcache_block_table[:B],
+                self.tokens_assigned[:B],
                 self.kvcache_next_page,
                 self.kvcache_free_pages,
                 seq_lengths,
@@ -167,15 +169,19 @@ class GPT(nn.Module):
             self.cos = self.cos.to(x.dtype)
             self.sin = self.sin.to(x.dtype)
 
+        # Block table is not sliced and expected that
+        # the attention backend will handle the slicing.
         block_table = (
             self.kvcache_block_table
             if self.config.use_paged_kv_caching
             else None
         )
 
+        B = x.size(0)
+
         flex_attention_block_mask = (
             create_causal_block_mask_for_flex_attention(
-                self.token_counter, self.kv_length, self.batch_size
+                self.token_counter, self.kv_length, B
             )
             if self.config.attention_backend == AttentionBackend.FLEX
             else None
@@ -202,15 +208,15 @@ class GPT(nn.Module):
                 torch.tanh(x / self.config.final_logit_softcapping)
                 * self.config.final_logit_softcapping
             )
-        self.token_counter.add_(
+        self.token_counter[:B].add_(
             T if actual_sequence_lengths is None else actual_sequence_lengths
         )
         if self.config.use_paged_kv_caching:
-            # readjusting the token counters of the block table
+            # NOTE: Paged KV: readjusting the token counters of the block table
             # to exclude padded tokens.
             # we can exclude this for generation
             torch.ops.yalis.force_update_tokens_assigned_(
-                self.tokens_assigned, self.token_counter
+                self.tokens_assigned[:B], self.token_counter[:B]
             )
         return {"logits": x}
 
@@ -283,7 +289,7 @@ class GPT(nn.Module):
 
     def set_kv_cache(
         self,
-        batch_size: int,
+        max_batch_size: int,
         max_seq_length: Optional[int] = None,
         rope_cache_length: Optional[int] = None,
         device: Optional[torch.device] = None,
@@ -298,9 +304,9 @@ class GPT(nn.Module):
             max_seq_length = self.max_seq_length
 
         self.kv_length = max_seq_length
-        self.batch_size = batch_size
+        self.max_batch_size = max_batch_size
 
-        max_tokens = max_seq_length * batch_size
+        max_tokens = max_seq_length * max_batch_size
 
         # TODO (Prajwal): This is a hack to not over allocated
         # KV-cache by default.Fix with dynamic page calculation logic
@@ -313,7 +319,7 @@ class GPT(nn.Module):
         # initialize the kv cache for all blocks
         for block in self.transformer.h:
             block.attn.kv_cache = block.attn.build_kv_cache(
-                batch_size,
+                max_batch_size,
                 max_seq_length,
                 rope_cache_length,
                 device,
@@ -321,7 +327,7 @@ class GPT(nn.Module):
             )
         if self.config.use_paged_kv_caching:
             self.kv_cache_manager = KVCacheManager(
-                batch_size,
+                max_batch_size,
                 16384 // PAGE_BLOCK_SIZE,  # ToDo: set these dynamically
                 NUM_BLOCKS,
                 PAGE_BLOCK_SIZE,
@@ -335,7 +341,7 @@ class GPT(nn.Module):
             self.kvcache_next_page = self.kv_cache_manager.next_page_tensor()
 
         self.token_counter = torch.zeros(
-            batch_size, device=device, dtype=torch.int32
+            max_batch_size, device=device, dtype=torch.int32
         )
 
     def rewind_kv_cache(self, num_tokens: torch.Tensor) -> None:
@@ -343,7 +349,8 @@ class GPT(nn.Module):
         Rewind the token counter and KV-cache by the num_tokens.
         Used when rejecting tokens during speculative decoding.
         """
-        self.token_counter -= num_tokens
+        B = num_tokens.size(0)
+        self.token_counter[:B] -= num_tokens
 
     def clear_kv_cache(self) -> None:
         for block in self.transformer.h:
@@ -585,9 +592,7 @@ class CausalSelfAttention(nn.Module):
         assert (
             self.config.rope_n_elem == self.config.head_size
         ), "partial rope is not supported yet"
-
         k_cache, v_cache = self.kv_cache.k, self.kv_cache.v
-
         if self.config.attention_backend == AttentionBackend.FLASH:
             q = q.contiguous()
             k = k.contiguous()
@@ -601,6 +606,8 @@ class CausalSelfAttention(nn.Module):
             k = k.transpose(1, 2).contiguous()
             v = v.transpose(1, 2).contiguous()
 
+        # NOTE: Pass full k_cache, v_cache, and token_counter.
+        # Slicing for current batch size is done in the respective backends.
         y = attention_wrapper(
             q=q,
             k_cache=k_cache,
@@ -992,18 +999,18 @@ class KVCache(nn.Module):
         self.k = self.k.to(k.dtype)
         self.v = self.v.to(v.dtype)
         # update the cache
-        n = k.size(0)
-        # k = batched_index_copy_(self.k[:n, ...], -2, input_pos, k)
-        # v = batched_index_copy_(self.v[:n, ...], -2, input_pos, v)
+        B = k.size(0)
+        # k = batched_index_copy_(self.k[:B, ...], -2, input_pos, k)
+        # v = batched_index_copy_(self.v[:B, ...], -2, input_pos, v)
         if input_pos.size(1) > 1:
             # prefill phase
             sequence_length = k.shape[2]
-            self.k[:, :, :sequence_length, :] = k[:, :, :sequence_length, :]
-            self.v[:, :, :sequence_length, :] = v[:, :, :sequence_length, :]
+            self.k[:B, :, :sequence_length, :] = k[:B, :, :sequence_length, :]
+            self.v[:B, :, :sequence_length, :] = v[:B, :, :sequence_length, :]
         else:
-            batched_index_copy_(self.k[:n, ...], -2, input_pos, k)
-            batched_index_copy_(self.v[:n, ...], -2, input_pos, v)
-        return self.k[:n], self.v[:n]
+            batched_index_copy_(self.k[:B, ...], -2, input_pos, k)
+            batched_index_copy_(self.v[:B, ...], -2, input_pos, v)
+        return self.k[:B], self.v[:B]
 
     def reset_parameters(self) -> None:
         torch.nn.init.zeros_(self.k)

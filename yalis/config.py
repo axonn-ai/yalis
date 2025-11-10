@@ -92,7 +92,7 @@ class InferenceConfig:
 
     def __init__(
         self,
-        batch_size: int = 1,
+        max_batch_size: int = 1,
         max_length_of_generated_sequences: int = 1024,
         top_k: Optional[int] = None,
         top_p: Optional[float] = 1.0,
@@ -111,7 +111,12 @@ class InferenceConfig:
         Initialize the inference configuration.
 
         Args:
-            batch_size (int): Number of inputs processed in parallel.
+            max_batch_size (int): Maximum number of inputs processed in
+                            parallel. The model will allocate KV cache
+                            for this many sequences. During inference,
+                            any batch size <= max_batch_size can be used.
+                            This enables dynamic batching for efficient
+                            resource utilization.
             max_length_of_generated_sequences (int): Max generated seq length
             decoding_strategy (str): Decoding strategy, default is 'greedy'.
             num_beams (Optional[int]): Number of beams for beam search.
@@ -127,8 +132,8 @@ class InferenceConfig:
             use_paged_kv_caching (bool): Use paged k/v caching for attention.
             prestore_kv_cache (bool): Pre-store k/v cache before attention.
         """
-        self.batch_size = batch_size
-        # ToDo - default max_length should be none.
+        self.max_batch_size = max_batch_size
+        # TODO - default max_length should be none.
         # If it is none, we should set it from the model config
         self.max_length = max_length_of_generated_sequences
         self.temperature = temperature
@@ -159,8 +164,8 @@ class InferenceConfig:
         """
         Validate the configuration.
         """
-        if self.batch_size <= 0:
-            raise ValueError("batch_size must be a positive integer.")
+        if self.max_batch_size <= 0:
+            raise ValueError("max_batch_size must be a positive integer.")
 
         if self.max_length <= 0:
             raise ValueError("max_length must be a positive integer.")
@@ -208,7 +213,7 @@ class InferenceConfig:
     def __repr__(self):
         return (
             f"{self.__class__.__name__}(\n"
-            f"  batch_size={self.batch_size},\n"
+            f"  max_batch_size={self.max_batch_size},\n"
             f"  max_length_of_generated_sequences={self.max_length},\n"
             f"  top_k={self.top_k},\n"
             f"  top_p={self.top_p},\n"

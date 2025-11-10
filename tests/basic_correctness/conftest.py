@@ -129,8 +129,7 @@ def yalis_engine(model_id, dtype, attn_backend):
     """Create a standard Yalis LLMEngine."""
     model_config = ModelConfig(model_name=model_id, precision=dtype.yalis)
     inference_config = InferenceConfig(
-        # initial batch size, will be changed with reset_kv_cache
-        batch_size=1,
+        max_batch_size=8,
         max_length_of_generated_sequences=2048,
         top_p=0.0,
         temperature=0.0,
@@ -153,8 +152,7 @@ def speculative_engine(model_id, draft_model_id, dtype, attn_backend):
         model_name=draft_model_id, precision=dtype.yalis
     )
     inference_config = InferenceConfig(
-        # initial batch size, will be changed with reset_kv_cache
-        batch_size=1,
+        max_batch_size=8,
         max_length_of_generated_sequences=2048,
         top_p=0.0,
         temperature=0.0,

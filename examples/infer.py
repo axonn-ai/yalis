@@ -64,16 +64,26 @@ if __name__ == "__main__":
     # Number of tokens to generate
     tokens_to_gen = 512
 
+    # Max batch size
+    MAX_BATCH_SIZE = 32
+
+    if len(input_prompts) > MAX_BATCH_SIZE:
+        raise ValueError(
+            f"Batch size {len(input_prompts)} cannot be greater "
+            f"than max batch size {MAX_BATCH_SIZE}"
+        )
+
     # configs
     model_config = ModelConfig(model_name=model_id, precision="bf16")
     inference_config = InferenceConfig(
-        batch_size=len(input_prompts),
+        max_batch_size=MAX_BATCH_SIZE,
         max_length_of_generated_sequences=1024,
         top_p=0.80,
         temperature=1.0,
         tp_dims=None,
         attention_backend="flash",
         use_paged_kv_caching=False,
+        prestore_kv_cache=True,
     )
 
     engine = LLMEngine(

@@ -22,6 +22,7 @@ setup(
     cmdclass={"build_ext": BuildExtension},
     install_requires=[
         "torch",  # Ensure PyTorch is installed
+        "flask",
     ],
     author="Siddharth Singh, Prajwal Singhania, Lannie Dalton Hough, Ishan Revankar",  # noqa: E501
     description="An easy-to-use library for LLM inference",

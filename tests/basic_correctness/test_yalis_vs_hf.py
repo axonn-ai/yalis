@@ -2,10 +2,16 @@ import pytest
 import torch
 import warnings
 from utils import alpaca_prompt
+from transformers import StoppingCriteriaList, StoppingCriteria
 
 NUM_LOGPROBS = 5
 BATCH_SIZES = [1, 4, 8]
 PROMPT_LENGTHS = [128, 256, 512, 1024]
+
+
+class NeverStop(StoppingCriteria):
+    def __call__(self, input_ids, scores, **kwargs):
+        return False
 
 
 def _get_logprobs(logits):
@@ -57,6 +63,8 @@ def _get_hf_output(tokenizer, model, prompts, num_tokens):
             do_sample=False,
             use_cache=True,
             pad_token_id=tokenizer.eos_token_id,
+            eos_token_id=None,
+            stopping_criteria=StoppingCriteriaList([NeverStop()]),
             temperature=0.0,
             top_p=0.0,
             output_logits=True,
@@ -188,7 +196,6 @@ def test_01_prefill(
     dtype,
     alpaca_dataset,
 ):
-    yalis_engine.reset_kv_cache(batch_size)
     prompts = alpaca_prompt(
         alpaca_dataset, tokenizer, prompt_length, batch_size
     )
@@ -214,7 +221,6 @@ def test_02_decode(
     dtype,
     alpaca_dataset,
 ):
-    yalis_engine.reset_kv_cache(batch_size)
     prompts = alpaca_prompt(
         alpaca_dataset, tokenizer, prompt_length, batch_size
     )
