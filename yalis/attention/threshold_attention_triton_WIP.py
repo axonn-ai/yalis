@@ -177,12 +177,12 @@ def test():
     query = torch.randn((B, H, 1, D), device=DEVICE).half()
     key = torch.randn((B, H, T, D), device=DEVICE).half()
     value = torch.randn((B, H, T, D), device=DEVICE).half()
-    print (f"Query: {query} \n\n")
-    print (f"Key: {key} \n\n")
+    # print (f"Query: {query} \n\n")
+    # print (f"Key: {key} \n\n")
     scores = query @ key.transpose(-2, -1) / math.sqrt(D)
-    print (f"Scores: {scores} \n\n")
+    # print (f"Scores: {scores} \n\n")
     scores = torch.softmax(scores, dim=-1)
-    print (f"Scores: {scores} \n\n")
+    # print (f"Scores: {scores} \n\n")
     #print (f"Scores: {scores} \n\n")
 
 
@@ -217,9 +217,21 @@ def test():
         and triton.runtime.driver.active.get_current_target().arch == "gfx90a"
     ):
         rtol = 1e-2
-    assert torch.allclose(
-        ref_out, triton_out, atol=1e-2, rtol=rtol
-    ), f"Outputs do not match! {ref_out} vs {triton_out}"
+    
+    if not torch.allclose(ref_out, triton_out, atol=1e-2, rtol=rtol):
+        diff = ref_out - triton_out
+        abs_diff = diff.abs()
+        print("Outputs do NOT match.")
+        print(" Max diff:", abs_diff.max().item())
+        print(" Mean diff:", abs_diff.mean().item())
+        # Print a small slice so it doesn't spam the console
+        print(" diff:", abs_diff)
+        raise AssertionError("Outputs do not match within atol=1e-2, rtol=1e-2")
+    else:
+        print("Outputs match within atol=1e-2, rtol=1e-2")
+    # assert torch.allclose(
+    #     ref_out, triton_out, atol=1e-2, rtol=rtol
+    # ), f"Outputs do not match! {ref_out} vs {triton_out}"
 #
 #
 #@torch.compile(mode="max-autotune-no-cudagraphs")
@@ -242,7 +254,7 @@ BATCH, N_HEADS, HEAD_DIM = 32, 32, 128
 # vary seq length for fixed head and batch=4
 config = triton.testing.Benchmark(
     x_names=["N_CTX"],
-    x_vals=[512, 1024, 2048, 4096, 8192],
+    x_vals=[512, 1024, 2048, 4096, 8192, 16384],
     line_arg="mode",
     line_vals=[0, 0.5, 0.75, 0.875, 0.95, -1],
     line_names=[
