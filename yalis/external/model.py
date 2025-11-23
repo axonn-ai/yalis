@@ -424,6 +424,8 @@ class Block(nn.Module):
             if config.post_mlp_norm
             else nn.Identity()
         )
+        
+        
 
         self.config = config
 
@@ -489,14 +491,15 @@ class CausalSelfAttention(nn.Module):
     def __init__(self, config: Config, block_idx: int) -> None:
         super().__init__()
         shape = (config.n_head + 2 * config.n_query_groups) * config.head_size
+        attn_bias = getattr(config, 'attn_bias', config.bias)
         # key, query, value projections for all heads, but in a batch
         if not config.tensor_parallel:
-            self.attn = nn.Linear(config.n_embd, shape, bias=config.bias)
+            self.attn = nn.Linear(config.n_embd, shape, bias=attn_bias)
         else:
             self.attn = TPLinear(
                 config.n_embd,
                 shape,
-                bias=config.bias,
+                bias=attn_bias,
                 init_device=config.init_device,
             )
 
@@ -523,6 +526,16 @@ class CausalSelfAttention(nn.Module):
             config.sliding_window_size is not None
             and block_idx % config.sliding_window_layer_placing == 0
         )
+        
+        if config.norm_qk:
+            norm_q_size = config.n_head * config.head_size if config.norm_qk_type == "olmo2" else config.head_size
+            norm_k_size = (
+                config.n_query_groups * config.head_size if config.norm_qk_type == "olmo2" else config.head_size
+            )
+            self.norm_q = config.norm_class(norm_q_size, eps=config.norm_eps)
+            self.norm_k = config.norm_class(norm_k_size, eps=config.norm_eps)
+        else:
+            self.norm_q = self.norm_k = None
 
         self.config = config
         if config.tensor_parallel:
@@ -584,10 +597,18 @@ class CausalSelfAttention(nn.Module):
 
         # split batched computation into three
         q, k, v = qkv.split((q_per_kv, 1, 1), dim=3)
+        
+        if self.config.norm_qk and self.config.norm_qk_type == "olmo2":
+            q = self.norm_q(q)
+            k = self.norm_k(k)
 
         q = q.reshape(B, T, -1, self.config.head_size)  # (B, T, nh_q, hs)
         k = k.reshape(B, T, -1, self.config.head_size)  # (B, T, nh_k, hs)
         v = v.reshape(B, T, -1, self.config.head_size)  # (B, T, nh_v, hs)
+        
+        if self.config.norm_qk and self.config.norm_qk_type == "default":
+            q = self.norm_q(q)
+            k = self.norm_k(k)
 
         assert (
             self.config.rope_n_elem == self.config.head_size
@@ -605,6 +626,7 @@ class CausalSelfAttention(nn.Module):
             q = q.transpose(1, 2).contiguous()
             k = k.transpose(1, 2).contiguous()
             v = v.transpose(1, 2).contiguous()
+            
 
         # NOTE: Pass full k_cache, v_cache, and token_counter.
         # Slicing for current batch size is done in the respective backends.

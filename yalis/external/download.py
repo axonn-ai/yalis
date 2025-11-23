@@ -1,20 +1,20 @@
 # Copyright Lightning AI. Licensed under the Apache License 2.0, see LICENSE file.
 
+import importlib.util
 import os
-from concurrent.futures import ProcessPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from typing import List, Optional, Tuple
-import sys
 
-import torch
-from lightning_utilities.core.imports import RequirementCache
-
-from config import configs
+from litgpt.config import configs
+# from litgpt.scripts.convert_hf_checkpoint import convert_hf_checkpoint
 from convert_hf_checkpoint import convert_hf_checkpoint
 
+from lightning_utilities.core.imports import RequirementCache
 _SAFETENSORS_AVAILABLE = RequirementCache("safetensors")
 _HF_TRANSFER_AVAILABLE = RequirementCache("hf_transfer")
+import sys
+
 
 
 def download_from_hub(
@@ -23,8 +23,7 @@ def download_from_hub(
     tokenizer_only: bool = False,
     convert_checkpoint: bool = True,
     dtype: Optional[str] = None,
-    checkpoint_dir: Path = Path(os.getenv("YALIS_CACHE", "~/.cache/yalis"))
-    / "checkpoints",
+    checkpoint_dir: Path = Path("checkpoints"),
     model_name: Optional[str] = None,
 ) -> None:
     """Download weights or tokenizer data from the Hugging Face Hub.
@@ -41,10 +40,7 @@ def download_from_hub(
         model_name: The existing config name to use for this repo_id. This is useful to download alternative weights of
             existing architectures.
     """
-    options = [
-        f"{config['hf_config']['org']}/{config['hf_config']['name']}"
-        for config in configs
-    ]
+    options = [f"{config['hf_config']['org']}/{config['hf_config']['name']}" for config in configs]
 
     if repo_id == "list":
         print("Please specify --repo_id <repo_id>. Available values:")
@@ -64,8 +60,12 @@ def download_from_hub(
 
     from huggingface_hub import snapshot_download
 
+    if importlib.util.find_spec("hf_transfer") is None:
+        print(
+            "It is recommended to install hf_transfer for faster checkpoint download speeds: `pip install hf_transfer`"
+        )
+
     download_files = ["tokenizer*", "generation_config.json", "config.json"]
-    from_safetensors = False
     if not tokenizer_only:
         bins, safetensors = find_weight_files(repo_id, access_token)
         if bins:
@@ -75,7 +75,6 @@ def download_from_hub(
             if not _SAFETENSORS_AVAILABLE:
                 raise ModuleNotFoundError(str(_SAFETENSORS_AVAILABLE))
             download_files.append("*.safetensors*")
-            from_safetensors = True
         else:
             raise ValueError(f"Couldn't find weight files for {repo_id}")
 
@@ -100,56 +99,20 @@ def download_from_hub(
     constants.HF_HUB_ENABLE_HF_TRANSFER = previous
     download.HF_HUB_ENABLE_HF_TRANSFER = previous
 
-    if from_safetensors:
-        print("Converting .safetensor files to PyTorch binaries (.bin)")
-        safetensor_paths = list(directory.glob("*.safetensors"))
-        with ProcessPoolExecutor() as executor:
-            executor.map(convert_safetensors_file, safetensor_paths)
-
     if convert_checkpoint and not tokenizer_only:
         print("Converting checkpoint files to LitGPT format.")
-        convert_hf_checkpoint(
-            checkpoint_dir=directory, dtype=dtype, model_name=model_name
-        )
+        convert_hf_checkpoint(checkpoint_dir=directory, dtype=dtype, model_name=model_name)
 
 
-def convert_safetensors_file(safetensor_path: Path) -> None:
-    from safetensors import SafetensorError
-    from safetensors.torch import load_file as safetensors_load
-
-    bin_path = safetensor_path.with_suffix(".bin")
-    try:
-        result = safetensors_load(safetensor_path)
-    except SafetensorError as e:
-        raise RuntimeError(
-            f"{safetensor_path} is likely corrupted. Please try to re-download it."
-        ) from e
-    print(f"{safetensor_path} --> {bin_path}")
-    torch.save(result, bin_path)
-    try:
-        os.remove(safetensor_path)
-    except PermissionError:
-        print(
-            f"Unable to remove {safetensor_path} file. "
-            "This file is no longer needed and you may want to delete it manually to save disk space."
-        )
-
-
-def find_weight_files(
-    repo_id: str, access_token: Optional[str]
-) -> Tuple[List[str], List[str]]:
+def find_weight_files(repo_id: str, access_token: Optional[str]) -> Tuple[List[str], List[str]]:
     from huggingface_hub import repo_info
     from huggingface_hub.utils import filter_repo_objects
 
     with gated_repo_catcher(repo_id, access_token):
         info = repo_info(repo_id, token=access_token)
     filenames = [f.rfilename for f in info.siblings]
-    bins = list(
-        filter_repo_objects(items=filenames, allow_patterns=["*.bin*"])
-    )
-    safetensors = list(
-        filter_repo_objects(items=filenames, allow_patterns=["*.safetensors*"])
-    )
+    bins = list(filter_repo_objects(items=filenames, allow_patterns=["*model*.bin*"]))
+    safetensors = list(filter_repo_objects(items=filenames, allow_patterns=["*.safetensors*"]))
     return bins, safetensors
 
 
