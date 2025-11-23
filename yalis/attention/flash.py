@@ -93,6 +93,7 @@ def flash_attention(
     k_cache: Optional[torch.Tensor] = None,
     v_cache: Optional[torch.Tensor] = None,
     cache_seqlens: Optional[torch.Tensor] = None,
+    actual_seqlens: Optional[torch.Tensor] = None,
     block_table: Optional[torch.Tensor] = None,
     rotary_cos: Optional[torch.Tensor] = None,
     rotary_sin: Optional[torch.Tensor] = None,
@@ -145,6 +146,7 @@ def flash_attention(
                 v=v,
                 block_table=block_table,
                 cache_seq_len=cache_seqlens,
+                actual_seqlens=actual_seqlens,
                 k_cache=k_cache,
                 v_cache=v_cache,
             )
@@ -152,6 +154,11 @@ def flash_attention(
         # note: do not update this in-place as the original tensor is needed by
         # subsequent layers to update their kv-caches.
         cache_seqlens = cache_seqlens + T
+
+        if actual_seqlens is not None:
+            k_cache = k
+            v_cache = v
+            block_table = None
 
         k, v = None, None
 

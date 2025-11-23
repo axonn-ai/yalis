@@ -9,6 +9,7 @@ def update_paged_kv_cache_kernel(
     v_ptr,
     block_table_ptr,
     cache_seq_len_ptr,
+    actual_seqlens_ptr,
     cache_k_ptr,
     cache_v_ptr,
     B,
@@ -32,6 +33,11 @@ def update_paged_kv_cache_kernel(
     # Offset in kv cache
     cache_offset = tl.load(cache_seq_len_ptr + b)
     token_offset = cache_offset + s
+    if actual_seqlens_ptr is not None:
+        actual_seqlen = tl.load(actual_seqlens_ptr + b)
+        if token_offset >= actual_seqlen:
+            return
+
     page_id = token_offset // page_block_size
     offset_in_block = token_offset % page_block_size
     block_id = tl.load(block_table_ptr + b * max_pages_per_seq + page_id)
@@ -114,6 +120,7 @@ def update_paged_kv_cache(
     v: torch.Tensor,
     block_table: torch.Tensor,
     cache_seq_len: torch.Tensor,
+    actual_seqlens: torch.Tensor,
     k_cache: torch.Tensor,
     v_cache: torch.Tensor,
 ):
@@ -132,6 +139,7 @@ def update_paged_kv_cache(
         v,
         block_table,
         cache_seq_len,
+        actual_seqlens,
         k_cache,
         v_cache,
         B,
