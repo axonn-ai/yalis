@@ -524,19 +524,13 @@ class CausalSelfAttention(nn.Module):
             config.sliding_window_size is not None
             and block_idx % config.sliding_window_layer_placing == 0
         )
-        
-        if config.norm_qk:
-            assert(
-                config.norm_qk_type == "default"
-            )
 
         if config.norm_qk:
-            norm_q_size = (
-                config.head_size
-            )
-            norm_k_size = (
-                config.head_size
-            )
+            assert config.norm_qk_type == "default"
+
+        if config.norm_qk:
+            norm_q_size = config.head_size
+            norm_k_size = config.head_size
             self.norm_q = config.norm_class(norm_q_size, eps=config.norm_eps)
             self.norm_k = config.norm_class(norm_k_size, eps=config.norm_eps)
         else:
@@ -602,7 +596,6 @@ class CausalSelfAttention(nn.Module):
 
         # split batched computation into three
         q, k, v = qkv.split((q_per_kv, 1, 1), dim=3)
-
 
         q = q.reshape(B, T, -1, self.config.head_size)  # (B, T, nh_q, hs)
         k = k.reshape(B, T, -1, self.config.head_size)  # (B, T, nh_k, hs)
