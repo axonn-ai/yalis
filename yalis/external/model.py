@@ -916,11 +916,11 @@ def batched_index_select(t, dim, idx):
     *batch_shape, idx_size = idx.shape
     res = torch.index_select(t, dim, idx.reshape(-1))  # flat index
     # split out single batch idx
-    res = res.view(*t.shape[:dim], -1, idx_size, *t.shape[dim + 1:])
+    res = res.view(*t.shape[:dim], -1, idx_size, *t.shape[dim + 1 :])
     # move batch dim to front, this is np.rollaxis(res, dim, 0) for tensors
     dims = [dim] + list(range(res.dim()))
     # del dims[dim + 1]
-    dims = dims[: dim + 1] + dims[dim + 2:]
+    dims = dims[: dim + 1] + dims[dim + 2 :]
     res = res.permute(dims)
     # unflatten batch dims
     res = res.view(*batch_shape, *res.shape[1:])
@@ -984,7 +984,7 @@ def apply_rope(
 ) -> torch.Tensor:
     head_size = x.size(-1)
     x1 = x[..., : head_size // 2]  # (B, nh, T, hs/2)
-    x2 = x[..., head_size // 2:]  # (B, nh, T, hs/2)
+    x2 = x[..., head_size // 2 :]  # (B, nh, T, hs/2)
     rotated = torch.cat((-x2, x1), dim=-1)  # (B, nh, T, hs)
     if cos.dim() > 1:
         # batch dimensions must align
