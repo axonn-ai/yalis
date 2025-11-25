@@ -602,15 +602,16 @@ class CausalSelfAttention(nn.Module):
         # split batched computation into three
         q, k, v = qkv.split((q_per_kv, 1, 1), dim=3)
 
-        if self.config.norm_qk and self.config.norm_qk_type == "olmo2":
-            q = self.norm_q(q)
-            k = self.norm_k(k)
 
         q = q.reshape(B, T, -1, self.config.head_size)  # (B, T, nh_q, hs)
         k = k.reshape(B, T, -1, self.config.head_size)  # (B, T, nh_k, hs)
         v = v.reshape(B, T, -1, self.config.head_size)  # (B, T, nh_v, hs)
 
-        if self.config.norm_qk and self.config.norm_qk_type == "default":
+        if self.config.norm_qk:
+            
+            assert(
+                self.config.norm_qk_type == "default"
+            ), "Only default QK norm is supported"
             q = self.norm_q(q)
             k = self.norm_k(k)
 
