@@ -424,8 +424,6 @@ class Block(nn.Module):
             if config.post_mlp_norm
             else nn.Identity()
         )
-        
-        
 
         self.config = config
 
@@ -491,7 +489,7 @@ class CausalSelfAttention(nn.Module):
     def __init__(self, config: Config, block_idx: int) -> None:
         super().__init__()
         shape = (config.n_head + 2 * config.n_query_groups) * config.head_size
-        attn_bias = getattr(config, 'attn_bias', config.bias)
+        attn_bias = getattr(config, "attn_bias", config.bias)
         # key, query, value projections for all heads, but in a batch
         if not config.tensor_parallel:
             self.attn = nn.Linear(config.n_embd, shape, bias=attn_bias)
@@ -526,11 +524,17 @@ class CausalSelfAttention(nn.Module):
             config.sliding_window_size is not None
             and block_idx % config.sliding_window_layer_placing == 0
         )
-        
+
         if config.norm_qk:
-            norm_q_size = config.n_head * config.head_size if config.norm_qk_type == "olmo2" else config.head_size
+            norm_q_size = (
+                config.n_head * config.head_size
+                if config.norm_qk_type == "olmo2"
+                else config.head_size
+            )
             norm_k_size = (
-                config.n_query_groups * config.head_size if config.norm_qk_type == "olmo2" else config.head_size
+                config.n_query_groups * config.head_size
+                if config.norm_qk_type == "olmo2"
+                else config.head_size
             )
             self.norm_q = config.norm_class(norm_q_size, eps=config.norm_eps)
             self.norm_k = config.norm_class(norm_k_size, eps=config.norm_eps)
@@ -597,7 +601,7 @@ class CausalSelfAttention(nn.Module):
 
         # split batched computation into three
         q, k, v = qkv.split((q_per_kv, 1, 1), dim=3)
-        
+
         if self.config.norm_qk and self.config.norm_qk_type == "olmo2":
             q = self.norm_q(q)
             k = self.norm_k(k)
@@ -605,7 +609,7 @@ class CausalSelfAttention(nn.Module):
         q = q.reshape(B, T, -1, self.config.head_size)  # (B, T, nh_q, hs)
         k = k.reshape(B, T, -1, self.config.head_size)  # (B, T, nh_k, hs)
         v = v.reshape(B, T, -1, self.config.head_size)  # (B, T, nh_v, hs)
-        
+
         if self.config.norm_qk and self.config.norm_qk_type == "default":
             q = self.norm_q(q)
             k = self.norm_k(k)
@@ -626,7 +630,6 @@ class CausalSelfAttention(nn.Module):
             q = q.transpose(1, 2).contiguous()
             k = k.transpose(1, 2).contiguous()
             v = v.transpose(1, 2).contiguous()
-            
 
         # NOTE: Pass full k_cache, v_cache, and token_counter.
         # Slicing for current batch size is done in the respective backends.
@@ -913,11 +916,11 @@ def batched_index_select(t, dim, idx):
     *batch_shape, idx_size = idx.shape
     res = torch.index_select(t, dim, idx.reshape(-1))  # flat index
     # split out single batch idx
-    res = res.view(*t.shape[:dim], -1, idx_size, *t.shape[dim + 1 :])
+    res = res.view(*t.shape[:dim], -1, idx_size, *t.shape[dim + 1:])
     # move batch dim to front, this is np.rollaxis(res, dim, 0) for tensors
     dims = [dim] + list(range(res.dim()))
     # del dims[dim + 1]
-    dims = dims[: dim + 1] + dims[dim + 2 :]
+    dims = dims[: dim + 1] + dims[dim + 2:]
     res = res.permute(dims)
     # unflatten batch dims
     res = res.view(*batch_shape, *res.shape[1:])
@@ -981,7 +984,7 @@ def apply_rope(
 ) -> torch.Tensor:
     head_size = x.size(-1)
     x1 = x[..., : head_size // 2]  # (B, nh, T, hs/2)
-    x2 = x[..., head_size // 2 :]  # (B, nh, T, hs/2)
+    x2 = x[..., head_size // 2:]  # (B, nh, T, hs/2)
     rotated = torch.cat((-x2, x1), dim=-1)  # (B, nh, T, hs)
     if cos.dim() > 1:
         # batch dimensions must align

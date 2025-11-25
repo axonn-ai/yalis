@@ -134,7 +134,8 @@ def copy_weights_falcon(
         state_dict[to_name] = param
         if progress_per_file is not None:
             pbar.update(progress_per_file)
-            
+
+
 def copy_weights_qwen_3(
     config: Config,
     qkv_weights: Dict[int, List[Optional[NotYetLoadedTensor]]],
@@ -181,36 +182,39 @@ def copy_weights_qwen_3(
         raise NotImplementedError
 
     if progress_per_file is not None:
-        progress_per_file = progress_per_file / max(1, len(hf_weights) + len(qkv_weights))
+        progress_per_file = progress_per_file / max(
+            1, len(hf_weights) + len(qkv_weights)
+        )
 
     transformer_wte_weight = None
-    
+
     for from_name, param in hf_weights.items():
-        
+
         if "model.layers" in from_name:
-            name_template, *ids = layer_template(from_name, 2)        
-            to_name = weight_map[name_template]
+            name_template, *ids = layer_template(from_name, 2)
             if any(w in from_name for w in ("q_proj", "k_proj", "v_proj")):
                 qkv = qkv_weights.setdefault(ids[0], defaultdict(dict))
                 weight_name, weight_type = from_name.split(".")[-2:]
                 qkv[weight_type][weight_name] = param
-                
+
             if any(w in from_name for w in ("gate_proj", "up_proj")):
-                gate_up_proj = gate_up_proj_weights.setdefault(ids[0], defaultdict(dict))
+                gate_up_proj = gate_up_proj_weights.setdefault(
+                    ids[0], defaultdict(dict)
+                )
                 weight_name, weight_type = from_name.split(".")[-2:]
                 gate_up_proj[weight_type][weight_name] = param
-            
+
             to_name = weight_map[name_template]
             if to_name is None:
                 continue
-            to_name = to_name.format(l = ids[0])
+            to_name = to_name.format(l=ids[0])
         else:
             to_name = weight_map[from_name]
         param = load_param(param, from_name, dtype, verbose=debug_mode)
-        
+
         if to_name == "transformer.wte.weight":
             transformer_wte_weight = param
-        
+
         if saver is not None:
             param = saver.store_early(to_name, param)
         state_dict[to_name] = param
@@ -231,34 +235,48 @@ def copy_weights_qwen_3(
             if len(qkv) != 3:
                 # qkv is split across different .bin files
                 continue
-            q = load_param(qkv["q_proj"], f"layer {i} q {weight_type}", dtype, verbose=debug_mode)
-            k = load_param(qkv["k_proj"], f"layer {i} k {weight_type}", dtype, verbose=debug_mode)
-            v = load_param(qkv["v_proj"], f"layer {i} v {weight_type}", dtype, verbose=debug_mode)
-            
-            
-            q_per_kv = config.n_head //config.n_query_groups
-            
+            q = load_param(
+                qkv["q_proj"],
+                f"layer {i} q {weight_type}",
+                dtype,
+                verbose=debug_mode,
+            )
+            k = load_param(
+                qkv["k_proj"],
+                f"layer {i} k {weight_type}",
+                dtype,
+                verbose=debug_mode,
+            )
+            v = load_param(
+                qkv["v_proj"],
+                f"layer {i} v {weight_type}",
+                dtype,
+                verbose=debug_mode,
+            )
+
             q_per_kv = config.n_head // config.n_query_groups
             qs = torch.split(q, config.head_size * q_per_kv)
             ks = torch.split(k, config.head_size)
             vs = torch.split(v, config.head_size)
             cycled = [t for group in zip(qs, ks, vs) for t in group]
             qkv = torch.cat(cycled)
-            
+
             state_dict[f"transformer.h.{i}.attn.attn.{weight_type}"] = qkv
             del qkv_weights[i][weight_type]
 
             if progress_per_file is not None:
                 pbar.update(progress_per_file)
-                
+
     for i in list(gate_up_proj_weights):
         for weight_type in list(gate_up_proj_weights[i]):
             gate_up_proj = gate_up_proj_weights[i][weight_type]
-            if ("gate_proj" not in gate_up_proj) or ("up_proj" not in gate_up_proj):
+            if ("gate_proj" not in gate_up_proj) or (
+                "up_proj" not in gate_up_proj
+            ):
                 continue
             gate_proj = gate_up_proj["gate_proj"]
             up_proj = gate_up_proj["up_proj"]
-            
+
             gate_proj = load_param(
                 gate_proj, f"layer {i} gate_proj", dtype, verbose=debug_mode
             )
@@ -268,11 +286,12 @@ def copy_weights_qwen_3(
             gate_up_proj = torch.stack((gate_proj, up_proj), dim=1).reshape(
                 2 * gate_proj.size(0), -1
             )
-            state_dict[f"transformer.h.{i}.mlp.gate_up_proj.weight"] = gate_up_proj
+            state_dict[f"transformer.h.{i}.mlp.gate_up_proj.weight"] = (
+                gate_up_proj
+            )
             del gate_up_proj_weights[i]
             if progress_per_file is not None:
                 pbar.update(progress_per_file)
-
 
 
 def copy_weights_qwen_2_5(
@@ -304,38 +323,41 @@ def copy_weights_qwen_2_5(
         "model.norm.weight": "transformer.ln_f.weight",
         "lm_head.weight": "lm_head.weight",
     }
-    
+
     transformer_wte_weight = None
 
     if progress_per_file is not None:
-        progress_per_file = progress_per_file / max(1, len(hf_weights) + len(qkv_weights))
+        progress_per_file = progress_per_file / max(
+            1, len(hf_weights) + len(qkv_weights)
+        )
 
     for from_name, param in hf_weights.items():
         if "model.layers" in from_name:
             name_template, *ids = layer_template(from_name, 2)
-            to_name = weight_map[name_template]
             if any(w in from_name for w in ("q_proj", "k_proj", "v_proj")):
                 qkv = qkv_weights.setdefault(ids[0], defaultdict(dict))
                 weight_name, weight_type = from_name.split(".")[-2:]
                 qkv[weight_type][weight_name] = param
-            
+
             if any(w in from_name for w in ("gate_proj", "up_proj")):
-                gate_up_proj = gate_up_proj_weights.setdefault(ids[0], defaultdict(dict))
+                gate_up_proj = gate_up_proj_weights.setdefault(
+                    ids[0], defaultdict(dict)
+                )
                 weight_name, weight_type = from_name.split(".")[-2:]
                 gate_up_proj[weight_type][weight_name] = param
-                
+
             to_name = weight_map[name_template]
             if to_name is None:
                 continue
-            to_name = to_name.format(l = ids[0])
+            to_name = to_name.format(l=ids[0])
 
         else:
             to_name = weight_map[from_name]
         param = load_param(param, from_name, dtype, verbose=debug_mode)
-        
+
         if to_name == "transformer.wte.weight":
             transformer_wte_weight = param
-            
+
         if saver is not None:
             param = saver.store_early(to_name, param)
         state_dict[to_name] = param
@@ -344,10 +366,7 @@ def copy_weights_qwen_2_5(
             pbar.update(progress_per_file)
 
     if "lm_head.weight" not in state_dict:
-        print("no lm weight")
-        print(transformer_wte_weight)
         if transformer_wte_weight is not None:
-            print("but found wte_weight")
             param_saved = saver.store_early(
                 "lm_head.weight", transformer_wte_weight.clone()
             )
@@ -359,12 +378,25 @@ def copy_weights_qwen_2_5(
             if len(qkv) != 3:
                 # qkv is split across different .bin files
                 continue
-            q = load_param(qkv["q_proj"], f"layer {i} q {weight_type}", dtype, verbose=debug_mode)
-            k = load_param(qkv["k_proj"], f"layer {i} k {weight_type}", dtype, verbose=debug_mode)
-            v = load_param(qkv["v_proj"], f"layer {i} v {weight_type}", dtype, verbose=debug_mode)
-            
-            q_per_kv = config.n_head //config.n_query_groups
-            
+            q = load_param(
+                qkv["q_proj"],
+                f"layer {i} q {weight_type}",
+                dtype,
+                verbose=debug_mode,
+            )
+            k = load_param(
+                qkv["k_proj"],
+                f"layer {i} k {weight_type}",
+                dtype,
+                verbose=debug_mode,
+            )
+            v = load_param(
+                qkv["v_proj"],
+                f"layer {i} v {weight_type}",
+                dtype,
+                verbose=debug_mode,
+            )
+
             q_per_kv = config.n_head // config.n_query_groups
             qs = torch.split(q, config.head_size * q_per_kv)
             ks = torch.split(k, config.head_size)
@@ -376,15 +408,17 @@ def copy_weights_qwen_2_5(
 
             if progress_per_file is not None:
                 pbar.update(progress_per_file)
-                
+
     for i in list(gate_up_proj_weights):
         for weight_type in list(gate_up_proj_weights[i]):
             gate_up_proj = gate_up_proj_weights[i][weight_type]
-            if ("gate_proj" not in gate_up_proj) or ("up_proj" not in gate_up_proj):
+            if ("gate_proj" not in gate_up_proj) or (
+                "up_proj" not in gate_up_proj
+            ):
                 continue
             gate_proj = gate_up_proj["gate_proj"]
             up_proj = gate_up_proj["up_proj"]
-            
+
             gate_proj = load_param(
                 gate_proj, f"layer {i} gate_proj", dtype, verbose=debug_mode
             )
@@ -394,13 +428,12 @@ def copy_weights_qwen_2_5(
             gate_up_proj = torch.stack((gate_proj, up_proj), dim=1).reshape(
                 2 * gate_proj.size(0), -1
             )
-            state_dict[f"transformer.h.{i}.mlp.gate_up_proj.weight"] = gate_up_proj
+            state_dict[f"transformer.h.{i}.mlp.gate_up_proj.weight"] = (
+                gate_up_proj
+            )
             del gate_up_proj_weights[i]
             if progress_per_file is not None:
                 pbar.update(progress_per_file)
-    
-
-
 
 
 def copy_weights_hf_llama(
@@ -1005,7 +1038,7 @@ def convert_hf_checkpoint(
             copy_weights_hf_llama, config, qkv_weights, gate_up_proj_weights
         )
     # New models (Qwen)
-    
+
     else:
         copy_fn = copy_weights_gpt_neox
 
@@ -1028,11 +1061,17 @@ def convert_hf_checkpoint(
             checkpoint_dir / bin for bin in bin_index["weight_map"].values()
         }
     elif model_safetensor_map_json_path.is_file():
-        with open(model_safetensor_map_json_path, encoding="utf-8") as json_map:
+        with open(
+            model_safetensor_map_json_path, encoding="utf-8"
+        ) as json_map:
             bin_index = json.load(json_map)
-        bin_files = {checkpoint_dir / bin for bin in bin_index["weight_map"].values()}
+        bin_files = {
+            checkpoint_dir / bin for bin in bin_index["weight_map"].values()
+        }
     else:
-        bin_files = set(checkpoint_dir.glob("*.bin")) | set(checkpoint_dir.glob("*.safetensors"))
+        bin_files = set(checkpoint_dir.glob("*.bin")) | set(
+            checkpoint_dir.glob("*.safetensors")
+        )
         # some checkpoints serialize the training arguments
         bin_files = {f for f in bin_files if f.name != "training_args.bin"}
     if not bin_files:
@@ -1069,7 +1108,9 @@ def convert_hf_checkpoint(
                     ) * total_progress
 
                     hf_weights = (
-                        load_safetensors(bin_file) if bin_file.suffix == ".safetensors" else lazy_load(bin_file)
+                        load_safetensors(bin_file)
+                        if bin_file.suffix == ".safetensors"
+                        else lazy_load(bin_file)
                     )
                     copy_fn(
                         sd,

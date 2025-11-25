@@ -6,15 +6,16 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from litgpt.config import configs
+from config import configs
+
 # from litgpt.scripts.convert_hf_checkpoint import convert_hf_checkpoint
 from convert_hf_checkpoint import convert_hf_checkpoint
 
 from lightning_utilities.core.imports import RequirementCache
-_SAFETENSORS_AVAILABLE = RequirementCache("safetensors")
-_HF_TRANSFER_AVAILABLE = RequirementCache("hf_transfer")
 import sys
 
+_SAFETENSORS_AVAILABLE = RequirementCache("safetensors")
+_HF_TRANSFER_AVAILABLE = RequirementCache("hf_transfer")
 
 
 def download_from_hub(
@@ -40,7 +41,10 @@ def download_from_hub(
         model_name: The existing config name to use for this repo_id. This is useful to download alternative weights of
             existing architectures.
     """
-    options = [f"{config['hf_config']['org']}/{config['hf_config']['name']}" for config in configs]
+    options = [
+        f"{config['hf_config']['org']}/{config['hf_config']['name']}"
+        for config in configs
+    ]
 
     if repo_id == "list":
         print("Please specify --repo_id <repo_id>. Available values:")
@@ -101,18 +105,26 @@ def download_from_hub(
 
     if convert_checkpoint and not tokenizer_only:
         print("Converting checkpoint files to LitGPT format.")
-        convert_hf_checkpoint(checkpoint_dir=directory, dtype=dtype, model_name=model_name)
+        convert_hf_checkpoint(
+            checkpoint_dir=directory, dtype=dtype, model_name=model_name
+        )
 
 
-def find_weight_files(repo_id: str, access_token: Optional[str]) -> Tuple[List[str], List[str]]:
+def find_weight_files(
+    repo_id: str, access_token: Optional[str]
+) -> Tuple[List[str], List[str]]:
     from huggingface_hub import repo_info
     from huggingface_hub.utils import filter_repo_objects
 
     with gated_repo_catcher(repo_id, access_token):
         info = repo_info(repo_id, token=access_token)
     filenames = [f.rfilename for f in info.siblings]
-    bins = list(filter_repo_objects(items=filenames, allow_patterns=["*model*.bin*"]))
-    safetensors = list(filter_repo_objects(items=filenames, allow_patterns=["*.safetensors*"]))
+    bins = list(
+        filter_repo_objects(items=filenames, allow_patterns=["*model*.bin*"])
+    )
+    safetensors = list(
+        filter_repo_objects(items=filenames, allow_patterns=["*.safetensors*"])
+    )
     return bins, safetensors
 
 
@@ -130,8 +142,10 @@ def gated_repo_catcher(repo_id: str, access_token: Optional[str]):
         elif "gated repo" in err_msg:
             if not access_token:
                 raise ValueError(
-                    f"https://huggingface.co/{repo_id} requires authentication, please set the `HF_TOKEN=your_token`"
-                    " environment variable or pass `--access_token=your_token`. You can find your token by visiting"
+                    f"https://huggingface.co/{repo_id} requires"
+                    "authentication, please set the `HF_TOKEN=your_token`"
+                    " environment variable or pass "
+                    "`--access_token=your_token`. You can find your token by visiting"
                     " https://huggingface.co/settings/tokens."
                 ) from None
             else:
