@@ -524,17 +524,18 @@ class CausalSelfAttention(nn.Module):
             config.sliding_window_size is not None
             and block_idx % config.sliding_window_layer_placing == 0
         )
+        
+        if config.norm_qk:
+            assert(
+                config.norm_qk_type == "default"
+            )
 
         if config.norm_qk:
             norm_q_size = (
-                config.n_head * config.head_size
-                if config.norm_qk_type == "olmo2"
-                else config.head_size
+                config.head_size
             )
             norm_k_size = (
-                config.n_query_groups * config.head_size
-                if config.norm_qk_type == "olmo2"
-                else config.head_size
+                config.head_size
             )
             self.norm_q = config.norm_class(norm_q_size, eps=config.norm_eps)
             self.norm_k = config.norm_class(norm_k_size, eps=config.norm_eps)
@@ -608,10 +609,6 @@ class CausalSelfAttention(nn.Module):
         v = v.reshape(B, T, -1, self.config.head_size)  # (B, T, nh_v, hs)
 
         if self.config.norm_qk:
-            
-            assert(
-                self.config.norm_qk_type == "default"
-            ), "Only default QK norm is supported"
             q = self.norm_q(q)
             k = self.norm_k(k)
 
