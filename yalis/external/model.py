@@ -1061,13 +1061,63 @@ class LLaMAMoE(nn.Module):
         """
         B, T, C = x.size()  # batch size, sequence length, embedding dimensionality (n_embd)
         x = x.view(-1, C)  # (B*T, C)
+        
+        
+        # Once this rough implementation works then we can store the tensors itself differently such that 
+        # we dont need to stack it during runtime and such that the paritioning will also be taken care of 
+        
+        w1 =  torch.stack([exp.gate_up_proj.weight for exp in self.experts]) # [E,2F,C]
+        w2 = torch.stack ([exp.proj.weight for exp in self.experts]) # [E, C, F]
+        
+
+        
+        
         router = self.gate(x)  # (B*T, n_expert)
-        probs, indices = torch.topk(router, self.config.n_expert_per_token)  # (B*T, n_expert_per_token)
-        probs = probs.softmax(dim=1, dtype=torch.float).to(dtype=x.dtype)
-        masks = indices.unsqueeze(-1) == torch.arange(self.config.n_expert, device=x.device)
-        masks = masks.permute(2, 0, 1)  # (n_expert, B*T, n_expert_per_token)
-        y = torch.zeros_like(x)  # (B*T, C)
-        for mask, expert in zip(masks, self.experts):
-            token_idx, expert_idx = torch.where(mask)
-            y[token_idx] += probs[token_idx, expert_idx, None] * expert(x[token_idx])
+        
+        
+        # probs, indices = torch.topk(router, self.config.n_expert_per_token)  # (B*T, n_expert_per_token)
+        # probs = probs.softmax(dim=1, dtype=torch.float).to(dtype=x.dtype)
+        # masks = indices.unsqueeze(-1) == torch.arange(self.config.n_expert, device=x.device)
+        # masks = masks.permute(2, 0, 1)  # (n_expert, B*T, n_expert_per_token)
+        # y = torch.zeros_like(x)  # (B*T, C)
+        # for mask, expert in zip(masks, self.experts):
+        #     token_idx, expert_idx = torch.where(mask)
+        #     y[token_idx] += probs[token_idx, expert_idx, None] * expert(x[token_idx])
+        
+        assert w1.shape[0] == self.config.n_expert
+        assert w2.shape[0] == self.config.n_expert
+        assert w1.shape[2] == x.shape[1]  # hidden dim
+        assert w2.shape[1] == x.shape[1]  # output hidden dim
+        assert router.shape == (x.shape[0], self.config.n_expert)
+        assert self.config.n_expert_per_token <= self.config.n_expert
+                
+        y = fused_moe(
+            x,
+            w1,
+            w2,
+            router,
+            self.config.n_expert_per_token,
+            True,
+            inplace=False,
+            override_config=None,
+            use_grouped_topk=False,
+            num_expert_group=None,
+            topk_group=None,
+            custom_routing_function=None,
+            use_fp8_w8a8=False,
+            use_int8_w8a16=False,
+            w1_scale=None,
+            w2_scale=None,
+            a1_scale=None,
+            a2_scale=None
+            
+        ).to(x.dtype)
         return y.view(B, T, C)
+        
+        # MoE implementation with fused_moe.py
+        
+        
+        
+        
+    
+    

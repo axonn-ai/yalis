@@ -11,12 +11,11 @@ import torch
 import triton
 import triton.language as tl
 
-import vllm.envs as envs
-from vllm import _custom_ops as ops
-from vllm.logger import init_logger
-from vllm.platforms import current_platform
+# import vllm.envs as envs
 
-logger = init_logger(__name__)
+# from vllm.platforms import current_platform
+import moe_ops
+
 
 
 @triton.jit
@@ -228,7 +227,7 @@ def moe_align_block_size(
     num_tokens_post_pad = torch.empty((1),
                                       dtype=torch.int32,
                                       device=topk_ids.device)
-    ops.moe_align_block_size(topk_ids, num_experts, block_size, sorted_ids,
+    torch.ops.moe_ops.moe_align_block_size(topk_ids, num_experts, block_size, sorted_ids,
                              expert_ids, num_tokens_post_pad)
     return sorted_ids, expert_ids, num_tokens_post_pad
 
@@ -246,14 +245,14 @@ def invoke_fused_moe_kernel(A: torch.Tensor, B: torch.Tensor, C: torch.Tensor,
     assert topk_weights.stride(1) == 1
     assert sorted_token_ids.stride(0) == 1
 
-    if use_fp8_w8a8:
-        A, A_scale = ops.scaled_fp8_quant(A, A_scale)
-        assert B_scale is not None
-    elif use_int8_w8a16:
-        assert B_scale is not None
-    else:
-        assert A_scale is None
-        assert B_scale is None
+    # if use_fp8_w8a8:
+    #     A, A_scale = torch.ops.moe_ops.scaled_fp8_quant(A, A_scale)
+    #     assert B_scale is not None
+    # elif use_int8_w8a16:
+    #     assert B_scale is not None
+    
+    assert A_scale is None
+    assert B_scale is None
 
     grid = lambda META: (triton.cdiv(sorted_token_ids.shape[0], META[
         'BLOCK_SIZE_M']) * triton.cdiv(B.shape[1], META['BLOCK_SIZE_N']), )
@@ -291,7 +290,7 @@ def invoke_fused_moe_kernel(A: torch.Tensor, B: torch.Tensor, C: torch.Tensor,
 
 
 def get_config_file_name(E: int, N: int, dtype: Optional[str]) -> str:
-    device_name = current_platform.get_device_name().replace(" ", "_")
+    device_name = torch.cuda.current_device().replace(" ", "_")
     dtype_selector = "" if not dtype else f",dtype={dtype}"
     return f"E={E},N={N},device_name={device_name}{dtype_selector}.json"
 
@@ -316,14 +315,14 @@ def get_moe_configs(E: int, N: int,
         os.path.dirname(os.path.realpath(__file__)), "configs", json_file_name)
     if os.path.exists(config_file_path):
         with open(config_file_path) as f:
-            logger.info("Using configuration from %s for MoE layer.",
+            print("Using configuration from %s for MoE layer.",
                         config_file_path)
             # If a configuration has been found, return it
             return {int(key): val for key, val in json.load(f).items()}
 
     # If no optimized configuration is available, we will use the default
     # configuration
-    logger.warning(
+    print(
         ("Using default MoE config. Performance might be sub-optimal! "
          "Config file not found at %s"), config_file_path)
     return None
@@ -369,15 +368,8 @@ def try_get_optimal_moe_config(
     else:
         # First try to load optimal config from the file
         E, _, N = w2_shape
-        configs = get_moe_configs(E, N, dtype)
 
-        if configs:
-            # If an optimal configuration map has been found, look up the
-            # optimal config
-            config = configs[min(configs.keys(), key=lambda x: abs(x - M))]
-        else:
-            # Else use the default config
-            config = get_default_config(M, E, N, w1_shape[2], top_k, dtype,
+        config = get_default_config(M, E, N, w1_shape[2], top_k, dtype,
                                         is_marlin)
     return config
 
@@ -406,7 +398,7 @@ def fused_topk(
                                         dtype=torch.int32,
                                         device=hidden_states.device)
 
-    ops.topk_softmax(
+    torch.ops.moe_ops.topk_softmax(
         topk_weights,
         topk_ids,
         token_expert_indicies,
@@ -495,7 +487,8 @@ def fused_experts(hidden_states: torch.Tensor,
     E, N, _ = w1.shape
     # We execute the fused_moe kernel in chunks to circumvent this issue:
     # https://github.com/vllm-project/vllm/issues/5938
-    CHUNK_SIZE = envs.VLLM_FUSED_MOE_CHUNK_SIZE
+    # CHUNK_SIZE = envs.VLLM_FUSED_MOE_CHUNK_SIZE
+    CHUNK_SIZE = 16 * 1024
     M = min(num_tokens, CHUNK_SIZE)
     config_dtype = get_config_dtype_str(use_fp8_w8a8=use_fp8_w8a8,
                                         use_int8_w8a16=use_int8_w8a16,
@@ -573,7 +566,7 @@ def fused_experts(hidden_states: torch.Tensor,
                                 use_fp8_w8a8=use_fp8_w8a8,
                                 use_int8_w8a16=use_int8_w8a16)
 
-        ops.silu_and_mul(intermediate_cache2, intermediate_cache1.view(-1, N))
+        torch.ops.moe_ops.silu_and_mul(intermediate_cache2, intermediate_cache1.view(-1, N))
 
         invoke_fused_moe_kernel(intermediate_cache2,
                                 w2,
