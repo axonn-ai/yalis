@@ -124,7 +124,6 @@ def update_paged_kv_cache(
     k_cache: torch.Tensor,
     v_cache: torch.Tensor,
 ):
-
     B, S, H, D = k.shape
     BLOCK_D = D
     BLOCK_H = min(1024 // BLOCK_D, H)

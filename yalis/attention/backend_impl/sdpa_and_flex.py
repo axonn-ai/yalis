@@ -8,7 +8,7 @@ from torch.nn.attention.flex_attention import flex_attention
 from axonn import axonn as ax
 from axonn.intra_layer.communication import Drop, Gather
 
-from .registry import register_attention
+from yalis.attention.registry import register_attention
 from yalis.constants import EnginePhase
 
 

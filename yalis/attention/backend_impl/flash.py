@@ -1,9 +1,11 @@
-from flash_attn import flash_attn_with_kvcache
-import torch
+
 from typing import Sequence, Optional
-from .registry import register_attention
-from .update_kv_cache import update_paged_kv_cache
+import torch
+
+from flash_attn import flash_attn_with_kvcache
 from flash_attn.ops.triton.rotary import apply_rotary
+from yalis.attention.utils.flash_utils import update_paged_kv_cache
+from yalis.attention.registry import register_attention
 from yalis.constants import EnginePhase
 
 
@@ -155,7 +157,9 @@ def flash_attention(
         # subsequent layers to update their kv-caches.
         cache_seqlens = cache_seqlens + T
 
-        if actual_seqlens is not None:
+        if phase == EnginePhase.PREFILL:
+            # This is clever way for now to not have to pad the actual KV-Cache and just 
+            # use the k and v tensors directly in prefill
             k_cache = k
             v_cache = v
             block_table = None
