@@ -22,10 +22,10 @@ from yalis.attention import attention_wrapper
 from yalis.external.config import Config
 from yalis.tensor_parallel import TPLinear
 from yalis.constants import EnginePhase
-from kvcache_manager import KVCacheManager
-from yalis.attention.flash import flash_apply_rotary as apply_rotary
+# TODO: These need to be abstracted away from the model
 from yalis.attention.backends import AttentionBackend
-from yalis.attention.masking import create_causal_block_mask_for_flex_attention
+from yalis.attention.backend_impl.flash import flash_apply_rotary as apply_rotary
+from yalis.attention.utils.flex_utils import create_causal_block_mask_for_flex_attention
 
 
 # TODO: these should be dynamically set during engine initialization
@@ -121,6 +121,7 @@ class GPT(nn.Module):
         phase: EnginePhase,
         actual_sequence_lengths: torch.Tensor = None,
         block_table: torch.Tensor = None,
+        token_counter: torch.Tensor = None,
     ) -> torch.Tensor:
         idx = input_ids
         T = idx.size(1)
@@ -136,6 +137,10 @@ class GPT(nn.Module):
             x = x * torch.tensor(self.config.n_embd**0.5, dtype=x.dtype)
         if self.config.tensor_parallel:
             x = Drop.apply(x, ax.comm_handle.inner_intra_layer_parallel_group)
+        # TODO: Remove this once we have a way support 
+        # this for speculative decoding without token counter
+        if token_counter is None:
+            token_counter = self.token_counter
 
         # flash attention wants the rope cache to be
         # in the same dtype as the query
@@ -148,7 +153,7 @@ class GPT(nn.Module):
 
         flex_attention_block_mask = (
             create_causal_block_mask_for_flex_attention(
-                self.token_counter, self.kv_length, B
+                token_counter, self.kv_length, B
             )
             if self.config.attention_backend == AttentionBackend.FLEX
             else None
@@ -160,7 +165,7 @@ class GPT(nn.Module):
                 self.cos,
                 self.sin,
                 phase,
-                self.token_counter,
+                token_counter,
                 block_table,
                 actual_sequence_lengths,
                 flex_attention_block_mask,
@@ -176,9 +181,11 @@ class GPT(nn.Module):
                 torch.tanh(x / self.config.final_logit_softcapping)
                 * self.config.final_logit_softcapping
             )
-        self.token_counter[:B].add_(
-            T if actual_sequence_lengths is None else actual_sequence_lengths
-        )
+
+        if token_counter is None:
+            self.token_counter[:B].add_(
+                T if actual_sequence_lengths is None else actual_sequence_lengths
+            )
         return {"logits": x}
 
     @classmethod

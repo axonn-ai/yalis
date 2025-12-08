@@ -27,6 +27,7 @@ public:
     // Initialize the block table tensor of shape [batch_size,
     // max_num_blocks_per_seq] with all elements set to -1 (indicating "no page
     // assigned"), as int32.
+
     block_table_ = torch::full(
         {batch_size_, max_num_blocks_per_seq_}, -1,
         torch::TensorOptions().dtype(torch::kInt32).device(torch::kCUDA));
@@ -34,7 +35,9 @@ public:
     // Initialize tokens_assigned_ which tracks how many tokens are currently
     // in the KV cache for each sequence. Initially, every sequence has 0
     // tokens.
-    tokens_assigned_ = torch::zeros({batch_size_}, torch::kInt64);
+    // TODO: This should be in pinned memory
+    tokens_assigned_ = torch::zeros({batch_size_}, torch::TensorOptions().dtype(
+      torch::kInt32).device(torch::kCUDA));
 
     // Initialize the FIFO queue of free pages with indices from 0 to num_blocks
     // - 1.
@@ -66,7 +69,7 @@ public:
       // 'incoming_tokens' is the number of new tokens to add.
       int64_t incoming_tokens = seq_lengths[seq].item<int64_t>();
       // Retrieve the current token count for this sequence.
-      int64_t current_tokens = tokens_assigned_[seq].item<int64_t>();
+      int32_t current_tokens = tokens_assigned_[seq].item<int32_t>();
       // Compute the new total tokens in the KV cache for this sequence.
       int64_t new_total_tokens = current_tokens + incoming_tokens;
       // Compute required pages for the new total token count.
@@ -121,12 +124,21 @@ public:
   // seq_idx. The valid page count is computed as ceil(tokens_assigned_[seq_idx]
   // / page_block_size_).
   torch::Tensor get_pages_for_sequence(int64_t seq_idx) {
-    int64_t token_count = tokens_assigned_[seq_idx].item<int64_t>();
+    int64_t token_count = tokens_assigned_[seq_idx].item<int32_t>();
     int64_t page_count =
         (token_count + page_block_size_ - 1) / page_block_size_;
     // First select the row for seq_idx, then narrow that row to the first
     // page_count entries.
     auto pages = block_table_.select(0, seq_idx).narrow(0, 0, page_count);
+    return pages;
+  }
+
+  // get_pages_for_sequences:
+  // Returns a tensor slice of the block table for provided row indices.
+  // Shape: [rows.size(0), max_num_blocks_per_seq]. Unused entries stay -1.
+  torch::Tensor get_pages_for_sequences(const torch::Tensor &rows) {
+    auto rows_i64 = rows.to(torch::kInt64);
+    auto pages = block_table_.index_select(0, rows_i64);
     return pages;
   }
 
@@ -136,7 +148,7 @@ public:
   // The corresponding row in the block table is reset to -1, and
   // tokens_assigned_ is reset to 0.
   void release_sequence_pages(int64_t seq_idx) {
-    int64_t token_count = tokens_assigned_[seq_idx].item<int64_t>();
+    int64_t token_count = tokens_assigned_[seq_idx].item<int32_t>();
     int64_t page_count =
         (token_count + page_block_size_ - 1) / page_block_size_;
     // First select the row corresponding to seq_idx, then narrow to the first
@@ -167,6 +179,9 @@ public:
 
   // Accessor for the block table (for debugging or introspection).
   torch::Tensor block_table() const { return block_table_; }
+
+  // Accessor for tokens_assigned (current per-row token counts).
+  torch::Tensor tokens_assigned() const { return tokens_assigned_; }
 
   // allocate_sequence:
   // Reserve pages for a sequence row based on initial_tokens and populate the
@@ -213,8 +228,11 @@ public:
     if (n_new_tokens <= 0) {
       return {};  // nothing to do
     }
-    int64_t current_tokens = tokens_assigned_[row_id].item<int64_t>();
+    int64_t current_tokens = tokens_assigned_[row_id].item<int32_t>();
     int64_t new_total_tokens = current_tokens + n_new_tokens;
+    //std::cout << "extend_sequence: current_tokens=" << current_tokens << std::endl;
+    //std::cout << "extend_sequence: n_new_tokens=" << n_new_tokens << std::endl;
+    //std::cout << "extend_sequence: new_total_tokens=" << new_total_tokens << std::endl;
     int64_t old_pages =
         (current_tokens + page_block_size_ - 1) / page_block_size_;
     int64_t new_pages =
@@ -222,7 +240,10 @@ public:
     if (new_pages > max_num_blocks_per_seq_) {
       throw std::runtime_error("extend_sequence: exceeds max_num_blocks_per_seq");
     }
+    //std::cout << "extend_sequence: old_pages=" << old_pages << std::endl;
+    //std::cout << "extend_sequence: new_pages=" << new_pages << std::endl;
     int64_t delta = new_pages - old_pages;
+    //std::cout << "extend_sequence: delta=" << delta << std::endl;
     std::vector<int32_t> newly_assigned;
     if (delta > 0) {
       if (static_cast<int64_t>(free_pages_.size()) < delta) {
@@ -231,6 +252,7 @@ public:
       newly_assigned.reserve(static_cast<size_t>(delta));
       for (int64_t i = old_pages; i < new_pages; ++i) {
         int32_t p = free_pages_.front();
+        //std::cout << "extend_sequence: assigning free page " << p << " at block index " << i << std::endl;
         free_pages_.pop_front();
         block_table_.index_put_({row_id, i}, p);
         newly_assigned.push_back(p);
@@ -244,20 +266,27 @@ public:
   // Frees all pages assigned to row_id and clears row state. Returns the freed
   // page ids (in FIFO order of the row, not the global queue).
   std::vector<int32_t> free_sequence(int64_t row_id) {
+    //std::cout << "free_sequence: row_id=" << row_id << std::endl;
     if (row_id < 0 || row_id >= batch_size_) {
       throw std::runtime_error("free_sequence: row_id out of range");
     }
-    int64_t token_count = tokens_assigned_[row_id].item<int64_t>();
+    //std::cout << "free_sequence: tokens_assigned_=" << tokens_assigned_ << std::endl;
+    int64_t token_count = tokens_assigned_[row_id].item<int32_t>();
+    //std::cout << "free_sequence: token_count=" << token_count << std::endl;
     if (token_count == 0) {
       return {};
     }
+    //std::cout << "free_sequence: page_block_size_=" << page_block_size_ << std::endl;
     int64_t page_count =
         (token_count + page_block_size_ - 1) / page_block_size_;
+    //std::cout << "free_sequence: page_count=" << page_count << std::endl;
     std::vector<int32_t> freed;
     freed.reserve(static_cast<size_t>(page_count));
-    auto row = block_table_.select(0, row_id).narrow(0, 0, page_count);
+    auto row = block_table_.select(0, row_id).narrow(0, 0, page_count).to(torch::kCPU);
     auto acc = row.accessor<int32_t, 1>();
+    //std::cout << "free_sequence: row accessor reached" << std::endl;
     for (int64_t i = 0; i < page_count; ++i) {
+      printf("free_sequence: i=%ld\n", i);
       int32_t page = acc[i];
       if (page != -1) {
         free_pages_.push_back(page);
@@ -266,6 +295,7 @@ public:
     }
     block_table_.select(0, row_id).fill_(-1);
     tokens_assigned_.index_put_({row_id}, 0);
+    // std::cout << "free_sequence: end" << std::endl;
     return freed;
   }
 
@@ -295,10 +325,12 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       .def("force_update_tokens_assigned",
            &KVCacheManager::force_update_tokens_assigned)
       .def("get_pages_for_sequence", &KVCacheManager::get_pages_for_sequence)
+      .def("get_pages_for_sequences", &KVCacheManager::get_pages_for_sequences)
       .def("release_sequence_pages", &KVCacheManager::release_sequence_pages)
       .def("allocate_sequence", &KVCacheManager::allocate_sequence)
       .def("extend_sequence", &KVCacheManager::extend_sequence)
       .def("free_sequence", &KVCacheManager::free_sequence)
       .def("reset", &KVCacheManager::reset)
-      .def("block_table", &KVCacheManager::block_table);
+      .def("block_table", &KVCacheManager::block_table)
+      .def("tokens_assigned", &KVCacheManager::tokens_assigned);
 }
