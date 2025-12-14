@@ -87,9 +87,13 @@ def prefill(
         logits: (Optional) The raw logits from the model.
     """
 
-    logits = model(tokens, phase, unpadded_prompt_lengths, block_table=block_table, token_counter=token_counter)["logits"].to(
-        torch.float32
-    )
+    logits = model(
+        tokens,
+        phase,
+        unpadded_prompt_lengths,
+        block_table=block_table,
+        token_counter=token_counter,
+    )["logits"].to(torch.float32)
     logits = logits[torch.arange(logits.size(0)), unpadded_prompt_lengths - 1]
     token_id = sample(
         logits=logits, temperature=temperature, top_k=top_k, top_p=top_p
@@ -127,7 +131,9 @@ def generate(
         token_id: The next predicted token.
         logits: (Optional) The raw logits from the model.
     """
-    logits = model(tokens, phase, block_table=block_table, token_counter=token_counter)["logits"].to(torch.float32)
+    logits = model(
+        tokens, phase, block_table=block_table, token_counter=token_counter
+    )["logits"].to(torch.float32)
     token_id = sample(
         logits=logits[:, -1], temperature=temperature, top_k=top_k, top_p=top_p
     )
@@ -421,18 +427,24 @@ class LLMEngine:
                 self.device
             )  # Move prompt tokens to the device
 
-            prompt_sequence_lengths = prompt_sequence_lengths.to(self.device).to(torch.int32)
+            prompt_sequence_lengths = prompt_sequence_lengths.to(
+                self.device
+            ).to(torch.int32)
             B = current_input_to_model.shape[0]
             req_ids = [f"req_{i}" for i in range(B)]
-            token_counter = torch.zeros(B, dtype=torch.int32, device=self.device)
-            slot_ids = self.kv_slots_manager.allocate(req_ids, prompt_sequence_lengths)
+            token_counter = torch.zeros(
+                B, dtype=torch.int32, device=self.device
+            )
+            slot_ids = self.kv_slots_manager.allocate(
+                req_ids, prompt_sequence_lengths
+            )
             for step in range(tokens_to_generate):
                 timer_key = None
                 if step == 0:  # Prefill step
                     timer_key = "prefill"
                     timers.start(timer_key)
                     nvtx_range_push("Prefill")
-                        
+
                     next_token, logits = prefill(
                         self.model,
                         current_input_to_model,
