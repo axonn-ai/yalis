@@ -22,10 +22,15 @@ from yalis.attention import attention_wrapper
 from yalis.external.config import Config
 from yalis.tensor_parallel import TPLinear, TPMoE
 from yalis.constants import EnginePhase
+
 # TODO: These need to be abstracted away from the model
 from yalis.attention.backends import AttentionBackend
-from yalis.attention.backend_impl.flash import flash_apply_rotary as apply_rotary
-from yalis.attention.utils.flex_utils import create_causal_block_mask_for_flex_attention
+from yalis.attention.backend_impl.flash import (
+    flash_apply_rotary as apply_rotary,
+)
+from yalis.attention.utils.flex_utils import (
+    create_causal_block_mask_for_flex_attention,
+)
 
 # TODO: these should be dynamically set during engine initialization
 NUM_BLOCKS, PAGE_BLOCK_SIZE = 512, 256
@@ -136,7 +141,7 @@ class GPT(nn.Module):
             x = x * torch.tensor(self.config.n_embd**0.5, dtype=x.dtype)
         if self.config.tensor_parallel:
             x = Drop.apply(x, ax.comm_handle.inner_intra_layer_parallel_group)
-        # TODO: Remove this once we have a way support 
+        # TODO: Remove this once we have a way support
         # this for speculative decoding without token counter
         if token_counter is None:
             token_counter = self.token_counter
@@ -183,7 +188,9 @@ class GPT(nn.Module):
 
         if token_counter is None:
             self.token_counter[:B].add_(
-                T if actual_sequence_lengths is None else actual_sequence_lengths
+                T
+                if actual_sequence_lengths is None
+                else actual_sequence_lengths
             )
         return {"logits": x}
 
@@ -272,16 +279,6 @@ class GPT(nn.Module):
 
         self.kv_length = max_seq_length
         self.max_batch_size = max_batch_size
-
-        max_tokens = max_seq_length * max_batch_size
-
-        # TODO (Prajwal): This is a hack to not over allocated
-        # KV-cache by default.Fix with dynamic page calculation logic
-        #global NUM_BLOCKS
-        #if self.config.use_paged_kv_caching:
-            #if max_tokens > PAGE_BLOCK_SIZE * NUM_BLOCKS:
-                #print("Increasing NUM_BLOCKS to 1024")
-                #NUM_BLOCKS = 1024
 
         # initialize the kv cache for all blocks
         for block in self.transformer.h:
