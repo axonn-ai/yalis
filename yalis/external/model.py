@@ -489,14 +489,15 @@ class CausalSelfAttention(nn.Module):
     def __init__(self, config: Config, block_idx: int) -> None:
         super().__init__()
         shape = (config.n_head + 2 * config.n_query_groups) * config.head_size
+        attn_bias = getattr(config, "attn_bias", config.bias)
         # key, query, value projections for all heads, but in a batch
         if not config.tensor_parallel:
-            self.attn = nn.Linear(config.n_embd, shape, bias=config.bias)
+            self.attn = nn.Linear(config.n_embd, shape, bias=attn_bias)
         else:
             self.attn = TPLinear(
                 config.n_embd,
                 shape,
-                bias=config.bias,
+                bias=attn_bias,
                 init_device=config.init_device,
             )
 
@@ -523,6 +524,17 @@ class CausalSelfAttention(nn.Module):
             config.sliding_window_size is not None
             and block_idx % config.sliding_window_layer_placing == 0
         )
+
+        if config.norm_qk:
+            assert config.norm_qk_type == "default"
+
+        if config.norm_qk:
+            norm_q_size = config.head_size
+            norm_k_size = config.head_size
+            self.norm_q = config.norm_class(norm_q_size, eps=config.norm_eps)
+            self.norm_k = config.norm_class(norm_k_size, eps=config.norm_eps)
+        else:
+            self.norm_q = self.norm_k = None
 
         self.config = config
         if config.tensor_parallel:
@@ -588,6 +600,10 @@ class CausalSelfAttention(nn.Module):
         q = q.reshape(B, T, -1, self.config.head_size)  # (B, T, nh_q, hs)
         k = k.reshape(B, T, -1, self.config.head_size)  # (B, T, nh_k, hs)
         v = v.reshape(B, T, -1, self.config.head_size)  # (B, T, nh_v, hs)
+
+        if self.config.norm_qk:
+            q = self.norm_q(q)
+            k = self.norm_k(k)
 
         assert (
             self.config.rope_n_elem == self.config.head_size

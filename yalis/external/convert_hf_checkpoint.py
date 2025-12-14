@@ -14,6 +14,8 @@ import torch
 from lightning.fabric.utilities.load import (
     _NotYetLoadedTensor as NotYetLoadedTensor,
 )
+from safetensors.torch import load_file as load_safetensors
+
 
 from config import Config
 from litgpt.utils import (
@@ -132,6 +134,306 @@ def copy_weights_falcon(
         state_dict[to_name] = param
         if progress_per_file is not None:
             pbar.update(progress_per_file)
+
+
+def copy_weights_qwen_3(
+    config: Config,
+    qkv_weights: Dict[int, List[Optional[NotYetLoadedTensor]]],
+    gate_up_proj_weights: Dict[int, List[Optional[NotYetLoadedTensor]]],
+    state_dict: Dict[str, torch.Tensor],
+    hf_weights: Dict[str, Union[torch.Tensor, NotYetLoadedTensor]],
+    saver: Optional[incremental_save] = None,
+    dtype: Optional[torch.dtype] = None,
+    pbar: Optional[tqdm] = None,
+    progress_per_file: Optional[float] = None,
+    debug_mode: Optional[bool] = False,
+) -> None:
+    weight_map = {
+        "model.embed_tokens.weight": "transformer.wte.weight",
+        "model.layers.{}.input_layernorm.weight": "transformer.h.{l}.norm_1.weight",
+        "model.layers.{}.self_attn.q_proj.weight": None,
+        "model.layers.{}.self_attn.k_proj.weight": None,
+        "model.layers.{}.self_attn.v_proj.weight": None,
+        "model.layers.{}.self_attn.q_norm.weight": "transformer.h.{l}.attn.norm_q.weight",
+        "model.layers.{}.self_attn.k_norm.weight": "transformer.h.{l}.attn.norm_k.weight",
+        "model.layers.{}.self_attn.o_proj.weight": "transformer.h.{l}.attn.proj.weight",
+        "model.layers.{}.post_attention_layernorm.weight": "transformer.h.{l}.norm_2.weight",
+        "model.norm.weight": "transformer.ln_f.weight",
+        "lm_head.weight": "lm_head.weight",
+    }
+    if config.mlp_class_name == "LLaMAMoE":
+        weight_map.update(
+            {
+                "model.layers.{}.mlp.experts.{}.gate_proj.weight": "transformer.h.{}.mlp.experts.{}.fc_1.weight",
+                "model.layers.{}.mlp.experts.{}.up_proj.weight": "transformer.h.{}.mlp.experts.{}.fc_2.weight",
+                "model.layers.{}.mlp.experts.{}.down_proj.weight": "transformer.h.{}.mlp.experts.{}.proj.weight",
+                "model.layers.{}.mlp.gate.weight": "transformer.h.{}.mlp.gate.weight",
+            }
+        )
+    elif config.mlp_class_name == "LLaMAMLP":
+        weight_map.update(
+            {
+                "model.layers.{}.mlp.gate_proj.weight": None,
+                "model.layers.{}.mlp.up_proj.weight": None,
+                "model.layers.{}.mlp.down_proj.weight": "transformer.h.{l}.mlp.proj.weight",
+            }
+        )
+    else:
+        raise NotImplementedError
+
+    if progress_per_file is not None:
+        progress_per_file = progress_per_file / max(
+            1, len(hf_weights) + len(qkv_weights)
+        )
+
+    transformer_wte_weight = None
+
+    for from_name, param in hf_weights.items():
+
+        if "model.layers" in from_name:
+            name_template, *ids = layer_template(from_name, 2)
+            if any(w in from_name for w in ("q_proj", "k_proj", "v_proj")):
+                qkv = qkv_weights.setdefault(ids[0], defaultdict(dict))
+                weight_name, weight_type = from_name.split(".")[-2:]
+                qkv[weight_type][weight_name] = param
+
+            if any(w in from_name for w in ("gate_proj", "up_proj")):
+                gate_up_proj = gate_up_proj_weights.setdefault(
+                    ids[0], defaultdict(dict)
+                )
+                weight_name, weight_type = from_name.split(".")[-2:]
+                gate_up_proj[weight_type][weight_name] = param
+
+            to_name = weight_map[name_template]
+            if to_name is None:
+                continue
+            to_name = to_name.format(l=ids[0])
+        else:
+            to_name = weight_map[from_name]
+        param = load_param(param, from_name, dtype, verbose=debug_mode)
+
+        if to_name == "transformer.wte.weight":
+            transformer_wte_weight = param
+
+        if saver is not None:
+            param = saver.store_early(to_name, param)
+        state_dict[to_name] = param
+
+        if progress_per_file is not None:
+            pbar.update(progress_per_file)
+
+    if "lm_head.weight" not in state_dict:
+        if transformer_wte_weight is not None:
+            param_saved = saver.store_early(
+                "lm_head.weight", transformer_wte_weight.clone()
+            )
+            state_dict["lm_head.weight"] = param_saved
+
+    for i in list(qkv_weights):
+        for weight_type in list(qkv_weights[i]):
+            qkv = qkv_weights[i][weight_type]
+            if len(qkv) != 3:
+                # qkv is split across different .bin files
+                continue
+            q = load_param(
+                qkv["q_proj"],
+                f"layer {i} q {weight_type}",
+                dtype,
+                verbose=debug_mode,
+            )
+            k = load_param(
+                qkv["k_proj"],
+                f"layer {i} k {weight_type}",
+                dtype,
+                verbose=debug_mode,
+            )
+            v = load_param(
+                qkv["v_proj"],
+                f"layer {i} v {weight_type}",
+                dtype,
+                verbose=debug_mode,
+            )
+
+            q_per_kv = config.n_head // config.n_query_groups
+            qs = torch.split(q, config.head_size * q_per_kv)
+            ks = torch.split(k, config.head_size)
+            vs = torch.split(v, config.head_size)
+            cycled = [t for group in zip(qs, ks, vs) for t in group]
+            qkv = torch.cat(cycled)
+
+            state_dict[f"transformer.h.{i}.attn.attn.{weight_type}"] = qkv
+            del qkv_weights[i][weight_type]
+
+            if progress_per_file is not None:
+                pbar.update(progress_per_file)
+
+    for i in list(gate_up_proj_weights):
+        for weight_type in list(gate_up_proj_weights[i]):
+            gate_up_proj = gate_up_proj_weights[i][weight_type]
+            if ("gate_proj" not in gate_up_proj) or (
+                "up_proj" not in gate_up_proj
+            ):
+                continue
+            gate_proj = gate_up_proj["gate_proj"]
+            up_proj = gate_up_proj["up_proj"]
+
+            gate_proj = load_param(
+                gate_proj, f"layer {i} gate_proj", dtype, verbose=debug_mode
+            )
+            up_proj = load_param(
+                up_proj, f"layer {i} up_proj", dtype, verbose=debug_mode
+            )
+            gate_up_proj = torch.stack((gate_proj, up_proj), dim=1).reshape(
+                2 * gate_proj.size(0), -1
+            )
+            state_dict[f"transformer.h.{i}.mlp.gate_up_proj.weight"] = (
+                gate_up_proj
+            )
+            del gate_up_proj_weights[i]
+            if progress_per_file is not None:
+                pbar.update(progress_per_file)
+
+
+def copy_weights_qwen_2_5(
+    config: Config,
+    qkv_weights: Dict[int, List[Optional[NotYetLoadedTensor]]],
+    gate_up_proj_weights: Dict[int, List[Optional[NotYetLoadedTensor]]],
+    state_dict: Dict[str, torch.Tensor],
+    hf_weights: Dict[str, Union[torch.Tensor, NotYetLoadedTensor]],
+    saver: Optional[incremental_save] = None,
+    dtype: Optional[torch.dtype] = None,
+    pbar: Optional[tqdm] = None,
+    progress_per_file: Optional[float] = None,
+    debug_mode: Optional[bool] = False,
+) -> None:
+    weight_map = {
+        "model.embed_tokens.weight": "transformer.wte.weight",
+        "model.layers.{}.input_layernorm.weight": "transformer.h.{l}.norm_1.weight",
+        "model.layers.{}.self_attn.q_proj.weight": None,
+        "model.layers.{}.self_attn.k_proj.weight": None,
+        "model.layers.{}.self_attn.v_proj.weight": None,
+        "model.layers.{}.self_attn.q_proj.bias": None,
+        "model.layers.{}.self_attn.k_proj.bias": None,
+        "model.layers.{}.self_attn.v_proj.bias": None,
+        "model.layers.{}.self_attn.o_proj.weight": "transformer.h.{l}.attn.proj.weight",
+        "model.layers.{}.post_attention_layernorm.weight": "transformer.h.{l}.norm_2.weight",
+        "model.layers.{}.mlp.gate_proj.weight": None,
+        "model.layers.{}.mlp.up_proj.weight": None,
+        "model.layers.{}.mlp.down_proj.weight": "transformer.h.{l}.mlp.proj.weight",
+        "model.norm.weight": "transformer.ln_f.weight",
+        "lm_head.weight": "lm_head.weight",
+    }
+
+    transformer_wte_weight = None
+
+    if progress_per_file is not None:
+        progress_per_file = progress_per_file / max(
+            1, len(hf_weights) + len(qkv_weights)
+        )
+
+    for from_name, param in hf_weights.items():
+        if "model.layers" in from_name:
+            name_template, *ids = layer_template(from_name, 2)
+            if any(w in from_name for w in ("q_proj", "k_proj", "v_proj")):
+                qkv = qkv_weights.setdefault(ids[0], defaultdict(dict))
+                weight_name, weight_type = from_name.split(".")[-2:]
+                qkv[weight_type][weight_name] = param
+
+            if any(w in from_name for w in ("gate_proj", "up_proj")):
+                gate_up_proj = gate_up_proj_weights.setdefault(
+                    ids[0], defaultdict(dict)
+                )
+                weight_name, weight_type = from_name.split(".")[-2:]
+                gate_up_proj[weight_type][weight_name] = param
+
+            to_name = weight_map[name_template]
+            if to_name is None:
+                continue
+            to_name = to_name.format(l=ids[0])
+
+        else:
+            to_name = weight_map[from_name]
+        param = load_param(param, from_name, dtype, verbose=debug_mode)
+
+        if to_name == "transformer.wte.weight":
+            transformer_wte_weight = param
+
+        if saver is not None:
+            param = saver.store_early(to_name, param)
+        state_dict[to_name] = param
+
+        if progress_per_file is not None:
+            pbar.update(progress_per_file)
+
+    if "lm_head.weight" not in state_dict:
+        if transformer_wte_weight is not None:
+            param_saved = saver.store_early(
+                "lm_head.weight", transformer_wte_weight.clone()
+            )
+            state_dict["lm_head.weight"] = param_saved
+
+    for i in list(qkv_weights):
+        for weight_type in list(qkv_weights[i]):
+            qkv = qkv_weights[i][weight_type]
+            if len(qkv) != 3:
+                # qkv is split across different .bin files
+                continue
+            q = load_param(
+                qkv["q_proj"],
+                f"layer {i} q {weight_type}",
+                dtype,
+                verbose=debug_mode,
+            )
+            k = load_param(
+                qkv["k_proj"],
+                f"layer {i} k {weight_type}",
+                dtype,
+                verbose=debug_mode,
+            )
+            v = load_param(
+                qkv["v_proj"],
+                f"layer {i} v {weight_type}",
+                dtype,
+                verbose=debug_mode,
+            )
+
+            q_per_kv = config.n_head // config.n_query_groups
+            qs = torch.split(q, config.head_size * q_per_kv)
+            ks = torch.split(k, config.head_size)
+            vs = torch.split(v, config.head_size)
+            cycled = [t for group in zip(qs, ks, vs) for t in group]
+            qkv = torch.cat(cycled)
+            state_dict[f"transformer.h.{i}.attn.attn.{weight_type}"] = qkv
+            del qkv_weights[i][weight_type]
+
+            if progress_per_file is not None:
+                pbar.update(progress_per_file)
+
+    for i in list(gate_up_proj_weights):
+        for weight_type in list(gate_up_proj_weights[i]):
+            gate_up_proj = gate_up_proj_weights[i][weight_type]
+            if ("gate_proj" not in gate_up_proj) or (
+                "up_proj" not in gate_up_proj
+            ):
+                continue
+            gate_proj = gate_up_proj["gate_proj"]
+            up_proj = gate_up_proj["up_proj"]
+
+            gate_proj = load_param(
+                gate_proj, f"layer {i} gate_proj", dtype, verbose=debug_mode
+            )
+            up_proj = load_param(
+                up_proj, f"layer {i} up_proj", dtype, verbose=debug_mode
+            )
+            gate_up_proj = torch.stack((gate_proj, up_proj), dim=1).reshape(
+                2 * gate_proj.size(0), -1
+            )
+            state_dict[f"transformer.h.{i}.mlp.gate_up_proj.weight"] = (
+                gate_up_proj
+            )
+            del gate_up_proj_weights[i]
+            if progress_per_file is not None:
+                pbar.update(progress_per_file)
 
 
 def copy_weights_hf_llama(
@@ -716,6 +1018,18 @@ def convert_hf_checkpoint(
         # holder to reconstitute the split q, k, v
         qkv_weights = {}
         copy_fn = partial(copy_weights_phi, config, qkv_weights)
+    elif model_name.lower().startswith(("qwen2.5", "qwq")):
+        qkv_weights = {}
+        gate_up_proj_weights = {}
+        copy_fn = partial(
+            copy_weights_qwen_2_5, config, qkv_weights, gate_up_proj_weights
+        )
+    elif model_name.lower().startswith(("qwen3")):
+        qkv_weights = {}
+        gate_up_proj_weights = {}
+        copy_fn = partial(
+            copy_weights_qwen_3, config, qkv_weights, gate_up_proj_weights
+        )
     elif config.mlp_class_name in ("LLaMAMLP", "GemmaMLP", "LLaMAMoE"):
         # holder to reconstitute the split q, k, v
         qkv_weights = {}
@@ -723,6 +1037,8 @@ def convert_hf_checkpoint(
         copy_fn = partial(
             copy_weights_hf_llama, config, qkv_weights, gate_up_proj_weights
         )
+    # New models (Qwen)
+
     else:
         copy_fn = copy_weights_gpt_neox
 
@@ -750,11 +1066,12 @@ def convert_hf_checkpoint(
         ) as json_map:
             bin_index = json.load(json_map)
         bin_files = {
-            checkpoint_dir / Path(bin).with_suffix(".bin")
-            for bin in bin_index["weight_map"].values()
+            checkpoint_dir / bin for bin in bin_index["weight_map"].values()
         }
     else:
-        bin_files = set(checkpoint_dir.glob("*.bin"))
+        bin_files = set(checkpoint_dir.glob("*.bin")) | set(
+            checkpoint_dir.glob("*.safetensors")
+        )
         # some checkpoints serialize the training arguments
         bin_files = {f for f in bin_files if f.name != "training_args.bin"}
     if not bin_files:
@@ -790,7 +1107,11 @@ def convert_hf_checkpoint(
                         current_file_size / total_size
                     ) * total_progress
 
-                    hf_weights = lazy_load(bin_file)
+                    hf_weights = (
+                        load_safetensors(bin_file)
+                        if bin_file.suffix == ".safetensors"
+                        else lazy_load(bin_file)
+                    )
                     copy_fn(
                         sd,
                         hf_weights,
