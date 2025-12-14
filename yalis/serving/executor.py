@@ -1,62 +1,110 @@
-import asyncio
-from typing import List, Literal, Tuple
+"""
+Sync executor for EngineCore.
+
+Builds tensors from requests and calls prefill/generate directly.
+Stateless — no access to scheduler or request store.
+"""
+from __future__ import annotations
+
+from typing import List, Literal
+
 import torch
 
-from .logger import get_logger
+from yalis import LLMEngine
+from yalis.engine import prefill, generate
+from yalis.constants import EnginePhase
+
 from .schemas import InternalRequest
+from .logger import get_logger
 
 Phase = Literal["PREFILL", "DECODE"]
+logger = get_logger("executor")
 
 
 class Executor:
-  """
-  Batched executor: builds tensors from provided InternalRequests and calls
-  the async engine adapter for one phase per tick. Stateless; no access to
-  the queue or scheduler state.
-  """
-
-  def __init__(self, adapter) -> None:
-    self.adapter = adapter
-    self.logger = get_logger("executor")
-
-  async def execute_step(self, phase: Phase, requests: List[InternalRequest], block_table: torch.Tensor, token_counter: torch.Tensor) -> Tuple[torch.Tensor, list[int]]:
     """
-    Execute a single engine step for the given requests.
-    Returns (next_tokens, num_new_tokens) where next_tokens is (B, 1) and
-    num_new_tokens is a per-request list of number of new tokens consumed this step.
+    Sync executor that runs prefill/decode steps.
     """
-    if not requests:
-      return torch.empty((0, 1), dtype=torch.long), []
-    device = self.adapter.engine.device
-    tokenizer = self.adapter.tokenizer
-    self.logger.info(f"Executor block_table: {block_table}")
-    if phase == "PREFILL":
-      # Build from pre-tokenized ids (assumed present)
-      id_lists = [req.prompt_token_ids for req in requests]  # type: ignore[list-item]
-      lengths_list = [len(ids) for ids in id_lists]
-      max_len = max(lengths_list) if lengths_list else 0
-      if max_len == 0:
-        return torch.empty((len(requests), 1), dtype=torch.long, device=device), [0] * len(requests)
-      padded = []
-      pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
-      for ids in id_lists:
-        row = ids + [pad_id] * (max_len - len(ids))  # type: ignore[arg-type]
-        padded.append(row)
-      tokens = torch.tensor(padded, dtype=torch.long, device=device)
-      lengths = torch.tensor(lengths_list, dtype=torch.long, device=device)
-      self.logger.info(f"Executor prefill tokens: {tokens}, lengths: {lengths}")
-      next_tok, _ = await self.adapter.prefill(tokens, lengths, block_table, token_counter)
-      return next_tok, lengths.detach().cpu().tolist()
 
-    elif phase == "DECODE":
-      last_tokens = torch.tensor(
-        [[req.last_token_id] for req in requests],
-        dtype=torch.long,
-        device=device,
-      )
-      next_tok, _ = await self.adapter.decode(last_tokens, block_table, token_counter)
-      return next_tok, [1 for _ in requests]
-    else:
-      raise ValueError(f"Unknown phase: {phase}")
+    def __init__(self, engine: LLMEngine, kv_slots) -> None:
+        self.engine = engine
+        self.kv_slots = kv_slots
+        self.tokenizer = engine.tokenizer
 
+    def execute_step(self, phase: Phase, batch: List[InternalRequest]) -> torch.Tensor:
+        """
+        Execute one prefill or decode step.
 
+        Returns next_tokens tensor (B, 1).
+        """
+        if not batch:
+            return torch.empty((0, 1), dtype=torch.long)
+
+        device = self.engine.device
+        rows = [req.slot_id for req in batch]
+
+        if phase == "PREFILL":
+            return self._prefill(batch, rows, device)
+        else:
+            return self._decode(batch, rows, device)
+
+    def _prefill(self, batch: List[InternalRequest], rows: List[int], device) -> torch.Tensor:
+        lengths_list = [len(req.prompt_token_ids) for req in batch]
+        token_counter = torch.zeros(len(rows), dtype=torch.int32, device=device)
+        block_table = self.kv_slots.view(rows)
+
+        # Build tokens tensor
+        max_len = max(lengths_list)
+        pad_id = self.tokenizer.pad_token_id or self.tokenizer.eos_token_id
+        padded = []
+        for req in batch:
+            ids = list(req.prompt_token_ids)
+            row = ids + [pad_id] * (max_len - len(ids))
+            padded.append(row)
+
+        tokens = torch.tensor(padded, dtype=torch.long, device=device)
+        lengths = torch.tensor(lengths_list, dtype=torch.long, device=device)
+
+        logger.debug(f"prefill batch_size={len(batch)} max_len={max_len} rows={rows} block_table={block_table}")
+
+        next_tok, _ = prefill(
+            self.engine.model,
+            tokens,
+            lengths,
+            self.engine.inference_config.temperature,
+            self.engine.inference_config.top_k,
+            self.engine.inference_config.top_p,
+            False,
+            EnginePhase.PREFILL,
+            block_table,
+            token_counter,
+        )
+        return next_tok
+
+    def _decode(self, batch: List[InternalRequest], rows: List[int], device) -> torch.Tensor:
+        # The scheduler updated the kv slots to account for the new tokens generated 
+        # in this step. token_counter is the number of tokens until the previous step.
+        # We need to subtract 1 to get the correct token counter.
+        token_counter = self.kv_slots.lengths(rows) - 1 
+        block_table = self.kv_slots.view(rows)
+
+        last_tokens = torch.tensor(
+            [[req.last_token_id] for req in batch],
+            dtype=torch.long,
+            device=device,
+        )
+
+        logger.debug(f"decode batch_size={len(batch)} rows={rows} block_table={block_table}")
+
+        next_tok, _ = generate(
+            self.engine.model,
+            last_tokens,
+            self.engine.inference_config.temperature,
+            self.engine.inference_config.top_k,
+            self.engine.inference_config.top_p,
+            False,
+            EnginePhase.DECODE_SINGLE,
+            block_table,
+            token_counter,
+        )
+        return next_tok

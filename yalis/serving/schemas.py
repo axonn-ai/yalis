@@ -3,6 +3,8 @@ from pydantic import BaseModel, Field
 import time
 import uuid
 
+from transformers import AutoTokenizer
+
 from .logger import get_logger
 logger = get_logger("schemas")
 
@@ -20,6 +22,7 @@ class ChatCompletionsRequest(BaseModel):
     top_k: Optional[int] = None
     stream: Optional[bool] = False
     n: Optional[int] = 1
+    stop_token_ids: Optional[List[int]] = None
     stop: Optional[Union[str, List[str]]] = None
 
 
@@ -32,6 +35,7 @@ class SamplingParams(BaseModel):
     top_p: float = 1.0
     top_k: Optional[int] = None
     max_tokens: int = 128
+    stop_token_ids: Optional[List[int]] = None
 
 
 InputKind = Literal["text", "tokens", "embeds", "chat"]
@@ -65,13 +69,14 @@ class InternalRequest(BaseModel):
     generated_count: int = 0
 
     @staticmethod
-    def from_chat_request(req: ChatCompletionsRequest) -> "InternalRequest":
+    def from_chat_request(req: ChatCompletionsRequest, tokenizer: AutoTokenizer) -> "InternalRequest":
         logger.debug(f"from_chat_request req={req}")
         sampling = SamplingParams(
             temperature=float(req.temperature or 1.0),
             top_p=float(req.top_p or 1.0),
             top_k=req.top_k,
             max_tokens=int(req.max_tokens or 128),
+            stop_token_ids=req.stop_token_ids or set([tokenizer.eos_token_id])
         )
         stop_list: Optional[List[str]]
         if req.stop is None:

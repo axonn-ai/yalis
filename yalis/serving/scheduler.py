@@ -1,14 +1,23 @@
-import asyncio
-import os
-import time
-from dataclasses import dataclass, field
-from typing import Dict, Optional, Set
-from typing import List
+"""
+Sync scheduler for EngineCore.
 
-from .queue import WaitQueue
+Manages:
+- Request admission (WAITING -> RUNNING)
+- Slot allocation via KVSlotsManager
+- Batch collection (PREFILL vs DECODE)
+- Request finalization
+"""
+from __future__ import annotations
+
+import time
+from collections import deque
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Set
+
 from .schemas import InternalRequest
-from .prompt import build_prompt
 from .logger import get_logger
+import torch
+
 logger = get_logger("scheduler")
 
 
@@ -17,7 +26,6 @@ class Metrics:
     submitted: int = 0
     admitted: int = 0
     completed: int = 0
-    cancelled: int = 0
     ttft_ms_sum: float = 0.0
     ttft_count: int = 0
     step_ms_sum: float = 0.0
@@ -30,102 +38,162 @@ class Metrics:
             "submitted": self.submitted,
             "admitted": self.admitted,
             "completed": self.completed,
-            "cancelled": self.cancelled,
             "avg_ttft_ms": avg_ttft,
             "avg_step_ms": avg_step,
         }
 
 
-class AsyncScheduler:
-    def __init__(self, wait_queue: WaitQueue) -> None:
-        self.wait_queue = wait_queue
-        self.logger = logger
-        # NOTE: Temporary knob for M3 simulation only; delete after real engine lands.
-        # YALIS_MAX_CONCURRENCY caps concurrent RUNNING requests (later derived from engine).
-        self.max_concurrency = int(os.getenv("YALIS_MAX_CONCURRENCY", "4"))
-        # NOTE: Temporary knob for M3 simulation only; delete after real engine lands.
-        # YALIS_SCHED_TICK_MS approximates one decode step latency in simulation.
-        self.tick_ms = int(os.getenv("YALIS_SCHED_TICK_MS", "10"))
+class Scheduler:
+    """
+    Sync scheduler that manages request lifecycle and batching.
 
+    Uses:
+    - waiting: deque for FCFS ordering of waiting requests
+    - running: set of currently running request IDs
+    - requests: dict for O(1) lookup by request_id
+    """
+
+    def __init__(self, max_concurrency: int) -> None:
+        self.max_concurrency = max_concurrency
         self.metrics = Metrics()
-        self._running: Set[str] = set()
-        # Adapter is set by the server on startup (AsyncEngineAdapter)
-        self.adapter = None
-        # KV slots manager (injected by server on startup)
+
+        # Request store (for O(1) lookup)
+        self.requests: Dict[str, InternalRequest] = {}
+
+        # FCFS queue for waiting requests
+        self.waiting: deque[str] = deque()
+
+        # Currently running request IDs
+        self.running: Set[str] = set()
+
+        # KV slots manager (injected by EngineCore)
         self.kv_slots = None
 
-    # EngineLoop will call get_next_batch() each tick to fetch work
-    async def get_next_batch(self) -> tuple[str, list[InternalRequest]]:
-        await self._admit()
-        prefill_ids = self._collect_prefill_ids()
-        if prefill_ids:
-            return "PREFILL", [self.wait_queue.requests[rid] for rid in prefill_ids]
-        decode_ids = self._collect_decode_ids()
-        if decode_ids:
-            return "DECODE", [self.wait_queue.requests[rid] for rid in decode_ids]
-        return "IDLE", []
+    def add_request(self, req: InternalRequest) -> None:
+        """Add a new request to the scheduler."""
+        self.requests[req.request_id] = req
+        self.waiting.append(req.request_id)
+        self.metrics.submitted += 1
 
-    async def _admit(self) -> None:
-        while len(self._running) < self.max_concurrency and not self.wait_queue.queue.empty():
-            # require kv_slots to be set and have capacity for at least one admission
+    def admit(self) -> List[str]:
+        """Admit waiting requests (FCFS) up to max_concurrency. Returns list of admitted request_ids."""
+        admitted = []
+
+        while self.waiting and len(self.running) < self.max_concurrency:
             if self.kv_slots is None:
-                raise RuntimeError("kv_slots is not set")
+                raise RuntimeError("kv_slots not set")
             if self.kv_slots.slot_allocator.free_count() == 0:
-                # No free slots to admit new requests
                 break
-            req_id = await self.wait_queue.queue.get()
-            st = self.wait_queue.requests.get(req_id)
-            if st is None or st.status != "WAITING":
+
+            req_id = self.waiting.popleft()
+            req = self.requests.get(req_id)
+
+            # TODO: This should never happen right now
+            if req is None or req.status != "WAITING":
+                raise RuntimeError(f"request {req_id} is not WAITING. This should never happen.")
                 continue
 
-            # Assign stable row/slot now to keep batch index == slot mapping
-            slot_id = self.kv_slots.slot_allocator.allocate(req_id)
-
-            st.slot_id = slot_id
-            st.status = "RUNNING"
-            st.started_ts = time.time()
-            st.phase = "PREFILL"
-            # Endpoint is responsible for setting prompt_text and prompt_token_ids
-
-
-
-            self._running.add(req_id)
+            slot_id = self.kv_slots.allocate([req_id], torch.tensor([len(req.prompt_token_ids)], dtype=torch.long))[0]
+            req.slot_id = slot_id
+            req.status = "RUNNING"
+            req.started_ts = time.time()
+            req.phase = "PREFILL"
+            self.running.add(req_id)
             self.metrics.admitted += 1
-            # Log admission with cap
-            logger.info(f"admit req_id={req_id} slot={slot_id} phase=PREFILL max_tokens={st.sampling.max_tokens}")
+            admitted.append(req_id)
+            logger.info(f"admit req_id={req_id} slot={slot_id}")
 
-    def _collect_prefill_ids(self) -> List[str]:
-        items: List[tuple[int, str]] = []
-        for req_id in list(self._running):
-            st = self.wait_queue.requests.get(req_id)
-            if st is None or st.status != "RUNNING":
+        return admitted
+
+    def schedule(self) -> tuple[str, List[InternalRequest]]:
+        """Get next batch of requests to process (PREFILL or DECODE)."""
+
+        # Admit new requests to the running set
+        self.admit()
+
+        prefill_reqs = []
+        decode_reqs = []
+
+        for req_id in self.running:
+            req = self.requests.get(req_id)
+            if req is None or req.status != "RUNNING":
                 continue
-            if st.phase == "PREFILL":
-                items.append((st.slot_id if st.slot_id is not None else 1 << 30, req_id))
-        items.sort()
-        return [rid for _, rid in items]
+            if req.phase == "PREFILL":
+                prefill_reqs.append(req)
+            elif req.phase == "DECODE":
+                decode_reqs.append(req)
 
-    def _collect_decode_ids(self) -> List[str]:
-        items: List[tuple[int, str]] = []
-        for req_id in list(self._running):
-            st = self.wait_queue.requests.get(req_id)
-            if st is None or st.status != "RUNNING":
-                continue
-            if st.phase == "DECODE" and st.generated_count < st.sampling.max_tokens and st.last_token_id is not None:
-                items.append((st.slot_id if st.slot_id is not None else 1 << 30, req_id))
-        items.sort()
-        return [rid for _, rid in items]
+        # Sort by slot_id for consistent ordering
+        if prefill_reqs:
+            prefill_reqs.sort(key=lambda r: r.slot_id or 0)
+            return "PREFILL", prefill_reqs
+        if decode_reqs:
+            decode_reqs.sort(key=lambda r: r.slot_id or 0)
+            return "DECODE", decode_reqs
 
-    def finalize_batch(self, finished: Set[str]) -> List[int]:
-        logger.info(f"Finalize batch finished: {finished}")
-        slot_ids: List[int] = []
-        for rid in finished:
-            self._running.discard(rid)
-            # free KV resources and release row
-            if self.kv_slots is not None:
-                freed = self.kv_slots.free(rid)
-                if freed is not None:
-                    slot_ids.append(freed)
-        return slot_ids
+        return "IDLE", []
+    
+    def process_outputs(self, batch: List[InternalRequest], outputs: List[OutputItem]) -> None:
+        """Process outputs for a batch of requests."""
+        finished = []
+        now = time.time()
 
+        for req, tok_list in zip(batch, outputs):
+            # TODO(Prajwal): This can be multiple tokens in case of 
+            # scenarios like speculative decoding
+            if not isinstance(tok_list, list):
+                tok_list = [tok_list]
+            #req.output_token_ids.extend(tok_list)
+            #req.generated_count += len(tok_list)
 
+            for tok in tok_list:
+                req.output_token_ids.append(int(tok))
+                req.last_token_id = int(tok)
+                req.generated_count += 1
+
+                stopped = self.check_stop(req, int(tok))
+
+                if stopped:
+                    req.status = "DONE"
+                    req.finished_ts = now
+                    logger.info(f"completed req_id={req.request_id} tokens={req.generated_count}")
+                    finished.append(req)
+                    break
+                
+            
+            # Update the KV slots
+            logger.debug(f"update req_id={req.request_id} slot={req.slot_id} len(tok_list)={len(tok_list)}")
+            self.kv_slots.update([req.slot_id], len(tok_list))
+
+            # Transition to DECODE phase
+            if req.phase == "PREFILL":
+                if req.started_ts is not None:
+                    self.metrics.ttft_ms_sum += (time.time() - req.started_ts) * 1000.0
+                    self.metrics.ttft_count += 1
+                req.phase = "DECODE"
+            
+
+        # Finalize the requests and clean up the slots
+        for req in finished:
+            self.finalize(req.request_id)
+        return finished
+  
+
+    def check_stop(self, req: InternalRequest, tok: int) -> bool:
+        if req.generated_count >= req.sampling.max_tokens:
+            req.finish_reason = "length"
+            return True
+
+        if tok in req.sampling.stop_token_ids:
+            req.finish_reason = "stop"
+            return True
+
+        return False
+
+    def finalize(self, request_id: str) -> Optional[int]:
+        """Remove request from running set and free slot. Returns freed slot_id."""
+        self.running.discard(request_id)
+        self.metrics.completed += 1
+        if self.kv_slots is not None:
+            return self.kv_slots.free(request_id)
+        return None
