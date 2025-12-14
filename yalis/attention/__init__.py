@@ -4,7 +4,6 @@ from typing import Optional
 from yalis.constants import EnginePhase
 from .registry import get_attention
 from .backends import AttentionBackend
-from .masking import create_block_mask  # noqa: F401
 
 
 def attention_wrapper(
