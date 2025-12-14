@@ -1,4 +1,3 @@
-
 from typing import Sequence, Optional
 import torch
 
@@ -158,8 +157,8 @@ def flash_attention(
         cache_seqlens = cache_seqlens + T
 
         if phase == EnginePhase.PREFILL:
-            # This is clever way for now to not have to pad the actual KV-Cache and just 
-            # use the k and v tensors directly in prefill
+            # This is clever way for now to not have to pad the actual KV-Cache
+            # and just use the k and v tensors directly in prefill
             k_cache = k
             v_cache = v
             block_table = None
