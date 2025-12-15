@@ -22,7 +22,6 @@ from yalis.tensor_parallel.nvshmem_comm import (
 )
 
 from typing import Optional, Sequence
-import gc
 
 try:
     import torch.distributed._symmetric_memory as symm_mem
