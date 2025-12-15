@@ -22,7 +22,6 @@ from yalis.tensor_parallel.nvshmem_comm import (
 )
 
 from typing import Optional, Sequence
-import gc
 
 try:
     import torch.distributed._symmetric_memory as symm_mem
@@ -101,9 +100,6 @@ def initialize_params(
     # placing outside leads to pytorch not deleting the reserved memory
     torch.cuda.empty_cache()
 
-    # This leads to immediate memory garbage collection but can be slow
-    # Probably not needed
-    gc.collect()
     return params
 
 
