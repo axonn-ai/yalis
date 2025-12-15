@@ -213,7 +213,7 @@ def copy_weights_qwen_3(
         param = load_param(param, from_name, dtype, verbose=debug_mode)
 
         if to_name == "transformer.wte.weight":
-            transformer_wte_weight = param
+            transformer_wte_weight = param.clone().detach()
 
         if saver is not None:
             param = saver.store_early(to_name, param)
@@ -356,7 +356,7 @@ def copy_weights_qwen_2_5(
         param = load_param(param, from_name, dtype, verbose=debug_mode)
 
         if to_name == "transformer.wte.weight":
-            transformer_wte_weight = param
+            transformer_wte_weight = param.clone().detach()
 
         if saver is not None:
             param = saver.store_early(to_name, param)
@@ -580,7 +580,7 @@ def copy_weights_hf_llama(
         param = load_param(param, name, dtype, verbose=debug_mode)
 
         if to_name == "transformer.wte.weight":
-            transformer_wte_weight = param
+            transformer_wte_weight = param.clone().detach()
 
         if saver is not None:
             # For the tensors that have a to mapping, we use the same store early principle
@@ -719,7 +719,7 @@ def copy_weights_gemma_2(
             to_name = weight_map[name]
 
         if to_name == "transformer.wte.weight":
-            transformer_wte_weight = param
+            transformer_wte_weight = param.clone().detach()
 
         param = load_param(param, name, dtype)
         if saver is not None:
