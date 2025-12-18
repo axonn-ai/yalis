@@ -106,6 +106,10 @@ class InferenceConfig:
         symmetric_allreduce_strategy: Optional[
             Literal["one-shot", "two-shot", "nvshmem"]
         ] = None,
+        # CPU Offloading options
+        use_cpu_offloading: bool = False,
+        cpu_offload_num_prefetch_layers: int = 1,
+        cpu_offload_pin_memory: bool = True,
     ):
         """
         Initialize the inference configuration.
@@ -131,6 +135,13 @@ class InferenceConfig:
             use_intra_head_parallelism (bool): Use intra-head parallelism.
             use_paged_kv_caching (bool): Use paged k/v caching for attention.
             prestore_kv_cache (bool): Pre-store k/v cache before attention.
+            use_cpu_offloading (bool): Enable CPU offloading for memory
+                            efficiency. Keeps model on CPU and streams
+                            layers to GPU on demand.
+            cpu_offload_num_prefetch_layers (int): Number of layers to
+                            prefetch when CPU offloading is enabled.
+            cpu_offload_pin_memory (bool): Pin CPU memory for faster
+                            CPU->GPU transfers during offloading.
         """
         self.max_batch_size = max_batch_size
         # TODO - default max_length should be none.
@@ -145,6 +156,10 @@ class InferenceConfig:
         self.use_paged_kv_caching = use_paged_kv_caching
         self.prestore_kv_cache = prestore_kv_cache
         self.symmetric_allreduce_strategy = symmetric_allreduce_strategy
+        # CPU Offloading
+        self.use_cpu_offloading = use_cpu_offloading
+        self.cpu_offload_num_prefetch_layers = cpu_offload_num_prefetch_layers
+        self.cpu_offload_pin_memory = cpu_offload_pin_memory
 
         if attention_backend not in ["flash", "sdpa", "flex"]:
             raise ValueError(
@@ -210,6 +225,17 @@ class InferenceConfig:
                 " 'one-shot', 'two-shot', 'nvshmem', or None."
             )
 
+        # CPU Offloading validation
+        if self.use_cpu_offloading:
+            if self.cpu_offload_num_prefetch_layers < 1:
+                raise ValueError(
+                    "cpu_offload_num_prefetch_layers must be >= 1"
+                )
+            #if self.use_paged_kv_caching:
+                #raise ValueError(
+                    #"CPU offloading is not yet compatible with paged KV caching"
+                #)
+
     def __repr__(self):
         return (
             f"{self.__class__.__name__}(\n"
@@ -223,6 +249,9 @@ class InferenceConfig:
             f"  use_intra_head_parallelism={self.use_intra_head_parallelism},\n"  # noqa: E501
             f"  attention_backend={self.attention_backend.value},\n"
             f"  use_paged_kv_caching={self.use_paged_kv_caching},\n"
-            f"  prestore_kv_cache={self.prestore_kv_cache}\n"
+            f"  prestore_kv_cache={self.prestore_kv_cache},\n"
+            f"  use_cpu_offloading={self.use_cpu_offloading},\n"
+            f"  cpu_offload_num_prefetch_layers={self.cpu_offload_num_prefetch_layers},\n"  # noqa: E501
+            f"  cpu_offload_pin_memory={self.cpu_offload_pin_memory}\n"
             f")"
         )

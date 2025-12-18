@@ -17,6 +17,7 @@ from .constants import EnginePhase
 import time
 import gc
 from .timers import Timers
+from .offloading import CPUOffloadedModel
 
 import os
 
@@ -190,41 +191,85 @@ class LLMEngine:
             f"Memory Stats after Initializing Model - {get_gpu_memory_info()} "
         )
 
-    def _make_params_contiguous(self, model):
+    def _make_params_contiguous(self, model, use_cpu_offloading=False):
         if not model:
             print_rank0(
                 "Model must be initialized before contiguous parameter buffer can be allocated"  # noqa: E501
             )
             return model
 
-        model = model.to(self.device)
-        return model
+        if use_cpu_offloading:
+            # For CPU offloading, we don't move the entire model to GPU
+            # The offloading wrapper will handle layer-by-layer transfers
+            return model
+        else:
+            model = model.to(self.device)
+            return model
 
     def _initialize_model(self, model_config, inference_config):
         """
         Internal method to load and set up the model based on ModelConfig.
         """
         t0 = time.time()
+        use_cpu_offloading = inference_config.use_cpu_offloading
+
+        # When using CPU offloading, load model to CPU first
+        init_device = "cpu" if use_cpu_offloading else "cuda"
+
         model = get_model(
             model_config.model_path,
             self.dtype,
             max_sequence_length=inference_config.max_length,
             random_init=False,
+            device=init_device,
             use_intra_head_parallelism=inference_config.use_intra_head_parallelism,  # noqa: E501
             attention_backend=inference_config.attention_backend,
             use_paged_kv_caching=inference_config.use_paged_kv_caching,
             prestore_kv_cache=inference_config.prestore_kv_cache,
             disable_tp=model_config.disable_tp,
         )
-        model = self._make_params_contiguous(model)
-        model.set_kv_cache(
-            max_batch_size=inference_config.max_batch_size,
-            device=self.device,
-            dtype=self.dtype,
-        )
-        print_rank0(
-            f"Memory Stats after KV Cache Init - {get_gpu_memory_info()} "
-        )
+
+        if use_cpu_offloading:
+            print_rank0(
+                f"[CPU Offloading] Model loaded to CPU, "
+                f"will stream {inference_config.cpu_offload_num_prefetch_layers} "
+                f"layer(s) ahead"
+            )
+            # Don't move entire model to GPU
+            model = self._make_params_contiguous(
+                model, use_cpu_offloading=True
+            )
+            # Set KV cache on GPU (this stays on GPU)
+            model.set_kv_cache(
+                max_batch_size=inference_config.max_batch_size,
+                device=self.device,
+                dtype=self.dtype,
+            )
+            print_rank0(
+                f"Memory Stats after KV Cache Init - {get_gpu_memory_info()} "
+            )
+            # Wrap model with CPU offloading
+            model = CPUOffloadedModel(
+                model=model,
+                device=torch.device(self.device),
+                dtype=self.dtype,
+                num_prefetch_layers=inference_config.cpu_offload_num_prefetch_layers,
+                pin_memory=inference_config.cpu_offload_pin_memory,
+            )
+            print_rank0(
+                f"Memory Stats after CPU Offload Setup - {get_gpu_memory_info()} "
+            )
+        else:
+            model = self._make_params_contiguous(model)
+            model.set_kv_cache(
+                max_batch_size=inference_config.max_batch_size,
+                device=self.device,
+                dtype=self.dtype,
+            )
+            print_rank0(
+                f"Memory Stats after KV Cache Init - {get_gpu_memory_info()} "
+            )
+
         if inference_config.symmetric_allreduce_strategy is not None:
             model.create_symmetric_memory_pool(
                 batch_size=inference_config.batch_size,
@@ -415,6 +460,7 @@ class LLMEngine:
 
             prompt_sequence_lengths = prompt_sequence_lengths.to(self.device)
             for step in range(tokens_to_generate):
+                print(f"[{dist.get_rank()}] Step {step}")
                 timer_key = None
                 if step == 0:  # Prefill step
                     timer_key = "prefill"
