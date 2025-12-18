@@ -255,6 +255,8 @@ class LLMEngine:
                 dtype=self.dtype,
                 num_prefetch_layers=inference_config.cpu_offload_num_prefetch_layers,
                 pin_memory=inference_config.cpu_offload_pin_memory,
+                use_preallocated_buffers=inference_config.cpu_offload_use_preallocated_buffers,
+                offload_components=inference_config.cpu_offload_components,
             )
             print_rank0(
                 f"Memory Stats after CPU Offload Setup - {get_gpu_memory_info()} "

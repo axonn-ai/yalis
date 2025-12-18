@@ -1,8 +1,12 @@
-from typing import Optional, Literal, Tuple
+from typing import Optional, Literal, Tuple, List
 import os
 from packaging.version import Version
 from importlib.metadata import version, PackageNotFoundError
 from yalis.attention.backends import AttentionBackend
+
+
+# Valid component names for CPU offloading
+VALID_OFFLOAD_COMPONENTS = ["mlp", "attn", "norm"]
 
 
 class ModelConfig:
@@ -110,6 +114,8 @@ class InferenceConfig:
         use_cpu_offloading: bool = False,
         cpu_offload_num_prefetch_layers: int = 1,
         cpu_offload_pin_memory: bool = True,
+        cpu_offload_use_preallocated_buffers: bool = False,
+        cpu_offload_components: Optional[List[str]] = None,
     ):
         """
         Initialize the inference configuration.
@@ -142,6 +148,14 @@ class InferenceConfig:
                             prefetch when CPU offloading is enabled.
             cpu_offload_pin_memory (bool): Pin CPU memory for faster
                             CPU->GPU transfers during offloading.
+            cpu_offload_use_preallocated_buffers (bool): Use fixed GPU 
+                            buffers with .copy_() instead of .to() for
+                            zero-allocation transfers.
+            cpu_offload_components (List[str]): Components to offload/prefetch.
+                            Options: "mlp", "attn", "norm"
+                            Default: ["mlp", "attn", "norm"] (full layer)
+                            Example: ["mlp"] = only MLP offloaded, attention 
+                            stays on GPU permanently.
         """
         self.max_batch_size = max_batch_size
         # TODO - default max_length should be none.
@@ -160,6 +174,19 @@ class InferenceConfig:
         self.use_cpu_offloading = use_cpu_offloading
         self.cpu_offload_num_prefetch_layers = cpu_offload_num_prefetch_layers
         self.cpu_offload_pin_memory = cpu_offload_pin_memory
+        self.cpu_offload_use_preallocated_buffers = cpu_offload_use_preallocated_buffers
+        
+        # Validate and store offload components
+        if cpu_offload_components is None:
+            self.cpu_offload_components = ["mlp", "attn", "norm"]  # Full layer
+        else:
+            for comp in cpu_offload_components:
+                if comp not in VALID_OFFLOAD_COMPONENTS:
+                    raise ValueError(
+                        f"Invalid component '{comp}' in cpu_offload_components. "
+                        f"Valid options: {VALID_OFFLOAD_COMPONENTS}"
+                    )
+            self.cpu_offload_components = cpu_offload_components
 
         if attention_backend not in ["flash", "sdpa", "flex"]:
             raise ValueError(
@@ -231,10 +258,6 @@ class InferenceConfig:
                 raise ValueError(
                     "cpu_offload_num_prefetch_layers must be >= 1"
                 )
-            #if self.use_paged_kv_caching:
-                #raise ValueError(
-                    #"CPU offloading is not yet compatible with paged KV caching"
-                #)
 
     def __repr__(self):
         return (
@@ -246,12 +269,14 @@ class InferenceConfig:
             f"  temperature={self.temperature},\n"
             f"  metrics={self.metrics},\n"
             f"  tp_dims={self.tp_dims},\n"
-            f"  use_intra_head_parallelism={self.use_intra_head_parallelism},\n"  # noqa: E501
+            f"  use_intra_head_parallelism={self.use_intra_head_parallelism},\n"
             f"  attention_backend={self.attention_backend.value},\n"
             f"  use_paged_kv_caching={self.use_paged_kv_caching},\n"
             f"  prestore_kv_cache={self.prestore_kv_cache},\n"
             f"  use_cpu_offloading={self.use_cpu_offloading},\n"
-            f"  cpu_offload_num_prefetch_layers={self.cpu_offload_num_prefetch_layers},\n"  # noqa: E501
-            f"  cpu_offload_pin_memory={self.cpu_offload_pin_memory}\n"
+            f"  cpu_offload_num_prefetch_layers={self.cpu_offload_num_prefetch_layers},\n"
+            f"  cpu_offload_pin_memory={self.cpu_offload_pin_memory},\n"
+            f"  cpu_offload_use_preallocated_buffers={self.cpu_offload_use_preallocated_buffers},\n"
+            f"  cpu_offload_components={self.cpu_offload_components}\n"
             f")"
         )
