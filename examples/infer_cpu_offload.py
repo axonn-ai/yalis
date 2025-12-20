@@ -70,6 +70,8 @@ if __name__ == "__main__":
         cpu_offload_num_prefetch_layers=1,  # Prefetch 1 layer ahead
         cpu_offload_pin_memory=True,  # Pin CPU memory for faster transfers
         # Note: Paged KV caching is not yet compatible with CPU offloading
+        cpu_offload_use_preallocated_buffers=True,
+        cpu_offload_components=["mlp"],
         use_paged_kv_caching=True,
         prestore_kv_cache=True,
     )

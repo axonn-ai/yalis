@@ -370,6 +370,9 @@ class CPUOffloadManager:
             with manager.layer_context(i):
                 output = layer(input)
         """
+        if layer_idx == 0:
+            self.transfer_stream.wait_stream(torch.cuda.current_stream())
+
         # Wait for current layer
         self.wait_for_layer(layer_idx)
         
