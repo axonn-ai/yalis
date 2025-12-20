@@ -20,7 +20,7 @@ from axonn.intra_layer.communication import Drop, Gather
 
 from yalis.attention import attention_wrapper
 from yalis.external.config import Config
-from yalis.tensor_parallel import TPLinear
+from yalis.tensor_parallel import TPLinear, TPMoE
 from yalis.constants import EnginePhase
 from kvcache_manager import KVCacheManager
 from yalis.attention.flash import flash_apply_rotary as apply_rotary
@@ -753,24 +753,25 @@ class GptNeoxMLP(nn.Module):
 
 
 class LLaMAMLP(nn.Module):
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: Config, intermediate_size: Optional[int] = None) -> None:
         super().__init__()
+        self.intermediate_size = intermediate_size or config.intermediate_size
         if not config.tensor_parallel:
             self.gate_up_proj = nn.Linear(
-                config.n_embd, 2 * config.intermediate_size, bias=config.bias
+                config.n_embd, 2 * self.intermediate_size, bias=config.bias
             )
             self.proj = nn.Linear(
-                config.intermediate_size, config.n_embd, bias=config.bias
+                self.intermediate_size, config.n_embd, bias=config.bias
             )
         else:
             self.gate_up_proj = TPLinear(
                 config.n_embd,
-                2 * config.intermediate_size,
+                2 * self.intermediate_size,
                 bias=config.bias,
                 init_device=config.init_device,
             )
             self.proj = TPLinear(
-                config.intermediate_size,
+                self.intermediate_size,
                 config.n_embd,
                 bias=config.bias,
                 transpose=True,
@@ -797,45 +798,6 @@ class GemmaMLP(LLaMAMLP):
             * x_fc_2
         )
         return self.proj(x)
-
-
-class LLaMAMoE(nn.Module):
-    def __init__(self, config: Config) -> None:
-        super().__init__()
-        assert not config.tensor_parallel
-        self.gate = nn.Linear(config.n_embd, config.n_expert, bias=False)
-        self.experts = nn.ModuleList(
-            LLaMAMLP(config) for _ in range(config.n_expert)
-        )
-
-        self.config = config
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Derived from: https://github.com/mistralai/mistral-src/blob/b46d6/moe_one_file_ref.py#L203-L219  # noqa: E501
-        See also figure 1 in https://arxiv.org/abs/2211.15841
-        """
-        B, T, C = (
-            x.size()
-        )  # batch size, sequence length, embedding dimensionality (n_embd)
-        x = x.view(-1, C)  # (B*T, C)
-        router = self.gate(x)  # (B*T, n_expert)
-        probs, indices = torch.topk(
-            router, self.config.n_expert_per_token
-        )  # (B*T, n_expert_per_token)
-        probs = probs.softmax(dim=1, dtype=torch.float).to(dtype=x.dtype)
-        masks = indices.unsqueeze(-1) == torch.arange(
-            self.config.n_expert, device=x.device
-        )
-        masks = masks.permute(2, 0, 1)  # (n_expert, B*T, n_expert_per_token)
-        y = torch.zeros_like(x)  # (B*T, C)
-        for mask, expert in zip(masks, self.experts):
-            token_idx, expert_idx = torch.where(mask)
-            y[token_idx] += probs[token_idx, expert_idx, None] * expert(
-                x[token_idx]
-            )
-        return y.view(B, T, C)
-
 
 def build_rope_cache(
     seq_len: int,
@@ -1073,8 +1035,7 @@ class LLaMAMoE(nn.Module):
     def __init__(self, config: Config) -> None:
         super().__init__()
         self.gate = nn.Linear(config.n_embd, config.n_expert, bias=False)
-        self.experts = nn.ModuleList(LLaMAMLP(config) for _ in range(config.n_expert))
-
+        self.experts = TPMoE(config.n_embd, config.moe_intermediate_size, config.n_expert, config.n_expert_per_token, init_device=config.init_device)
         self.config = config
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -1084,63 +1045,7 @@ class LLaMAMoE(nn.Module):
         """
         B, T, C = x.size()  # batch size, sequence length, embedding dimensionality (n_embd)
         x = x.view(-1, C)  # (B*T, C)
-        
-        
-        # Once this rough implementation works then we can store the tensors itself differently such that 
-        # we dont need to stack it during runtime and such that the paritioning will also be taken care of 
-        
-        w1 =  torch.stack([exp.gate_up_proj.weight for exp in self.experts]) # [E,2F,C]
-        w2 = torch.stack ([exp.proj.weight for exp in self.experts]) # [E, C, F]
-        
-
-        
-        
         router = self.gate(x)  # (B*T, n_expert)
         
-        
-        # probs, indices = torch.topk(router, self.config.n_expert_per_token)  # (B*T, n_expert_per_token)
-        # probs = probs.softmax(dim=1, dtype=torch.float).to(dtype=x.dtype)
-        # masks = indices.unsqueeze(-1) == torch.arange(self.config.n_expert, device=x.device)
-        # masks = masks.permute(2, 0, 1)  # (n_expert, B*T, n_expert_per_token)
-        # y = torch.zeros_like(x)  # (B*T, C)
-        # for mask, expert in zip(masks, self.experts):
-        #     token_idx, expert_idx = torch.where(mask)
-        #     y[token_idx] += probs[token_idx, expert_idx, None] * expert(x[token_idx])
-        
-        assert w1.shape[0] == self.config.n_expert
-        assert w2.shape[0] == self.config.n_expert
-        assert w1.shape[2] == x.shape[1]  # hidden dim
-        assert w2.shape[1] == x.shape[1]  # output hidden dim
-        assert router.shape == (x.shape[0], self.config.n_expert)
-        assert self.config.n_expert_per_token <= self.config.n_expert
-                
-        y = fused_moe(
-            x,
-            w1,
-            w2,
-            router,
-            self.config.n_expert_per_token,
-            True,
-            inplace=False,
-            override_config=None,
-            use_grouped_topk=False,
-            num_expert_group=None,
-            topk_group=None,
-            custom_routing_function=None,
-            use_fp8_w8a8=False,
-            use_int8_w8a16=False,
-            w1_scale=None,
-            w2_scale=None,
-            a1_scale=None,
-            a2_scale=None
-            
-        ).to(x.dtype)
+        y = self.experts(x, router)
         return y.view(B, T, C)
-        
-        # MoE implementation with fused_moe.py
-        
-        
-        
-        
-    
-    

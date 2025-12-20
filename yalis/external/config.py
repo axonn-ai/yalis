@@ -169,7 +169,6 @@ class Config:
     @classmethod
     def remove_unsupported_fields(cls, conf_dict):
         configs = [
-            "moe_intermediate_size",
             "norm_1",
             "norm_2",
             "norm_qk_type",

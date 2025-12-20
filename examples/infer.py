@@ -13,6 +13,7 @@ _KinetoProfile._get_distributed_info = lambda self: None
 if __name__ == "__main__":
     # Model ID from Hugging Face
     model_id = "meta-llama/Llama-3.1-8B-Instruct"
+    #model_id = "Qwen/Qwen3-30B-A3B-Instruct-2507"
 
     user_prompts = [
         "How to bake a cake?",

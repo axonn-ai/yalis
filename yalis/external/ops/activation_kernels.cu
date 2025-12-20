@@ -17,8 +17,9 @@ __global__ void act_and_mul_kernel(
     const int d) {
   const int64_t token_idx = blockIdx.x;
   for (int64_t idx = threadIdx.x; idx < d; idx += blockDim.x) {
-    const scalar_t x = VLLM_LDG(&input[token_idx * 2 * d + idx]);
-    const scalar_t y = VLLM_LDG(&input[token_idx * 2 * d + d + idx]);
+    const int64_t base = token_idx * 2 * d;
+    const scalar_t x = VLLM_LDG(&input[base + 2 * idx]);
+    const scalar_t y = VLLM_LDG(&input[base + 2 * idx + 1]);
     out[token_idx * d + idx] = ACT_FN(x) * y;
   }
 }

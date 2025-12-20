@@ -7,7 +7,7 @@ from functools import partial
 import os
 from pathlib import Path
 from pprint import pprint
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union, Any
 
 from tqdm import tqdm
 import torch
@@ -139,7 +139,7 @@ def copy_weights_falcon(
 def copy_weights_qwen_3(
     config: Config,
     qkv_weights: Dict[int, List[Optional[NotYetLoadedTensor]]],
-    gate_up_proj_weights: Dict[int, List[Optional[NotYetLoadedTensor]]],
+    gate_up_proj_weights: Dict[Any, List[Optional[NotYetLoadedTensor]]],
     state_dict: Dict[str, torch.Tensor],
     hf_weights: Dict[str, Union[torch.Tensor, NotYetLoadedTensor]],
     saver: Optional[incremental_save] = None,
@@ -164,10 +164,11 @@ def copy_weights_qwen_3(
     if config.mlp_class_name == "LLaMAMoE":
         weight_map.update(
             {
-                "model.layers.{}.mlp.experts.{}.gate_proj.weight": "transformer.h.{}.mlp.experts.{}.fc_1.weight",
-                "model.layers.{}.mlp.experts.{}.up_proj.weight": "transformer.h.{}.mlp.experts.{}.fc_2.weight",
-                "model.layers.{}.mlp.experts.{}.down_proj.weight": "transformer.h.{}.mlp.experts.{}.proj.weight",
-                "model.layers.{}.mlp.gate.weight": "transformer.h.{}.mlp.gate.weight",
+                "model.layers.{}.mlp.gate.weight": "transformer.h.{l}.mlp.gate.weight",
+                "model.layers.{}.mlp.experts.{}.gate_proj.weight": None,
+                "model.layers.{}.mlp.experts.{}.up_proj.weight": None,
+                "model.layers.{}.mlp.experts.{}.down_proj.weight": None,
+                #"transformer.h.{l}.mlp.experts.{e}.proj.weight",
             }
         )
     elif config.mlp_class_name == "LLaMAMLP":
@@ -191,23 +192,37 @@ def copy_weights_qwen_3(
     for from_name, param in hf_weights.items():
 
         if "model.layers" in from_name:
-            name_template, *ids = layer_template(from_name, 2)
+            name_template, l = layer_template(from_name, 2)
+            if "experts" in from_name:
+                name_template, e = layer_template(name_template, 5)
+            else:
+                e = None
+            #print (f"{name_template}, {e}")
+
             if any(w in from_name for w in ("q_proj", "k_proj", "v_proj")):
-                qkv = qkv_weights.setdefault(ids[0], defaultdict(dict))
+                qkv = qkv_weights.setdefault(l, defaultdict(dict))
                 weight_name, weight_type = from_name.split(".")[-2:]
                 qkv[weight_type][weight_name] = param
 
-            if any(w in from_name for w in ("gate_proj", "up_proj")):
-                gate_up_proj = gate_up_proj_weights.setdefault(
-                    ids[0], defaultdict(dict)
-                )
-                weight_name, weight_type = from_name.split(".")[-2:]
-                gate_up_proj[weight_type][weight_name] = param
+            if any(w in from_name for w in ("gate_proj", "up_proj", "down_proj")):
+                if e is not None:
+                    # MoE case
+                    gate_up_proj = gate_up_proj_weights.setdefault(l, defaultdict(lambda: defaultdict(dict)))
+                    weight_name, weight_type = from_name.split(".")[-2:]
+                    gate_up_proj[weight_type][weight_name][e] = param
+                else:
+                    # Non-MoE case
+                    gate_up_proj = gate_up_proj_weights.setdefault(l, defaultdict(dict))
+                    weight_name, weight_type = from_name.split(".")[-2:]
+                    gate_up_proj[weight_type][weight_name] = param
 
             to_name = weight_map[name_template]
             if to_name is None:
                 continue
-            to_name = to_name.format(l=ids[0])
+            if e is None:
+                to_name = to_name.format(l=l)
+            else:
+                to_name = to_name.format(l=l, e=e)
         else:
             to_name = weight_map[from_name]
         param = load_param(param, from_name, dtype, verbose=debug_mode)
@@ -270,6 +285,7 @@ def copy_weights_qwen_3(
     for i in list(gate_up_proj_weights):
         for weight_type in list(gate_up_proj_weights[i]):
             gate_up_proj = gate_up_proj_weights[i][weight_type]
+
             if ("gate_proj" not in gate_up_proj) or (
                 "up_proj" not in gate_up_proj
             ):
@@ -277,19 +293,66 @@ def copy_weights_qwen_3(
             gate_proj = gate_up_proj["gate_proj"]
             up_proj = gate_up_proj["up_proj"]
 
-            gate_proj = load_param(
-                gate_proj, f"layer {i} gate_proj", dtype, verbose=debug_mode
-            )
-            up_proj = load_param(
-                up_proj, f"layer {i} up_proj", dtype, verbose=debug_mode
-            )
-            gate_up_proj = torch.stack((gate_proj, up_proj), dim=1).reshape(
-                2 * gate_proj.size(0), -1
-            )
-            state_dict[f"transformer.h.{i}.mlp.gate_up_proj.weight"] = (
-                gate_up_proj
-            )
-            del gate_up_proj_weights[i]
+            if isinstance(gate_proj, dict) and isinstance(up_proj, dict):
+                # MoE case
+                # Down projections also need to be stacke
+                if "down_proj" not in gate_up_proj:
+                    continue
+
+                down_proj = gate_up_proj["down_proj"]
+                # Check if all experts are present
+                num_gate_proj_experts = len(gate_proj)
+                num_up_proj_experts = len(up_proj)
+                num_down_proj_experts = len(down_proj)
+                if (num_gate_proj_experts != config.n_expert or 
+                  num_up_proj_experts != config.n_expert or
+                  num_down_proj_experts != config.n_expert):
+                    print (f"Not all experts are present for layer {i}")
+                    continue
+
+                gate_up_proj_combined = []
+                down_proj_combined = []
+                for e in range(config.n_expert):
+
+                    gate_proj_e = gate_proj[e]
+                    up_proj_e = up_proj[e]
+                    gate_proj_e = load_param(
+                        gate_proj_e, f"layer {i} gate_proj {e}", dtype, verbose=debug_mode
+                    )
+                    up_proj_e = load_param(
+                        up_proj_e, f"layer {i} up_proj {e}", dtype, verbose=debug_mode
+                    )
+                    gate_up_proj_e = torch.stack((gate_proj_e, up_proj_e), dim=1).reshape(
+                        2 * gate_proj_e.size(0), -1
+                    )
+
+                    gate_up_proj_combined.append(gate_up_proj_e)
+
+                    down_proj_e = down_proj[e]
+                    down_proj_e = load_param(
+                        down_proj_e, f"layer {i} down_proj {e}", dtype, verbose=debug_mode
+                    )
+                    down_proj_combined.append(down_proj_e)
+
+                gate_up_proj_combined = torch.stack(gate_up_proj_combined, dim=0)
+                down_proj_combined = torch.stack(down_proj_combined, dim=0)
+                state_dict[f"transformer.h.{i}.mlp.experts.gate_up_proj"] = gate_up_proj_combined
+                state_dict[f"transformer.h.{i}.mlp.experts.proj"] = down_proj_combined
+                del gate_up_proj_combined
+                del down_proj_combined
+            else:
+                # Non-MoE case
+                gate_proj = load_param(
+                    gate_proj, f"layer {i} gate_proj", dtype, verbose=debug_mode
+                )
+                up_proj = load_param(
+                    up_proj, f"layer {i} up_proj", dtype, verbose=debug_mode
+                )
+                gate_up_proj = torch.stack((gate_proj, up_proj), dim=1).reshape(2 * gate_proj.size(0), -1)
+                state_name = f"transformer.h.{i}.mlp.gate_up_proj.weight"
+                state_dict[state_name] = gate_up_proj
+                del gate_up_proj_weights[i]
+
             if progress_per_file is not None:
                 pbar.update(progress_per_file)
 

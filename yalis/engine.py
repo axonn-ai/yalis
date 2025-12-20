@@ -239,7 +239,7 @@ class LLMEngine:
         tokenizer = AutoTokenizer.from_pretrained(model_config.model_name)
         # Check if the tokenizer has a pad token, otherwise use eos_token
         if tokenizer.pad_token is None:
-            if "Mistral" or "Mixtral" in model_config.model_name:
+            if "Mistral" in model_config.model_name or "Mixtral" in model_config.model_name:
                 tokenizer.pad_token = tokenizer.unk_token
             else:
                 tokenizer.pad_token = tokenizer.eos_token
