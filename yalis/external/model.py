@@ -26,7 +26,6 @@ from kvcache_manager import KVCacheManager
 from yalis.attention.flash import flash_apply_rotary as apply_rotary
 from yalis.attention.backends import AttentionBackend
 from yalis.attention.masking import create_causal_block_mask_for_flex_attention
-from yalis.external.fused_moe import fused_moe
 
 
 # TODO: these should be dynamically set during engine initialization
@@ -753,7 +752,9 @@ class GptNeoxMLP(nn.Module):
 
 
 class LLaMAMLP(nn.Module):
-    def __init__(self, config: Config, intermediate_size: Optional[int] = None) -> None:
+    def __init__(
+        self, config: Config, intermediate_size: Optional[int] = None
+    ) -> None:
         super().__init__()
         self.intermediate_size = intermediate_size or config.intermediate_size
         if not config.tensor_parallel:
@@ -798,6 +799,7 @@ class GemmaMLP(LLaMAMLP):
             * x_fc_2
         )
         return self.proj(x)
+
 
 def build_rope_cache(
     seq_len: int,
@@ -1037,17 +1039,21 @@ class LLaMAMoE(nn.Module):
         self.gate = nn.Linear(config.n_embd, config.n_expert, bias=False)
         if config.moe_intermediate_size is None:
             config.moe_intermediate_size = config.intermediate_size
-        self.experts = TPMoE(config.n_embd, config.moe_intermediate_size, config.n_expert, config.n_expert_per_token, init_device=config.init_device)
+        self.experts = TPMoE(
+            config.n_embd,
+            config.moe_intermediate_size,
+            config.n_expert,
+            config.n_expert_per_token,
+            init_device=config.init_device,
+        )
         self.config = config
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Derived from: https://github.com/mistralai/mistral-src/blob/b46d6/moe_one_file_ref.py#L203-L219
-        See also figure 1 in https://arxiv.org/abs/2211.15841
-        """
-        B, T, C = x.size()  # batch size, sequence length, embedding dimensionality (n_embd)
+        B, T, C = (
+            x.size()
+        )  # batch size, sequence length, embedding dimensionality (n_embd)
         x = x.view(-1, C)  # (B*T, C)
         router = self.gate(x)  # (B*T, n_expert)
-        
+
         y = self.experts(x, router)
         return y.view(B, T, C)

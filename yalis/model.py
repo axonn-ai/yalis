@@ -6,7 +6,7 @@ from yalis.model_loading import load_checkpoint_safetensors
 from yalis.external.model import GPT
 import torch.distributed as dist
 from yalis.attention.backends import AttentionBackend
-import torch
+
 
 def get_model(
     litgpt_checkpoint_directory,

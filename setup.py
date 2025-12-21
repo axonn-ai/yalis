@@ -1,16 +1,23 @@
 from setuptools import setup
-from torch.utils.cpp_extension import BuildExtension, CppExtension, CUDAExtension
+from torch.utils.cpp_extension import (
+    BuildExtension,
+    CppExtension,
+)
 import glob
 import os
 
 # Collect all source files for vllm_ops
-vllm_cu_sources = glob.glob("yalis/external/csrc/vllm/*.cu") + \
-                  glob.glob("yalis/external/csrc/vllm/moe/*.cu")
-vllm_cpp_sources = glob.glob("yalis/external/csrc/vllm/*.cpp") + \
-                   glob.glob("yalis/external/csrc/vllm/moe/*.cpp")
+vllm_cu_sources = glob.glob("yalis/external/csrc/vllm/*.cu") + glob.glob(
+    "yalis/external/csrc/vllm/moe/*.cu"
+)
+vllm_cpp_sources = glob.glob("yalis/external/csrc/vllm/*.cpp") + glob.glob(
+    "yalis/external/csrc/vllm/moe/*.cpp"
+)
 vllm_ops_sources = sorted(vllm_cu_sources + vllm_cpp_sources)
-
-print("vllm_ops sources:", vllm_ops_sources)
+vllm_include_dirs = [
+    os.path.abspath("yalis/external/csrc/vllm"),
+    os.path.abspath("yalis/external/csrc/vllm/moe"),
+]
 
 setup(
     name="yalis",
@@ -33,12 +40,8 @@ setup(
             name="vllm_ops",
             sources=vllm_ops_sources,
             extra_compile_args=["-O3"],
-            include_dirs=[
-                "yalis/external/csrc/vllm",
-                "yalis/external/csrc/vllm/moe",
-            ],
-            include_dirs=vllm_include_dirs
-        )
+            include_dirs=vllm_include_dirs,
+        ),
     ],
     cmdclass={"build_ext": BuildExtension},
     install_requires=[

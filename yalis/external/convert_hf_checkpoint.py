@@ -169,7 +169,7 @@ def copy_weights_qwen_3(
                 "model.layers.{}.mlp.experts.{}.gate_proj.weight": None,
                 "model.layers.{}.mlp.experts.{}.up_proj.weight": None,
                 "model.layers.{}.mlp.experts.{}.down_proj.weight": None,
-                #"transformer.h.{l}.mlp.experts.{e}.proj.weight",
+                # "transformer.h.{l}.mlp.experts.{e}.proj.weight",
             }
         )
     elif config.mlp_class_name == "LLaMAMLP":
@@ -198,7 +198,7 @@ def copy_weights_qwen_3(
                 name_template, e = layer_template(name_template, 5)
             else:
                 e = None
-            #print (f"{name_template}, {e}")
+            # print (f"{name_template}, {e}")
 
             if any(w in from_name for w in ("q_proj", "k_proj", "v_proj")):
                 qkv = qkv_weights.setdefault(l, defaultdict(dict))
@@ -208,18 +208,24 @@ def copy_weights_qwen_3(
             if any(w in from_name for w in ("gate_proj", "up_proj")):
                 if e is not None:
                     # MoE case
-                    gate_up_proj = gate_up_proj_weights.setdefault(l, defaultdict(lambda: defaultdict(dict)))
+                    gate_up_proj = gate_up_proj_weights.setdefault(
+                        l, defaultdict(lambda: defaultdict(dict))
+                    )
                     weight_name, weight_type = from_name.split(".")[-2:]
                     gate_up_proj[weight_type][weight_name][e] = param
                 else:
                     # Non-MoE case
-                    gate_up_proj = gate_up_proj_weights.setdefault(l, defaultdict(dict))
+                    gate_up_proj = gate_up_proj_weights.setdefault(
+                        l, defaultdict(dict)
+                    )
                     weight_name, weight_type = from_name.split(".")[-2:]
                     gate_up_proj[weight_type][weight_name] = param
-            
+
             if any(w in from_name for w in ("down_proj")) and e is not None:
                 # Down projections need to be combined for all experts in MoE case
-                down_proj = down_proj_weights.setdefault(l, defaultdict(lambda: defaultdict(dict)))
+                down_proj = down_proj_weights.setdefault(
+                    l, defaultdict(lambda: defaultdict(dict))
+                )
                 weight_name, weight_type = from_name.split(".")[-2:]
                 down_proj[weight_type][weight_name][e] = param
 
@@ -305,7 +311,10 @@ def copy_weights_qwen_3(
                 # Check if all experts are present
                 num_gate_proj_experts = len(gate_proj)
                 num_up_proj_experts = len(up_proj)
-                if (num_gate_proj_experts != config.n_expert or num_up_proj_experts != config.n_expert):
+                if (
+                    num_gate_proj_experts != config.n_expert
+                    or num_up_proj_experts != config.n_expert
+                ):
                     continue
 
                 gate_up_proj_combined = []
@@ -314,36 +323,51 @@ def copy_weights_qwen_3(
                     gate_proj_e = gate_proj[e]
                     up_proj_e = up_proj[e]
                     gate_proj_e = load_param(
-                        gate_proj_e, f"layer {i} gate_proj {e}", dtype, verbose=debug_mode
+                        gate_proj_e,
+                        f"layer {i} gate_proj {e}",
+                        dtype,
+                        verbose=debug_mode,
                     )
                     up_proj_e = load_param(
-                        up_proj_e, f"layer {i} up_proj {e}", dtype, verbose=debug_mode
+                        up_proj_e,
+                        f"layer {i} up_proj {e}",
+                        dtype,
+                        verbose=debug_mode,
                     )
-                    gate_up_proj_e = torch.stack((gate_proj_e, up_proj_e), dim=1).reshape(
-                        2 * gate_proj_e.size(0), -1
-                    )
+                    gate_up_proj_e = torch.stack(
+                        (gate_proj_e, up_proj_e), dim=1
+                    ).reshape(2 * gate_proj_e.size(0), -1)
 
                     gate_up_proj_combined.append(gate_up_proj_e)
 
-                gate_up_proj_combined = torch.stack(gate_up_proj_combined, dim=0)
-                state_dict[f"transformer.h.{i}.mlp.experts.gate_up_proj"] = gate_up_proj_combined
+                gate_up_proj_combined = torch.stack(
+                    gate_up_proj_combined, dim=0
+                )
+                state_dict[f"transformer.h.{i}.mlp.experts.gate_up_proj"] = (
+                    gate_up_proj_combined
+                )
                 del gate_up_proj_combined
             else:
                 # Non-MoE case
                 gate_proj = load_param(
-                    gate_proj, f"layer {i} gate_proj", dtype, verbose=debug_mode
+                    gate_proj,
+                    f"layer {i} gate_proj",
+                    dtype,
+                    verbose=debug_mode,
                 )
                 up_proj = load_param(
                     up_proj, f"layer {i} up_proj", dtype, verbose=debug_mode
                 )
-                gate_up_proj = torch.stack((gate_proj, up_proj), dim=1).reshape(2 * gate_proj.size(0), -1)
+                gate_up_proj = torch.stack(
+                    (gate_proj, up_proj), dim=1
+                ).reshape(2 * gate_proj.size(0), -1)
                 state_name = f"transformer.h.{i}.mlp.gate_up_proj.weight"
                 state_dict[state_name] = gate_up_proj
                 del gate_up_proj_weights[i]
 
             if progress_per_file is not None:
                 pbar.update(progress_per_file)
-      
+
     for i in list(down_proj_weights):
         for weight_type in list(down_proj_weights[i]):
             down_proj = down_proj_weights[i][weight_type]["down_proj"]
@@ -353,12 +377,19 @@ def copy_weights_qwen_3(
             for e in range(config.n_expert):
                 down_proj_e = down_proj[e]
                 down_proj_e = load_param(
-                    down_proj_e, f"layer {i} down_proj {e}", dtype, verbose=debug_mode
+                    down_proj_e,
+                    f"layer {i} down_proj {e}",
+                    dtype,
+                    verbose=debug_mode,
                 )
                 down_proj_combined.append(down_proj_e)
             down_proj_combined = torch.stack(down_proj_combined, dim=0)
-            print (f"Down projection for layer {i} combined: {down_proj_combined.shape}")
-            state_dict[f"transformer.h.{i}.mlp.experts.proj"] = down_proj_combined
+            print(
+                f"Down projection for layer {i} combined: {down_proj_combined.shape}"
+            )
+            state_dict[f"transformer.h.{i}.mlp.experts.proj"] = (
+                down_proj_combined
+            )
             del down_proj_weights[i]
 
             if progress_per_file is not None:
@@ -539,9 +570,9 @@ def copy_weights_hf_llama(
         weight_map.update(
             {
                 "model.layers.{}.block_sparse_moe.gate.weight": "transformer.h.{l}.mlp.gate.weight",
-                "model.layers.{}.block_sparse_moe.experts.{}.w1.weight": None,  #"transformer.h.{l}.mlp.experts.{e}.fc_1.weight",
-                "model.layers.{}.block_sparse_moe.experts.{}.w3.weight": None,  #"transformer.h.{l}.mlp.experts.{e}.fc_2.weight",
-                "model.layers.{}.block_sparse_moe.experts.{}.w2.weight": None, #"transformer.h.{l}.mlp.experts.{e}.proj.weight",
+                "model.layers.{}.block_sparse_moe.experts.{}.w1.weight": None,  # "transformer.h.{l}.mlp.experts.{e}.fc_1.weight",
+                "model.layers.{}.block_sparse_moe.experts.{}.w3.weight": None,  # "transformer.h.{l}.mlp.experts.{e}.fc_2.weight",
+                "model.layers.{}.block_sparse_moe.experts.{}.w2.weight": None,  # "transformer.h.{l}.mlp.experts.{e}.proj.weight",
             }
         )
     elif config.mlp_class_name in ("LLaMAMLP", "GemmaMLP"):
@@ -562,7 +593,7 @@ def copy_weights_hf_llama(
 
     transformer_wte_weight = None
     for name, param in hf_weights.items():
-        #print (f"{name}")
+        # print (f"{name}")
         if "model.layers" in name:
             from_name, l = layer_template(name, 2)
             e = None
@@ -573,9 +604,13 @@ def copy_weights_hf_llama(
                 # Two level dictionary for gate_up_proj and down_proj
                 # First level is the layer index
                 # Second level is the expert index
-                gate_up_proj = gate_up_proj_weights.setdefault(l, defaultdict(lambda: [None, None]))
-                down_proj = down_proj_weights.setdefault(l, defaultdict(lambda: [None]))
-                #print (f"{name} Gate up proj for layer {l} expert {e}: {gate_up_proj}")
+                gate_up_proj = gate_up_proj_weights.setdefault(
+                    l, defaultdict(lambda: [None, None])
+                )
+                down_proj = down_proj_weights.setdefault(
+                    l, defaultdict(lambda: [None])
+                )
+                # print (f"{name} Gate up proj for layer {l} expert {e}: {gate_up_proj}")
             elif "mlp" in name:
                 gate_up_proj = gate_up_proj_weights.setdefault(l, [None, None])
             else:
@@ -630,7 +665,12 @@ def copy_weights_hf_llama(
 
             # Now doing proj reshaping with the same principle of incremental QKV reshaping
             # Similarly doing the same check for the gate projection layers
-            if gate_up_proj is not None and isinstance(gate_up_proj, list) and None not in gate_up_proj and saver is not None:
+            if (
+                gate_up_proj is not None
+                and isinstance(gate_up_proj, list)
+                and None not in gate_up_proj
+                and saver is not None
+            ):
                 # Storing early is only done for non-MoE case right now
                 # TODO(Ishaan): Add early save support for MoE case
 
@@ -642,7 +682,10 @@ def copy_weights_hf_llama(
                     verbose=debug_mode,
                 )
                 up_proj = load_param(
-                    up_proj, f"layer {l} {e} up_proj", dtype, verbose=debug_mode
+                    up_proj,
+                    f"layer {l} {e} up_proj",
+                    dtype,
+                    verbose=debug_mode,
                 )
 
                 gate_up_proj = torch.stack(
@@ -712,8 +755,12 @@ def copy_weights_hf_llama(
             up_proj = load_param(
                 up_proj, f"layer {i} up_proj", dtype, verbose=debug_mode
             )
-            gate_up_proj = torch.stack((gate_proj, up_proj), dim=1).reshape(2 * gate_proj.size(0), -1)
-            state_dict[f"transformer.h.{i}.mlp.gate_up_proj.weight"] = gate_up_proj
+            gate_up_proj = torch.stack((gate_proj, up_proj), dim=1).reshape(
+                2 * gate_proj.size(0), -1
+            )
+            state_dict[f"transformer.h.{i}.mlp.gate_up_proj.weight"] = (
+                gate_up_proj
+            )
             del gate_up_proj_weights[i]
         elif isinstance(proj, dict):
             # MoE case
@@ -729,28 +776,42 @@ def copy_weights_hf_llama(
                     all_present = False
                     break
                 gate_proj_e = load_param(
-                    gate_proj_e, f"layer {i} {e} gate_proj", dtype, verbose=debug_mode
+                    gate_proj_e,
+                    f"layer {i} {e} gate_proj",
+                    dtype,
+                    verbose=debug_mode,
                 )
                 up_proj_e = load_param(
-                    up_proj_e, f"layer {i} {e} up_proj", dtype, verbose=debug_mode
+                    up_proj_e,
+                    f"layer {i} {e} up_proj",
+                    dtype,
+                    verbose=debug_mode,
                 )
-                gate_up_proj_e = torch.stack((gate_proj_e, up_proj_e), dim=1).reshape(2 * gate_proj_e.size(0), -1)
+                gate_up_proj_e = torch.stack(
+                    (gate_proj_e, up_proj_e), dim=1
+                ).reshape(2 * gate_proj_e.size(0), -1)
                 gate_up_proj_combined.append(gate_up_proj_e)
             if not all_present:
                 continue
-            
+
             gate_up_proj_combined = torch.stack(gate_up_proj_combined, dim=0)
-            state_dict[f"transformer.h.{i}.mlp.experts.gate_up_proj"] = gate_up_proj_combined
-            assert gate_up_proj_combined.shape[0] == config.n_expert, "Gate up projection combined shape should be equal to the number of experts"
-            #print (f"Gate up projection for layer {i} combined: {gate_up_proj_combined.shape}")
+            state_dict[f"transformer.h.{i}.mlp.experts.gate_up_proj"] = (
+                gate_up_proj_combined
+            )
+            assert (
+                gate_up_proj_combined.shape[0] == config.n_expert
+            ), "Gate up projection combined shape should be equal to the number of experts"
+            # print (f"Gate up projection for layer {i} combined: {gate_up_proj_combined.shape}")
             del gate_up_proj_combined
             del gate_up_proj_weights[i]
-          
+
         if progress_per_file is not None:
             pbar.update(progress_per_file)
-    
+
     for i, proj in list(down_proj_weights.items()):
-        assert isinstance(proj, dict), "Down projection weights should be a dictionary"
+        assert isinstance(
+            proj, dict
+        ), "Down projection weights should be a dictionary"
         if len(list(proj.items())) != config.n_expert:
             # Not all experts are present
             continue
@@ -762,22 +823,26 @@ def copy_weights_hf_llama(
                 all_present = False
                 break
             down_proj_e = load_param(
-                down_proj_e, f"layer {i} {e} down_proj", dtype, verbose=debug_mode
+                down_proj_e,
+                f"layer {i} {e} down_proj",
+                dtype,
+                verbose=debug_mode,
             )
             down_proj_combined.append(down_proj_e)
 
         if not all_present:
             continue
         down_proj_combined = torch.stack(down_proj_combined, dim=0)
-        assert down_proj_combined.shape[0] == config.n_expert, "Down projection combined shape should be equal to the number of experts"
+        assert (
+            down_proj_combined.shape[0] == config.n_expert
+        ), "Down projection combined shape should be equal to the number of experts"
         state_dict[f"transformer.h.{i}.mlp.experts.proj"] = down_proj_combined
-        #print (f"Down projection for layer {i} combined: {down_proj_combined.shape}")
+        # print (f"Down projection for layer {i} combined: {down_proj_combined.shape}")
         del down_proj_combined
         del down_proj_weights[i]
 
         if progress_per_file is not None:
             pbar.update(progress_per_file)
-
 
     # convert separate q, k, v matrices into an interleaved qkv
     for i, (q, k, v) in list(qkv_weights.items()):
@@ -1166,7 +1231,11 @@ def convert_hf_checkpoint(
         gate_up_proj_weights = {}
         down_proj_weights = {}
         copy_fn = partial(
-            copy_weights_qwen_3, config, qkv_weights, gate_up_proj_weights, down_proj_weights
+            copy_weights_qwen_3,
+            config,
+            qkv_weights,
+            gate_up_proj_weights,
+            down_proj_weights,
         )
     elif config.mlp_class_name in ("LLaMAMLP", "GemmaMLP", "LLaMAMoE"):
         # holder to reconstitute the split q, k, v
@@ -1174,7 +1243,11 @@ def convert_hf_checkpoint(
         gate_up_proj_weights = {}
         down_proj_weights = {}
         copy_fn = partial(
-            copy_weights_hf_llama, config, qkv_weights, gate_up_proj_weights, down_proj_weights
+            copy_weights_hf_llama,
+            config,
+            qkv_weights,
+            gate_up_proj_weights,
+            down_proj_weights,
         )
     # New models (Qwen)
 
