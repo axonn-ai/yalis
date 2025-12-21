@@ -1,10 +1,17 @@
 from setuptools import setup
-from torch.utils.cpp_extension import BuildExtension, CppExtension
+from torch.utils.cpp_extension import BuildExtension, CppExtension, CUDAExtension
 import glob
 import os
 
-ops_sources = glob.glob("yalis/external/ops/*.cu") + glob.glob("yalis/external/ops/*.cpp");
-print(ops_sources)
+# Collect all source files for vllm_ops
+vllm_cu_sources = glob.glob("yalis/external/csrc/vllm/*.cu") + \
+                  glob.glob("yalis/external/csrc/vllm/moe/*.cu")
+vllm_cpp_sources = glob.glob("yalis/external/csrc/vllm/*.cpp") + \
+                   glob.glob("yalis/external/csrc/vllm/moe/*.cpp")
+vllm_ops_sources = sorted(vllm_cu_sources + vllm_cpp_sources)
+
+print("vllm_ops sources:", vllm_ops_sources)
+
 setup(
     name="yalis",
     version="0.1.0",
@@ -23,12 +30,14 @@ setup(
             extra_compile_args=["-O3"],
         ),
         CppExtension(
-            name="moe_ops",
-            sources= ops_sources,
+            name="vllm_ops",
+            sources=vllm_ops_sources,
             extra_compile_args=["-O3"],
             include_dirs=[
-                "yalis/external/ops",          
-            ]
+                "yalis/external/csrc/vllm",
+                "yalis/external/csrc/vllm/moe",
+            ],
+            include_dirs=vllm_include_dirs
         )
     ],
     cmdclass={"build_ext": BuildExtension},
