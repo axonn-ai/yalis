@@ -1,11 +1,17 @@
+/*  SPDX-License-Identifier: Apache-2.0
+    SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+
+    This file is adapted from
+       https://github.com/vllm-project/vllm/blob/main/csrc/moe/moe_align_sum_kernels.cu
+*/
 #include <torch/all.h>
 #include <ATen/cuda/CUDAContext.h>
 
 #include <ATen/ATen.h>
 #include <THC/THCAtomics.cuh>
 
-#include "cuda_compat.h"
-#include "dispatch_utils.h"
+#include <cuda_compat.h>
+#include <dispatch_utils.h>
 #include "moe_ops.h"
 
 #define CEILDIV(x, y) (((x) + (y) - 1) / (y))

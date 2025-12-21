@@ -1,7 +1,6 @@
-/*
- * Adapted from
- * https://github.com/pytorch/pytorch/blob/v2.0.1/aten/src/ATen/Dispatch.h
- */
+/*  SPDX-License-Identifier: Apache-2.0
+    SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+*/
  #pragma once
 
  #include <torch/all.h>

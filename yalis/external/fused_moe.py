@@ -11,12 +11,7 @@ import torch
 import triton
 import triton.language as tl
 
-# import vllm.envs as envs
-
-# from vllm.platforms import current_platform
-import moe_ops
-
-
+import vllm_ops
 
 @triton.jit
 def fused_moe_kernel(
@@ -227,7 +222,7 @@ def moe_align_block_size(
     num_tokens_post_pad = torch.empty((1),
                                       dtype=torch.int32,
                                       device=topk_ids.device)
-    torch.ops.moe_ops.moe_align_block_size(topk_ids, num_experts, block_size, sorted_ids,
+    torch.ops.vllm_ops.moe_align_block_size(topk_ids, num_experts, block_size, sorted_ids,
                              expert_ids, num_tokens_post_pad)
     return sorted_ids, expert_ids, num_tokens_post_pad
 
@@ -246,7 +241,7 @@ def invoke_fused_moe_kernel(A: torch.Tensor, B: torch.Tensor, C: torch.Tensor,
     assert sorted_token_ids.stride(0) == 1
 
     # if use_fp8_w8a8:
-    #     A, A_scale = torch.ops.moe_ops.scaled_fp8_quant(A, A_scale)
+    #     A, A_scale = torch.ops.vllm_ops.scaled_fp8_quant(A, A_scale)
     #     assert B_scale is not None
     # elif use_int8_w8a16:
     #     assert B_scale is not None
@@ -398,7 +393,7 @@ def fused_topk(
                                         dtype=torch.int32,
                                         device=hidden_states.device)
 
-    torch.ops.moe_ops.topk_softmax(
+    torch.ops.vllm_ops.topk_softmax(
         topk_weights,
         topk_ids,
         token_expert_indicies,
@@ -566,7 +561,7 @@ def fused_experts(hidden_states: torch.Tensor,
                                 use_fp8_w8a8=use_fp8_w8a8,
                                 use_int8_w8a16=use_int8_w8a16)
 
-        torch.ops.moe_ops.silu_and_mul(intermediate_cache2, intermediate_cache1.view(-1, N))
+        torch.ops.vllm_ops.silu_and_mul(intermediate_cache2, intermediate_cache1.view(-1, N))
 
         invoke_fused_moe_kernel(intermediate_cache2,
                                 w2,

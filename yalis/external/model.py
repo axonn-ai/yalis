@@ -1035,6 +1035,8 @@ class LLaMAMoE(nn.Module):
     def __init__(self, config: Config) -> None:
         super().__init__()
         self.gate = nn.Linear(config.n_embd, config.n_expert, bias=False)
+        if config.moe_intermediate_size is None:
+            config.moe_intermediate_size = config.intermediate_size
         self.experts = TPMoE(config.n_embd, config.moe_intermediate_size, config.n_expert, config.n_expert_per_token, init_device=config.init_device)
         self.config = config
 

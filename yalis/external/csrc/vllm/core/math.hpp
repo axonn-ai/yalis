@@ -1,3 +1,9 @@
+/*  SPDX-License-Identifier: Apache-2.0
+    SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+
+    This file is adapted from
+        https://github.com/vllm-project/vllm/blob/main/csrc/core/math.hpp 
+*/
 #pragma once
 
 #include <climits>

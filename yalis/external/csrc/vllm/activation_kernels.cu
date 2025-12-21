@@ -1,3 +1,9 @@
+/*  SPDX-License-Identifier: Apache-2.0
+    SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+
+    This file is adapted from
+       https://github.com/vllm-project/vllm/blob/main/csrc/activation_kernels.cu
+*/
 #include <ATen/cuda/CUDAContext.h>
 #include <torch/all.h>
 #include <c10/cuda/CUDAGuard.h>
