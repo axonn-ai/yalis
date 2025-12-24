@@ -101,6 +101,8 @@ class Config:
     rope_local_base_freq: Optional[float] = None
     rope_indices: Optional[List] = None
 
+    prefetch_experts: bool = False
+
     def __post_init__(self):
         if not self.name:
             self.name = self.hf_config.get("name", self.name)

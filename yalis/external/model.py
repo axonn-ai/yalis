@@ -27,6 +27,8 @@ from yalis.attention.flash import flash_apply_rotary as apply_rotary
 from yalis.attention.backends import AttentionBackend
 from yalis.attention.masking import create_causal_block_mask_for_flex_attention
 
+from yalis.external.fused_moe import fused_topk
+
 
 # TODO: these should be dynamically set during engine initialization
 NUM_BLOCKS, PAGE_BLOCK_SIZE = 512, 256
@@ -51,7 +53,6 @@ def get_norm_class(config):
 
 class GPT(nn.Module):
     def __init__(self, config: Config) -> None:
-
         super().__init__()
         assert config.padded_vocab_size is not None
         self.config = config
@@ -69,6 +70,13 @@ class GPT(nn.Module):
                 ln_f=config.norm_class(config.n_embd, eps=config.norm_eps),
             )
         )
+
+        if config.prefetch_experts:
+            pn_n, r_n = self.transformer.h[0].get_pf_refs()
+            for i in range(1, config.n_layer):
+                self.transformer.h[i].set_pf_refs(pn_n, r_n)
+                pn_n, r_n = self.transformer.h[i].get_pf_refs()
+
         self.max_seq_length = (
             self.config.block_size
         )  # rope cache is built here
@@ -187,16 +195,20 @@ class GPT(nn.Module):
             else None
         )
 
+        w_pf, ids_pf = None, None
         for block in self.transformer.h:
-            x = block(
+            x, w_pf, ids_pf = block(
                 x,
                 self.cos,
                 self.sin,
                 phase,
+                w_pf,
+                ids_pf,
                 self.token_counter,
                 block_table,
                 flex_attention_block_mask,
             )
+
         if self.config.tensor_parallel:
             x = Gather.apply(
                 x, ax.comm_handle.inner_intra_layer_parallel_group
@@ -395,7 +407,11 @@ class GPT(nn.Module):
 
 
 class Block(nn.Module):
-    def __init__(self, config: Config, block_idx: int) -> None:
+    def __init__(self, 
+                 config: Config, 
+                 block_idx: int,
+                 pn_n: Optional[nn.Module] = None,
+                 r_n: Optional[nn.Module] = None,) -> None:
         super().__init__()
         if not config.parallel_residual and config.shared_attention_norm:
             raise NotImplementedError(
@@ -419,6 +435,10 @@ class Block(nn.Module):
         )
         mlp_class = getattr(sys.modules[__name__], config.mlp_class_name)
         self.mlp = mlp_class(config)
+        if isinstance(self.mlp, LLaMAMoE):
+            self.mlp.pn_n = pn_n 
+            self.mlp.r_n = r_n 
+
         self.post_mlp_norm = (
             get_norm_class(config)(config.n_embd, eps=config.norm_eps)
             if config.post_mlp_norm
@@ -427,16 +447,30 @@ class Block(nn.Module):
 
         self.config = config
 
+    def set_pf_refs(self, pn_n: nn.Module, r_n: nn.Module) -> None:
+        if isinstance(self.mlp, LLaMAMoE):
+            self.mlp.pn_n = pn_n 
+            self.mlp.r_n = r_n
+        else:
+            raise NotImplementedError("Prefetching only implemented for `LLaMAMoE`")
+
+    def get_pf_refs(self) -> Tuple[nn.Module, nn.Module]:
+        if isinstance(self.mlp, LLaMAMoE):
+            return self.norm_2, self.mlp.gate
+        return None, None
+        
     def forward(
         self,
         x: torch.Tensor,
         cos: torch.Tensor,
         sin: torch.Tensor,
         phase: EnginePhase,
+        w_pf: Optional[torch.Tensor] = None,
+        ids_pf: Optional[torch.Tensor] = None,
         token_counter: Optional[torch.Tensor] = None,
         block_table: Optional[torch.Tensor] = None,
         flex_attention_block_mask=None,
-    ) -> torch.Tensor:
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
         """
         Non-parallel residual       Parallel residual
            ┌─ x                     ┌─ x ──────────────────┐             Note: if `shared_attention_norm` is True,  # noqa: E501
@@ -472,6 +506,7 @@ class Block(nn.Module):
 
         # Currently, MLP does not need to be phase-aware
         # but we might add it in the future
+        w_pf_n, ids_pf_n = None, None
         if self.config.parallel_residual:
             x_normed = (
                 x_normed
@@ -480,9 +515,13 @@ class Block(nn.Module):
             )
             x = self.mlp(x_normed) + attention_output + x
         else:
-            x = attention_output + x
-            x = self.post_mlp_norm(self.mlp(self.norm_2(x))) + x
-        return x
+            x = attention_output + x  # sattn
+            if isinstance(self.mlp, LLaMAMoE):
+                x, w_pf_n, ids_pf_n = self.mlp(self.norm_2(x), x, w_pf, ids_pf)
+                x = self.post_mlp_norm(x) + x
+            else:
+                x = self.post_mlp_norm(self.mlp(self.norm_2(x))) + x
+        return x, w_pf_n, ids_pf_n
 
 
 class CausalSelfAttention(nn.Module):
@@ -1034,11 +1073,17 @@ class RMSNorm(torch.nn.Module):
 
 
 class LLaMAMoE(nn.Module):
-    def __init__(self, config: Config) -> None:
+    def __init__(self, 
+                 config: Config,
+                 pn_n: Optional[nn.Module] = None,
+                 r_n: Optional[nn.Module] = None) -> None:
         super().__init__()
         self.gate = nn.Linear(config.n_embd, config.n_expert, bias=False)
         if config.moe_intermediate_size is None:
             config.moe_intermediate_size = config.intermediate_size
+        
+        self.register_buffer("default_vect", torch.zeros(config.n_expert, config.n_embd, dtype = torch.float32), persistent = True)
+
         self.experts = TPMoE(
             config.n_embd,
             config.moe_intermediate_size,
@@ -1046,14 +1091,34 @@ class LLaMAMoE(nn.Module):
             config.n_expert_per_token,
             init_device=config.init_device,
         )
+
+        self.pn_n = pn_n # attention post @ layer N + 1
+        self.r_n = r_n  # router gate @ layer N + 1
         self.config = config
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def populate_dv(self, path: str) -> None:
+        pass
+
+    def forward(self, 
+                x: torch.Tensor,
+                sattn: Optional[torch.Tensor] = None,
+                w_pf: Optional[torch.Tensor] = None,
+                ids_pf: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
         B, T, C = (
             x.size()
         )  # batch size, sequence length, embedding dimensionality (n_embd)
         x = x.view(-1, C)  # (B*T, C)
         router = self.gate(x)  # (B*T, n_expert)
+        
+        w_pf_n, ids_pf_n = None, None # prefetched expert weights and ids
+        if sattn is not None and self.r_n is not None and self.pn_n is not None:
+            w, ids = fused_topk(x, router, self.config.n_expert_per_token, True)
+            dv = (w.unsqueeze(-1) * self.default_vect[ids]).sum(dim=1)  # may want to verify the shape/broadcast logic here
+            quasi = self.pn_n(sattn.view(-1, C) + dv)
+            router_n = self.r_n(quasi)
+            w_pf_n, ids_pf_n = fused_topk(quasi, router_n, self.config.n_expert_per_token, True) 
+            # ^ TODO may need to change the `fused_moe` op since you're calling the fused_topk here (i changed it)
+            # TODO is there any loading logic we need to impl here; it was briefly mentioned
 
-        y = self.experts(x, router)
-        return y.view(B, T, C)
+        y = self.experts(x, router, w_pf, ids_pf) # overlap load with expert comp
+        return y.view(B, T, C), w_pf_n, ids_pf_n
