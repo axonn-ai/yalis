@@ -102,6 +102,7 @@ class Config:
     rope_indices: Optional[List] = None
 
     prefetch_experts: bool = False
+    use_prefetched: bool = False
 
     def __post_init__(self):
         if not self.name:

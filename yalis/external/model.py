@@ -22,7 +22,7 @@ from yalis.attention import attention_wrapper
 from yalis.external.config import Config
 from yalis.tensor_parallel import TPLinear, TPMoE
 from yalis.constants import EnginePhase
-from kvcache_manager import KVCacheManager
+# from kvcache_manager import KVCacheManager
 from yalis.attention.flash import flash_apply_rotary as apply_rotary
 from yalis.attention.backends import AttentionBackend
 from yalis.attention.masking import create_causal_block_mask_for_flex_attention
@@ -72,10 +72,9 @@ class GPT(nn.Module):
         )
 
         if config.prefetch_experts:
-            pn_n, r_n = self.transformer.h[0].get_pf_refs()
-            for i in range(1, config.n_layer):
+            for i in range(0, config.n_layer - 1):
+                pn_n, r_n = self.transformer.h[i + 1].get_pf_refs()
                 self.transformer.h[i].set_pf_refs(pn_n, r_n)
-                pn_n, r_n = self.transformer.h[i].get_pf_refs()
 
         self.max_seq_length = (
             self.config.block_size
@@ -1109,12 +1108,21 @@ class LLaMAMoE(nn.Module):
             x.size()
         )  # batch size, sequence length, embedding dimensionality (n_embd)
         x = x.view(-1, C)  # (B*T, C)
-        router = self.gate(x)  # (B*T, n_expert)
+
+        router = None
+        if (w_pf is None and ids_pf is None) or (not self.config.use_prefetched): 
+            router = self.gate(x)  # (B*T, n_expert)
         
         w_pf_n, ids_pf_n = None, None # prefetched expert weights and ids
         if sattn is not None and self.r_n is not None and self.pn_n is not None:
-            w, ids = fused_topk(x, router, self.config.n_expert_per_token, True)
-            dv = (w.unsqueeze(-1) * self.default_vect[ids]).sum(dim=1)  # may want to verify the shape/broadcast logic here
+            
+            if (w_pf is None and ids_pf is None) or (not self.config.use_prefetched):
+                w, ids = fused_topk(x, router, self.config.n_expert_per_token, True)
+            else:
+                w = w_pf
+                ids = ids_pf
+
+            dv = (w.unsqueeze(-1) * self.default_vect[ids]).sum(dim=1).to(sattn.dtype)  # may want to verify the shape/broadcast logic here
             quasi = self.pn_n(sattn.view(-1, C) + dv)
             router_n = self.r_n(quasi)
             w_pf_n, ids_pf_n = fused_topk(quasi, router_n, self.config.n_expert_per_token, True) 
