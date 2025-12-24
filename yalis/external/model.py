@@ -1092,12 +1092,13 @@ class LLaMAMoE(nn.Module):
             init_device=config.init_device,
         )
 
-        self.pn_n = pn_n # attention post @ layer N + 1
+        self.pn_n = pn_n # attention post-norm @ layer N + 1
         self.r_n = r_n  # router gate @ layer N + 1
         self.config = config
 
     def populate_dv(self, path: str) -> None:
-        pass
+        state = torch.load(path, map_location = "cpu")
+        self.default_vect.copy_(state["default_vect"].to(self.default_vect.device))
 
     def forward(self, 
                 x: torch.Tensor,
@@ -1118,7 +1119,14 @@ class LLaMAMoE(nn.Module):
             router_n = self.r_n(quasi)
             w_pf_n, ids_pf_n = fused_topk(quasi, router_n, self.config.n_expert_per_token, True) 
             # ^ TODO may need to change the `fused_moe` op since you're calling the fused_topk here (i changed it)
+            
+            if w_pf is None and ids_pf is None:
+                # we're the first MoE block
+                w_pf = w
+                ids_pf = ids
+
             # TODO is there any loading logic we need to impl here; it was briefly mentioned
+
 
         y = self.experts(x, router, w_pf, ids_pf) # overlap load with expert comp
         return y.view(B, T, C), w_pf_n, ids_pf_n
