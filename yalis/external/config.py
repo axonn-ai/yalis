@@ -84,7 +84,7 @@ class Config:
     moe_intermediate_size: Optional[int] = None
     bias: bool = True
     mlp_class_name: Literal[
-        "GptNeoxMLP", "LLaMAMLP", "GemmaMLP", "LLaMAMoE"
+        "GptNeoxMLP", "LLaMAMLP", "GemmaMLP", "LLaMAMoE", "GptOssMoE"
     ] = "GptNeoxMLP"
     gelu_approximate: str = "none"
     n_expert: int = 0

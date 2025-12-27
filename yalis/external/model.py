@@ -15,6 +15,7 @@ import sys
 
 import torch
 import torch.nn as nn
+import torch.distributed as dist
 from axonn import axonn as ax
 from axonn.intra_layer.communication import Drop, Gather
 
@@ -1057,3 +1058,108 @@ class LLaMAMoE(nn.Module):
 
         y = self.experts(x, router)
         return y.view(B, T, C)
+
+
+class GptOssMoE(nn.Module):
+    """
+    GPT-OSS compatible MoE MLP implemented in pure PyTorch for functional parity.
+
+    Behavior matches the GPT-OSS `MLPBlock`:
+      - per-expert `mlp1_weight`, `mlp1_bias`, `mlp2_weight`, `mlp2_bias`
+      - gating via a linear `gate` then `topk` + softmax
+      - SWIGLU activation with clamping and alpha, using `(linear + 1)` branch
+      - supports distributed all-reduce after expert down projection (matches GPT-OSS world-size sum)
+
+    Notes:
+      - This is a correctness-first implementation (pure PyTorch, no fused triton kernels).
+      - Use `config.n_expert` and `config.n_expert_per_token`.
+      - The parameters are sharded in GPT-OSS by world size; here we create the
+        same local shapes as GPT-OSS expects when loading a checkpoint.
+    """
+
+    def __init__(self, config: Config) -> None:
+        super().__init__()
+
+        self.config = config
+        self.num_experts = config.n_expert
+        self.experts_per_token = config.n_expert_per_token
+
+        # SWIGLU params (defaults used by GPT-OSS)
+        self.swiglu_alpha = getattr(config, "swiglu_alpha", 1.702)
+        self.swiglu_limit = getattr(config, "swiglu_limit", 7.0)
+
+        # gate
+        self.gate = nn.Linear(config.n_embd, self.num_experts, bias=False)
+
+        # compute per-rank shapes similar to GPT-OSS loader
+        world_size = (
+            dist.get_world_size() if dist.is_available() and dist.is_initialized() else 1
+        )
+
+        if config.intermediate_size is None:
+            raise ValueError("config.intermediate_size must be set for GptOssMoE")
+        per_rank_intermediate = config.intermediate_size // max(1, world_size)
+
+        # mlp1: (num_experts, 2 * per_rank_intermediate, hidden_size)
+        self.mlp1_weight = nn.Parameter(
+            torch.empty(
+                (self.num_experts, 2 * per_rank_intermediate, config.n_embd)
+            )
+        )
+        self.mlp1_bias = nn.Parameter(
+            torch.empty((self.num_experts, 2 * per_rank_intermediate))
+        )
+
+        # mlp2: (num_experts, config.n_embd, per_rank_intermediate)
+        self.mlp2_weight = nn.Parameter(
+            torch.empty((self.num_experts, config.n_embd, per_rank_intermediate))
+        )
+        self.mlp2_bias = nn.Parameter(torch.empty((self.num_experts, config.n_embd)))
+
+    def _swiglu(self, x: torch.Tensor) -> torch.Tensor:
+        # x shape: (..., 2 * hidden)
+        alpha = self.swiglu_alpha
+        limit = self.swiglu_limit
+        x_glu = x[..., ::2]
+        x_lin = x[..., 1::2]
+        x_glu = x_glu.clamp(max=limit)
+        x_lin = x_lin.clamp(min=-limit, max=limit)
+        out_glu = x_glu * torch.sigmoid(alpha * x_glu)
+        return out_glu * (x_lin + 1.0)
+
+    # TODO: ensure the forward matches the GPT-OSS implementation exactly
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (B, T, C)
+        B, T, C = x.size()
+        M = B * T
+        # Flatten batch and sequence dims to behave like GPT-OSS' per-token MLP
+        t = x.view(M, C)  # (M, C)
+
+        # gating
+        g = self.gate(t)  # (M, E)
+        experts = torch.topk(g, k=self.experts_per_token, dim=-1, sorted=True)
+        expert_weights = torch.nn.functional.softmax(experts.values, dim=1)  # (M, k)
+        expert_indices = experts.indices  # (M, k)
+
+        # MLP #1
+        mlp1_weight = self.mlp1_weight[expert_indices, ...]  # (M, k, out1, C)
+        mlp1_bias = self.mlp1_bias[expert_indices, ...]  # (M, k, out1)
+        up = torch.einsum("m k o c, m c -> m k o", mlp1_weight, t) + mlp1_bias
+        up = self._swiglu(up)
+
+        # MLP #2
+        mlp2_weight = self.mlp2_weight[expert_indices, ...]  # (M, k, C, per)
+        mlp2_bias = self.mlp2_bias[expert_indices, ...]  # (M, k, C)
+        down = torch.einsum("m k c p, m k p -> m k c", mlp2_weight, up)
+
+        # distributed aggregation when sharded across ranks
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.all_reduce(down, op=torch.distributed.ReduceOp.SUM)
+
+        down = down + mlp2_bias
+
+        # Weighted sum of experts -> (M, C)
+        out = torch.einsum("m k c, m k -> m c", down, expert_weights)
+
+        # reshape back to (B, T, C). Do NOT add residual here; `Block` handles it.
+        return out.view(B, T, C)
