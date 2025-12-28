@@ -7,6 +7,7 @@
 using namespace nvcuda;
 using namespace nvcuda::wmma;
 
+// Slow-but-correct global logits cache variant:
 // PASS 1 computes logits once, stores them in global memory, and computes (m,l).
 // PASS 2 reads cached logits, applies softmax + threshold, and accumulates V.
 extern "C" __global__ void decode_attn_gmem_logits_cache_v0(
@@ -23,6 +24,7 @@ extern "C" __global__ void decode_attn_gmem_logits_cache_v0(
   constexpr int NUM_WARPS = 4;
   constexpr int WARP_SIZE = 32;
   constexpr int BLOCK_N   = 16;
+  constexpr unsigned ACTIVE_MASK = (1u << BLOCK_N) - 1u;
 
   int bh = blockIdx.x;
   if (bh >= B * H) return;
@@ -87,6 +89,13 @@ extern "C" __global__ void decode_attn_gmem_logits_cache_v0(
 
     wmma::store_matrix_sync(&C_tile[warp_id][0], Cfrag, 0, nvcuda::wmma::mem_row_major);
 
+    // Coalesced per-lane stores: each lane writes its logit.
+    if (lane < bs) {
+      float x = C_tile[warp_id][lane] * scale + __ldg(bias_ptr + t0 + lane);
+      logits_gmem[bh * (size_t)T + t0 + lane] = __float2half(x);
+    }
+
+    // Lane 0 updates the online softmax stats.
     if (lane == 0) {
       for (int i = 0; i < bs; ++i) {
         float x  = C_tile[warp_id][i] * scale + __ldg(bias_ptr + t0 + i);
@@ -95,28 +104,32 @@ extern "C" __global__ void decode_attn_gmem_logits_cache_v0(
         float eb = expf(x - nm);
         l_arr[warp_id] = fmaf(l_arr[warp_id], em, eb);
         m_arr[warp_id] = nm;
-        // Store logits in the same place exp_buf is filled in bitmask_v1.
-        logits_gmem[bh * (size_t)T + t0 + i] = __float2half(x);
       }
     }
   }
 
-  // Reduce across warps to get block max and sum (match base kernel).
+  // Reduce across warps to get block max and sum.
   __syncthreads();
-  if (tid == 0) {
-    float m_final = m_arr[0];
-    float l_final = l_arr[0];
-    for (int i = 1; i < NUM_WARPS; ++i) {
-      float m_i = m_arr[i];
-      float l_i = l_arr[i];
-      float nm = fmaxf(m_final, m_i);
-      float em1 = expf(m_final - nm);
-      float em2 = expf(m_i - nm);
-      l_final = l_final * em1 + l_i * em2;
-      m_final = nm;
+  if (warp_id == 0) {
+    float m_local = (lane < NUM_WARPS) ? m_arr[lane] : -1e9f;
+    float l_local = (lane < NUM_WARPS) ? l_arr[lane] : 0.0f;
+
+    for (int offset = 2; offset > 0; offset >>= 1) {
+      float m_other = __shfl_down_sync(0xffffffff, m_local, offset);
+      float l_other = __shfl_down_sync(0xffffffff, l_local, offset);
+      if (lane + offset < NUM_WARPS) {
+        float nm = fmaxf(m_local, m_other);
+        float em1 = expf(m_local - nm);
+        float em2 = expf(m_other - nm);
+        l_local = l_local * em1 + l_other * em2;
+        m_local = nm;
+      }
     }
-    m = m_final;
-    l = l_final;
+
+    if (lane == 0) {
+      m = m_local;
+      l = l_local;
+    }
   }
   __syncthreads();
 
@@ -141,15 +154,27 @@ extern "C" __global__ void decode_attn_gmem_logits_cache_v0(
       keep = (p_q > 0.0f);
     }
 
-    unsigned mask = __ballot_sync(0xffffffff, keep);
+    unsigned mask = __ballot_sync(ACTIVE_MASK, keep);
     while (mask) {
       int bit = __ffs(mask) - 1;
-      float p_i = __shfl_sync(0xffffffff, p, bit);
+      float p_i = __shfl_sync(ACTIVE_MASK, p, bit);
       int token_idx = t0 + bit;
 
-      for (int d = lane; d < D; d += WARP_SIZE) {
-        float v = __half2float(__ldg(v_base + (size_t)token_idx * D + d));
-        out_partial[warp_id * D + d] += p_i * v;
+      // Use half2 loads when D is even to reduce instruction count.
+      if ((D & 1) == 0) {
+        for (int d = lane * 2; d < D; d += WARP_SIZE * 2) {
+          const half2* v2_ptr = reinterpret_cast<const half2*>(
+              v_base + (size_t)token_idx * D + d);
+          half2 v2 = *v2_ptr;
+          float2 v2f = __half22float2(v2);
+          out_partial[warp_id * D + d] += p_i * v2f.x;
+          out_partial[warp_id * D + d + 1] += p_i * v2f.y;
+        }
+      } else {
+        for (int d = lane; d < D; d += WARP_SIZE) {
+          float v = __half2float(__ldg(v_base + (size_t)token_idx * D + d));
+          out_partial[warp_id * D + d] += p_i * v;
+        }
       }
 
       mask &= mask - 1;

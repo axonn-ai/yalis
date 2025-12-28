@@ -2,18 +2,18 @@
 using at::Half;
 
 // forward declare your launcher as taking raw pointers
-extern "C" void decode_attn_cuda_launcher(
-    const void* Q, const void* K, const void* V,
-    const float* Bias, void* Out,
-    const float* Threshold, float scale,
-    int B, int H, int T, int D
-);
-
 #if defined(__GNUC__) || defined(__clang__)
 #define THRESH_ATTN_WEAK __attribute__((weak))
 #else
 #define THRESH_ATTN_WEAK
 #endif
+
+extern "C" void decode_attn_cuda_launcher(
+    const void* Q, const void* K, const void* V,
+    const float* Bias, void* Out,
+    const float* Threshold, float scale,
+    int B, int H, int T, int D
+) THRESH_ATTN_WEAK;
 
 extern "C" void decode_attn_cuda_launcher_gmem(
     const void* Q, const void* K, const void* V,
@@ -61,6 +61,9 @@ static torch::Tensor decode_attn_fwd_impl(
       B, H, T, D
     );
   } else {
+    TORCH_CHECK(decode_attn_cuda_launcher != nullptr,
+                "non-gmem kernel requested but decode_attn_cuda_launcher is not linked. "
+                "Compile with a non-gmem kernel source (e.g. thresh_attn_cuda_bitmask_v1.cu).");
     decode_attn_cuda_launcher(
       /*Q=*/   reinterpret_cast<const void*>(Qf.data_ptr<Half>()),
       /*K=*/   reinterpret_cast<const void*>(Kf.data_ptr<Half>()),
