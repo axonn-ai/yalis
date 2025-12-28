@@ -140,34 +140,42 @@ extern "C" __global__ void decode_attn_two_pass_wmma(
     m = m_final;
     l = l_final;
   }
+  // Split loop off by a little bit
+  __syncthreads();
+  for (int i = threadIdx.x; i < T; i += blockDim.x) {
+    // exp_buf[i] currently holds logits in half from pass 1
+    float logit = __half2float(exp_buf[i]);   // logits (float)
+    float p     = expf(logit - m) / l;        // softmax in float
+
+    // Threshold in float32 space
+    if (p < thr_scalar) {
+        p = 0.0f;
+    }
+
+    // Store final prob (0 or >0) as half
+    exp_buf[i] = __float2half(p);
+  }
   __syncthreads();
 
-  // Compute softmax using global m,l and construct bitmask (no atomics)
+  // === Build bitmask from exp_buf (no new math) ===
   for (int w = warp_id; w < num_mask_words; w += NUM_WARPS) {
       int i = w * 32 + lane;
-      float p = 0.0f;
 
-      int   keep = 0;  // needs to be defined for all lanes
+      int keep = 0;
       if (i < T) {
-          float logit = __half2float(exp_buf[i]);     // logits
-          p = expf(logit - m) / l;                    // softmax
-
-          if (p < thr_scalar) {
-            p = 0.0f;
-          }
-          exp_buf[i] = __float2half(p); 
-          keep = p > 0.0f;
+          // At this point, exp_buf[i] is final prob (0 or >= thr), in half
+          keep = __half2float(exp_buf[i]) > 0.0f;
       }
 
-      // Warp-wide ballot gives us the 32-bit mask for this word
+      // Each warp builds its 32-bit word
       unsigned int bits = __ballot_sync(0xffffffff, keep);
 
-      // One lane writes the mask word; no atomics needed
       if (lane == 0 && w < num_mask_words) {
           mask_words[w] = bits;
       }
   }
   __syncthreads();
+
 
   // Weighted sum with V
   for (int d = threadIdx.x; d < D; d += blockDim.x) {

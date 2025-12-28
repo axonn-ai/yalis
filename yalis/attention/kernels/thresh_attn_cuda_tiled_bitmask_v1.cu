@@ -6,14 +6,7 @@
 using namespace nvcuda;
 using namespace nvcuda::wmma;
 
-__device__ __forceinline__ bool bit_is_set(const uint32_t* mask_words, int i) {
-    int w   = i >> 5;          // i / 32
-    int bit = i & 31;          // i % 32
-    uint32_t mword = mask_words[w];
-    return (mword >> bit) & 1u;
-}
-
-extern "C" __global__ void decode_attn_two_pass_wmma(
+extern "C" __global__ void decode_attn_two_pass_tile_fused_v1(
     const half*  __restrict__ Q,       // [B*H, D]
     const half*  __restrict__ K,       // [B*H, T, D]
     const half*  __restrict__ V,       // [B*H, T, D]
@@ -24,42 +17,40 @@ extern "C" __global__ void decode_attn_two_pass_wmma(
     int B, int H, int T, int D
 ) {
   constexpr int NUM_WARPS = 4;
+  constexpr int WARP_SIZE = 32;
+  constexpr int BLOCK_N   = 16;
 
   int idx = blockIdx.x;
-  if (idx >= B*H) return;
+  if (idx >= B * H) return;
 
   // Base pointers into Q/K/V/Bias/Out
-  const half*  q_ptr    = Q    + idx*(size_t)D;
-  const half*  k_base   = K    + idx*(size_t)T*D;
-  const half*  v_base   = V    + idx*(size_t)T*D;
-  const float* bias_ptr = Bias + idx*(size_t)T;
-        half*  out_ptr  = Out  + idx*(size_t)D;
+  const half*  q_ptr    = Q    + idx * (size_t)D;
+  const half*  k_base   = K    + idx * (size_t)T * D;
+  const half*  v_base   = V    + idx * (size_t)T * D;
+  const float* bias_ptr = Bias + idx * (size_t)T;
+        half*  out_ptr  = Out  + idx * (size_t)D;
   float thr_scalar      = Thr[idx];
 
   int tid = threadIdx.x;
-  int warp_id = tid / 32;
-  int lane = tid % 32;
+  int warp_id = tid / WARP_SIZE;
+  int lane = tid % WARP_SIZE;
 
-  // Shared tiles and softmax stats.
+  // STATIC shared for the 16x16 A-tile and per-warp C tiles
   __shared__ __align__(32) half a_tile[8][16];
   __shared__ __align__(32) float C_tile[NUM_WARPS][16];
   __shared__ float m_arr[NUM_WARPS], l_arr[NUM_WARPS];
   __shared__ float m, l;
 
-  // Dynamic shared: logits buffer + bitmask + Q scratch.
+  // DYNAMIC shared: only O(D) scratch (no O(T) buffers)
   extern __shared__ uint8_t _smem[];
-  half* exp_buf = reinterpret_cast<half*>(_smem);
-
-  int num_mask_words = (T + 31) / 32;
-  uint32_t* mask_words = reinterpret_cast<uint32_t*>(_smem + T * sizeof(half));
-
-  half* q_half = reinterpret_cast<half*>(
-      _smem + T * sizeof(half) + num_mask_words * sizeof(uint32_t)
-  );
+  half* q_half = reinterpret_cast<half*>(_smem);
+  size_t q_bytes = size_t(D) * sizeof(half);
+  size_t off = (q_bytes + sizeof(float) - 1) & ~(sizeof(float) - 1);
+  float* out_partial = reinterpret_cast<float*>(_smem + off);
 
   // Load Q into shared scratch.
   if (tid < D) {
-    q_half[tid] = __ldg(q_ptr + tid);
+    q_half[tid] = __ldg(q_ptr + tid);   // fp16 -> fp16
   }
   __syncthreads();
 
@@ -68,8 +59,7 @@ extern "C" __global__ void decode_attn_two_pass_wmma(
   nvcuda::wmma::fragment<nvcuda::wmma::matrix_b,       16,16,16, half, col_major>  Bfrag;
   nvcuda::wmma::fragment<nvcuda::wmma::accumulator,    16,16,16, float>            Cfrag;
 
-
-  // Load a_tile once (avoid reading q_half before it's fully populated).
+  // Load a_tile once from shared Q.
   if (tid < D) {
     a_tile[tid / 16][tid % 16] = q_half[tid];
   }
@@ -80,105 +70,109 @@ extern "C" __global__ void decode_attn_two_pass_wmma(
   m = -1e9f;
   l = 0.0f;
 
-
-  constexpr int BLOCK_N = 16;
   int warp_offset = warp_id * BLOCK_N;
-  for (int t0 = warp_offset; t0 < T; t0 += BLOCK_N * 4) {
+
+  // PASS 1: compute online softmax stats (m,l) without storing logits
+  for (int t0 = warp_offset; t0 < T; t0 += BLOCK_N * NUM_WARPS) {
     int bs = min(BLOCK_N, T - t0);
-    
+
     wmma::fill_fragment(Cfrag, 0);
-    
-    // PASS 1: Compute scaled dot-product attention with WMMA
     for (int d0 = 0; d0 < D; d0 += 16) {
-      // load into WMMA
       half const* k_tile = k_base + (size_t)(t0 * D + d0);
       wmma::load_matrix_sync(Bfrag, (const half*)k_tile, D);
-
       wmma::load_matrix_sync(Afrag, &a_tile[d0 / 16][0], 0);
       wmma::mma_sync(Cfrag, Afrag, Bfrag, Cfrag);
     }
 
-    // Store the C tile to shared memory
     wmma::store_matrix_sync(&C_tile[warp_id][0], Cfrag, 0, nvcuda::wmma::mem_row_major);
 
     if (lane < bs) {
       C_tile[warp_id][lane] = C_tile[warp_id][lane] * scale + __ldg(bias_ptr + t0 + lane);
     }
 
-    // Pass 2: Compute max and sum for softmax
     if (lane == 0) {
-      // Compute the running max and sum of the exp(x - max)
       for (int i = 0; i < bs; ++i) {
         float x  = C_tile[warp_id][i];
         float nm = fmaxf(m_arr[warp_id], x);
-        float em = expf(m_arr[warp_id]  - nm);
-        float eb = expf(x  - nm);
+        float em = expf(m_arr[warp_id] - nm);
+        float eb = expf(x - nm);
         l_arr[warp_id] = fmaf(l_arr[warp_id], em, eb);
         m_arr[warp_id] = nm;
-        exp_buf[t0 + i] = __float2half(x);
       }
     }
   }
 
-  // Reduce across warps to get block max and sum
+  // Reduce across warps to get block max and sum (match base kernel)
   __syncthreads();
   if (tid == 0) {
     float m_final = m_arr[0];
     float l_final = l_arr[0];
-  
     for (int i = 1; i < NUM_WARPS; ++i) {
       float m_i = m_arr[i];
       float l_i = l_arr[i];
-  
       float nm = fmaxf(m_final, m_i);
       float em1 = expf(m_final - nm);
       float em2 = expf(m_i - nm);
       l_final = l_final * em1 + l_i * em2;
       m_final = nm;
     }
-  
     m = m_final;
     l = l_final;
   }
   __syncthreads();
 
-  // Compute softmax using global m,l and construct bitmask (no atomics)
-  for (int w = warp_id; w < num_mask_words; w += NUM_WARPS) {
-      int i = w * 32 + lane;
-      float p = 0.0f;
-
-      int   keep = 0;  // needs to be defined for all lanes
-      if (i < T) {
-          float logit = __half2float(exp_buf[i]);     // logits
-          p = expf(logit - m) / l;                    // softmax
-
-          if (p < thr_scalar) {
-            p = 0.0f;
-          }
-          exp_buf[i] = __float2half(p); 
-          keep = p > 0.0f;
-      }
-
-      // Warp-wide ballot gives us the 32-bit mask for this word
-      unsigned int bits = __ballot_sync(0xffffffff, keep);
-
-      // One lane writes the mask word; no atomics needed
-      if (lane == 0 && w < num_mask_words) {
-          mask_words[w] = bits;
-      }
+  // PASS 2: recompute logits, threshold, and immediately accumulate V
+  // No O(T) shared buffers: only O(D) partial sums per warp.
+  for (int d = lane; d < D; d += WARP_SIZE) {
+    out_partial[warp_id * D + d] = 0.0f;
   }
-  __syncthreads();
+  __syncwarp();
 
-  // Weighted sum with V
+  for (int t0 = warp_offset; t0 < T; t0 += BLOCK_N * NUM_WARPS) {
+    int bs = min(BLOCK_N, T - t0);
+
+    wmma::fill_fragment(Cfrag, 0);
+    for (int d0 = 0; d0 < D; d0 += 16) {
+      half const* k_tile = k_base + (size_t)(t0 * D + d0);
+      wmma::load_matrix_sync(Bfrag, (const half*)k_tile, D);
+      wmma::load_matrix_sync(Afrag, &a_tile[d0 / 16][0], 0);
+      wmma::mma_sync(Cfrag, Afrag, Bfrag, Cfrag);
+    }
+
+    wmma::store_matrix_sync(&C_tile[warp_id][0], Cfrag, 0, nvcuda::wmma::mem_row_major);
+
+    float p = 0.0f;
+    int keep = 0;
+    if (lane < bs) {
+      float logit = C_tile[warp_id][lane] * scale + __ldg(bias_ptr + t0 + lane);
+      p = expf(logit - m) / l;
+      if (p < thr_scalar) {
+        p = 0.0f;
+      }
+      keep = (p > 0.0f);
+    }
+
+    unsigned mask = __ballot_sync(0xffffffff, keep);
+    while (mask) {
+      int bit = __ffs(mask) - 1;
+      float p_i = __shfl_sync(0xffffffff, p, bit);
+      int token_idx = t0 + bit;
+
+      for (int d = lane; d < D; d += WARP_SIZE) {
+        float v = __half2float(__ldg(v_base + (size_t)token_idx * D + d));
+        out_partial[warp_id * D + d] += p_i * v;
+      }
+
+      mask &= mask - 1;
+    }
+  }
+
+  // Reduce across warps to get final output
+  __syncthreads();
   for (int d = threadIdx.x; d < D; d += blockDim.x) {
     float sum = 0.0f;
-    for (int i = 0; i < T; ++i) {
-      // cheap mask test + early continue
-      if (!bit_is_set(mask_words, i)) continue;
-
-      float p = __half2float(exp_buf[i]);
-      float v = __half2float(__ldg(v_base + i * D + d));
-      sum += p * v;
+    for (int w = 0; w < NUM_WARPS; ++w) {
+      sum += out_partial[w * D + d];
     }
     out_ptr[d] = __float2half(sum);
   }
@@ -191,26 +185,23 @@ extern "C" void decode_attn_cuda_launcher(
     const float* Thr, float scale,
     int B, int H, int T, int D
 ) {
-  // cast back to __half*
   const __half* Qh = reinterpret_cast<const __half*>(Qp);
   const __half* Kh = reinterpret_cast<const __half*>(Kp);
   const __half* Vh = reinterpret_cast<const __half*>(Vp);
         __half* Oh = reinterpret_cast<      __half*>(Outp);
 
-  int blocks  = B*H;
+  int blocks  = B * H;
   int threads = 128;
-  int num_mask_words = (T + 31) / 32;
-  size_t dyn_shm = size_t(T)*sizeof(__half)
-                 + size_t(num_mask_words)*sizeof(uint32_t)
-                 + size_t(D)*sizeof(__half);
+  size_t q_bytes = size_t(D) * sizeof(__half);
+  size_t off = (q_bytes + sizeof(float) - 1) & ~(sizeof(float) - 1);
+  size_t out_bytes = size_t(4) * D * sizeof(float);
+  size_t dyn_shm = off + out_bytes;
 
-
-  decode_attn_two_pass_wmma
+  decode_attn_two_pass_tile_fused_v1
     <<<blocks, threads, dyn_shm>>>(
       Qh, Kh, Vh, Bias, Oh, Thr, scale, B, H, T, D
     );
 
-  // Error check for async launch.
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess)
     printf("kernel launch failed: %s\n", cudaGetErrorString(err));

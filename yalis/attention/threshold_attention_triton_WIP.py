@@ -9,17 +9,53 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 from torch.utils.cpp_extension import load
 from typing import Optional
 import os
+import sys
 import time
 DEVICE = "cuda"
 
+_BASE_DIR = os.path.dirname(__file__)
+_DEFAULT_SEQ_LENS = [512, 1024, 2048, 4096, 8192]
+
+def _parse_seq_lens(argv):
+    seq_arg = None
+    for i, arg in enumerate(argv[1:]):
+        if arg.startswith("--seqs="):
+            seq_arg = arg.split("=", 1)[1]
+            break
+        if arg == "--seqs" and i + 2 <= len(argv):
+            seq_arg = argv[i + 2]
+            break
+    if not seq_arg:
+        return _DEFAULT_SEQ_LENS
+    parts = [p.strip() for p in seq_arg.split(",") if p.strip()]
+    seqs = []
+    for p in parts:
+        if p.lower().endswith("k"):
+            seqs.append(int(float(p[:-1]) * 1024))
+        else:
+            seqs.append(int(p))
+    return seqs or _DEFAULT_SEQ_LENS
+_kernel_arg = next((arg for arg in sys.argv[1:] if arg.endswith(".cu")), None)
+SEQ_LENS = _parse_seq_lens(sys.argv)
+if _kernel_arg is None:
+    _kernel_source = os.path.join(_BASE_DIR, "thresh_attn_cuda.cu")
+else:
+    _kernel_source = _kernel_arg
+    if not os.path.isabs(_kernel_source):
+        _kernel_source = os.path.join(_BASE_DIR, _kernel_source)
+    _kernel_source = os.path.normpath(_kernel_source)
+
+# Currently only have 1 kernel that uses gmem, can make a more advanced way to specify callers later
+USE_GMEM_KERNEL = "tiled_fused_v1" in os.path.basename(_kernel_source)
+
 decode_attn_cuda = load(
     name="decode_attn_cuda",
-    sources=["thresh_attn_c.cpp", "thresh_attn_cuda.cu"],
+    sources=[os.path.join(_BASE_DIR, "thresh_attn_c.cpp"), _kernel_source],
     verbose=True,
     extra_cuda_cflags=['-arch=sm_90', '-O3']
 )
 
-print(f"PID: {os.getpid()}")
+print(f"PID: {os.getpid()} | kernel: {_kernel_source} | gmem: {USE_GMEM_KERNEL} | seqs: {SEQ_LENS}")
 
 @torch.library.custom_op("yalis::decode_attn", mutates_args=())
 def decode_attn(
@@ -30,6 +66,15 @@ def decode_attn(
     scale_factor: float,
     attn_mask: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
+    if USE_GMEM_KERNEL:
+        return decode_attn_cuda.decode_attn_fwd_gmem(
+            query,
+            key,
+            value,
+            attn_mask,
+            threshold,
+            scale_factor,
+        )
     return decode_attn_cuda.decode_attn_fwd(
         query,
         key,
@@ -254,7 +299,7 @@ BATCH, N_HEADS, HEAD_DIM = 32, 32, 128
 # vary seq length for fixed head and batch=4
 config = triton.testing.Benchmark(
     x_names=["N_CTX"],
-    x_vals=[512, 1024, 2048, 4096, 8192, 16384],
+    x_vals=SEQ_LENS,
     line_arg="mode",
     line_vals=[0, 0.5, 0.75, 0.875, 0.95, -1],
     line_names=[
@@ -380,7 +425,7 @@ def benchmark_thresh_attn_fused_wrapped(BATCH, H, N_CTX, HEAD_DIM, percentile):
 
 
 def run_all_benchmarks():
-    for N_CTX in [512, 1024, 2048, 4096, 8192]:
+    for N_CTX in SEQ_LENS:
         for percentile in [0.5, 0.75, 0.875, 0.95]:
             torch.compiler.reset()
             benchmark_thresh_attn_fused_wrapped(BATCH, N_HEADS, N_CTX, HEAD_DIM, percentile)
