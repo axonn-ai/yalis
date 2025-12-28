@@ -160,21 +160,9 @@ extern "C" __global__ void decode_attn_gmem_logits_cache_v0(
       float p_i = __shfl_sync(ACTIVE_MASK, p, bit);
       int token_idx = t0 + bit;
 
-      // Use half2 loads when D is even to reduce instruction count.
-      if ((D & 1) == 0) {
-        for (int d = lane * 2; d < D; d += WARP_SIZE * 2) {
-          const half2* v2_ptr = reinterpret_cast<const half2*>(
-              v_base + (size_t)token_idx * D + d);
-          half2 v2 = *v2_ptr;
-          float2 v2f = __half22float2(v2);
-          out_partial[warp_id * D + d] += p_i * v2f.x;
-          out_partial[warp_id * D + d + 1] += p_i * v2f.y;
-        }
-      } else {
-        for (int d = lane; d < D; d += WARP_SIZE) {
-          float v = __half2float(__ldg(v_base + (size_t)token_idx * D + d));
-          out_partial[warp_id * D + d] += p_i * v;
-        }
+      for (int d = lane; d < D; d += WARP_SIZE) {
+        float v = __half2float(__ldg(v_base + (size_t)token_idx * D + d));
+        out_partial[warp_id * D + d] += p_i * v;
       }
 
       mask &= mask - 1;
