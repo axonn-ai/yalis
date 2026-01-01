@@ -17,7 +17,7 @@ from .constants import EnginePhase
 import time
 import gc
 from .timers import Timers
-from .offloading import CPUOffloadedModel
+from .offloading import CPUOffloadManager
 
 import os
 
@@ -56,6 +56,14 @@ precision_to_dtype = {
     "fp32": torch.float32,
 }
 
+def next_row_indices_callback(next_layer_index: int) -> Optional[list[int]]:
+    total_experts = 128
+
+    # Choose 8 experts randomly from the total experts
+    experts = torch.randint(0, total_experts, (8,))
+    return torch.sort(experts).values
+
+
 
 @torch.inference_mode()
 @torch.compile(disable=YALIS_DISABLE_COMPILE)
@@ -86,6 +94,7 @@ def prefill(
         torch.float32
     )
     logits = logits[torch.arange(logits.size(0)), unpadded_prompt_lengths - 1]
+    torch.cuda.synchronize()
     token_id = sample(
         logits=logits, temperature=temperature, top_k=top_k, top_p=top_p
     )
@@ -121,6 +130,7 @@ def generate(
         logits: (Optional) The raw logits from the model.
     """
     logits = model(tokens, phase)["logits"].to(torch.float32)
+    torch.cuda.synchronize()
     token_id = sample(
         logits=logits[:, -1], temperature=temperature, top_k=top_k, top_p=top_p
     )
@@ -229,47 +239,38 @@ class LLMEngine:
             disable_tp=model_config.disable_tp,
         )
 
+        model = self._make_params_contiguous(model, use_cpu_offloading=use_cpu_offloading)
+
+        model.set_kv_cache(
+            max_batch_size=inference_config.max_batch_size,
+            device=self.device,
+            dtype=self.dtype,
+        )
+
+        print_rank0(
+            f"Memory Stats after KV Cache Init - {get_gpu_memory_info()} "
+        )
+
         if use_cpu_offloading:
             print_rank0(
                 f"[CPU Offloading] Model loaded to CPU, "
                 f"will stream {inference_config.cpu_offload_num_prefetch_layers} "
                 f"layer(s) ahead"
             )
-            # Don't move entire model to GPU
-            model = self._make_params_contiguous(
-                model, use_cpu_offloading=True
-            )
-            # Set KV cache on GPU (this stays on GPU)
-            model.set_kv_cache(
-                max_batch_size=inference_config.max_batch_size,
-                device=self.device,
-                dtype=self.dtype,
-            )
-            print_rank0(
-                f"Memory Stats after KV Cache Init - {get_gpu_memory_info()} "
-            )
-            # Wrap model with CPU offloading
-            model = CPUOffloadedModel(
+            # Create offload manager and attach to model
+            offload_manager = CPUOffloadManager(
                 model=model,
                 device=torch.device(self.device),
-                dtype=self.dtype,
                 num_prefetch_layers=inference_config.cpu_offload_num_prefetch_layers,
                 pin_memory=inference_config.cpu_offload_pin_memory,
                 use_preallocated_buffers=inference_config.cpu_offload_use_preallocated_buffers,
                 offload_components=inference_config.cpu_offload_components,
             )
+            # offload_manager.set_row_indices_callback(next_row_indices_callback)
+            offload_manager.prepare_for_offloading(self.dtype)
+            model.offload_manager = offload_manager
             print_rank0(
                 f"Memory Stats after CPU Offload Setup - {get_gpu_memory_info()} "
-            )
-        else:
-            model = self._make_params_contiguous(model)
-            model.set_kv_cache(
-                max_batch_size=inference_config.max_batch_size,
-                device=self.device,
-                dtype=self.dtype,
-            )
-            print_rank0(
-                f"Memory Stats after KV Cache Init - {get_gpu_memory_info()} "
             )
 
         if inference_config.symmetric_allreduce_strategy is not None:
@@ -453,6 +454,9 @@ class LLMEngine:
         self.model.token_counter.zero_()
         if self.inference_config.use_paged_kv_caching:
             self.model.kv_cache_manager.reset()
+          
+        if self.inference_config.use_cpu_offloading:
+            self.model.offload_manager.reset()
         with torch.inference_mode(), torch.autocast(
             self.device, dtype=self.dtype, cache_enabled=False
         ):

@@ -10,6 +10,7 @@ https://github.com/EleutherAI/gpt-neox/tree/main/megatron/model.
 from typing import Any, Optional, Tuple
 from typing_extensions import Self
 from copy import deepcopy
+from contextlib import nullcontext
 import warnings
 import sys
 
@@ -73,6 +74,9 @@ class GPT(nn.Module):
             self.config.block_size
         )  # rope cache is built here
         self.symmetric_memory_pool = None
+        
+        # CPU offloading manager - set by engine when offloading is enabled
+        self.offload_manager = None
 
     @property
     def max_seq_length(self) -> int:
@@ -105,6 +109,16 @@ class GPT(nn.Module):
     def reset_parameters(self) -> None:
         # Trigger resetting the rope-cache
         self.cos, self.sin = self.rope_cache(device=self.cos.device)
+    
+    def layer_context(self, layer_idx: int):
+        """
+        Returns offload context manager if enabled, otherwise no-op.
+        
+        This allows the forward loop to stay clean without branching.
+        """
+        if self.offload_manager is not None:
+            return self.offload_manager.layer_context(layer_idx)
+        return nullcontext()
 
     def _init_weights(self, module: nn.Module) -> None:
         """Meant to be used with `gpt.apply(gpt._init_weights)`."""
@@ -187,16 +201,17 @@ class GPT(nn.Module):
             else None
         )
 
-        for block in self.transformer.h:
-            x = block(
-                x,
-                self.cos,
-                self.sin,
-                phase,
-                self.token_counter,
-                block_table,
-                flex_attention_block_mask,
-            )
+        for layer_idx, block in enumerate(self.transformer.h):
+            with self.layer_context(layer_idx):
+                x = block(
+                    x,
+                    self.cos,
+                    self.sin,
+                    phase,
+                    self.token_counter,
+                    block_table,
+                    flex_attention_block_mask,
+                )
         if self.config.tensor_parallel:
             x = Gather.apply(
                 x, ax.comm_handle.inner_intra_layer_parallel_group
@@ -357,6 +372,12 @@ class GPT(nn.Module):
             block.attn.kv_cache = None
         torch.cuda.empty_cache()
 
+    def cleanup(self) -> None:
+        """Clean up offloading resources if enabled."""
+        if self.offload_manager is not None:
+            self.offload_manager.cleanup()
+            self.offload_manager = None
+    
     def create_symmetric_memory_pool(
         self,
         batch_size: int,

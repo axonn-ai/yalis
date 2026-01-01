@@ -2,11 +2,7 @@
 from .config import ModelConfig, InferenceConfig
 from .utils import print_rank0
 from .engine import LLMEngine, SpeculativeLLMEngine
-from .offloading import (
-    CPUOffloadManager,
-    CPUOffloadedModel,
-    enable_cpu_offloading,
-)
+from .offloading import CPUOffloadManager
 
 # Define the public API for the package
 __all__ = [
@@ -17,6 +13,4 @@ __all__ = [
     "SpeculativeLLMEngine",
     # CPU Offloading
     "CPUOffloadManager",
-    "CPUOffloadedModel",
-    "enable_cpu_offloading",
 ]

@@ -51,19 +51,29 @@ class GPUBufferManager:
             {comp: ComponentBuffers() for comp in self.offload_components}
             for _ in range(num_buffer_sets)
         ]
-        
         self._allocate_buffers(layer_template)
         self._log_allocation()
     
     def _allocate_buffers(self, layer: nn.Module):
         """Allocate GPU buffers for all buffer sets."""
+        # Allocate buffers for parameters
         for name, param in layer.named_parameters():
             component = get_component_for_param(name)
             for buffer_set in self.buffer_sets:
                 if component in buffer_set:
+                    print_rank0(f"Allocating buffer for parameter: {name} -  {param.dtype} - {param.shape}")
                     buffer_set[component].tensors[name] = torch.empty(
-                        param.shape, dtype=self.dtype, device=self.device
-                    )
+                        param.shape, dtype=param.dtype, device=self.device
+                    ).contiguous()
+
+        # Allocate buffers for buffers (like KV cache)
+        for name, buf in layer.named_buffers():
+            component = get_component_for_param(name)
+            for buffer_set in self.buffer_sets:
+                if component in buffer_set:
+                    buffer_set[component].tensors[name] = torch.empty(
+                        buf.shape, dtype=buf.dtype, device=self.device
+                    ).contiguous()
     
     def _log_allocation(self):
         """Log buffer allocation info."""
@@ -125,8 +135,9 @@ class GPUBufferManager:
                 cpu_tensor = cpu_state[name]
                 
                 # Copy rows for 2D, full copy for 1D
-                if cpu_tensor.dim() == 2 and row_indices is not None:
-                    gpu_buffer[row_indices].copy_(cpu_tensor[row_indices], non_blocking=True)
+                if cpu_tensor.dim() >= 2 and row_indices is not None:
+                    for r in row_indices.tolist():
+                        gpu_buffer[r].copy_(cpu_tensor[r], non_blocking=True)
                 else:
                     gpu_buffer.copy_(cpu_tensor, non_blocking=True)
                 

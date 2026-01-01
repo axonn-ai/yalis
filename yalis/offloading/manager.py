@@ -288,7 +288,7 @@ class CPUOffloadManager:
         if not non_blocking:
             self.transfer_stream.synchronize()
         
-        self.components_on_gpu[layer_idx].add(f'{component}_partial')
+        self.components_on_gpu[layer_idx].add(f'{component}')
     
     @compiler_disable()
     def _restore_layer_to_cpu(self, layer_idx: int):
@@ -351,6 +351,7 @@ class CPUOffloadManager:
         """Wait for layer transfer to complete (GPU-side, non-blocking on CPU)."""
         if layer_idx in self.transfer_events:
             torch.cuda.current_stream().wait_event(self.transfer_events[layer_idx])
+            self.layers_on_gpu.add(layer_idx)
             del self.transfer_events[layer_idx]
     
     def offload_layer(self, layer_idx: int):
@@ -405,4 +406,9 @@ class CPUOffloadManager:
             self.gpu_buffer_manager = None
         
         torch.cuda.empty_cache()
+    
+    def reset(self):
+        """Reset the manager."""
+        assert len(self.transfer_events) == 0
+        self.layers_on_gpu = set()
 

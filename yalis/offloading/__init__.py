@@ -15,18 +15,18 @@ Features:
 - torch.compile compatible
 
 Usage:
-    from yalis.offloading import CPUOffloadedModel, enable_cpu_offloading
+    # In engine.py (done automatically when use_cpu_offloading=True):
+    from yalis.offloading import CPUOffloadManager
     
-    # As a model wrapper
-    model = CPUOffloadedModel(
+    offload_manager = CPUOffloadManager(
         model,
         use_preallocated_buffers=True,
         offload_components=["mlp"],  # Only offload MLP
     )
+    offload_manager.prepare_for_offloading(dtype)
+    model.offload_manager = offload_manager
     
-    # Or as a function
-    offloaded = enable_cpu_offloading(model)
-    output = offloaded(input_ids, phase)
+    # The model's forward() will automatically use offloading via layer_context()
 """
 
 from .constants import (
@@ -43,13 +43,6 @@ from .buffer_manager import (
 
 from .manager import CPUOffloadManager
 
-from .forward import OffloadedGPTForward
-
-from .model import (
-    CPUOffloadedModel,
-    enable_cpu_offloading,
-)
-
 __all__ = [
     # Constants
     "VALID_COMPONENTS",
@@ -61,10 +54,4 @@ __all__ = [
     "GPUBufferManager",
     # Core manager
     "CPUOffloadManager",
-    # Forward pass
-    "OffloadedGPTForward",
-    # Model wrapper
-    "CPUOffloadedModel",
-    "enable_cpu_offloading",
 ]
-
