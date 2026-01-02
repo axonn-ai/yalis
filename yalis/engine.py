@@ -215,6 +215,8 @@ class LLMEngine:
             use_paged_kv_caching=inference_config.use_paged_kv_caching,
             prestore_kv_cache=inference_config.prestore_kv_cache,
             disable_tp=model_config.disable_tp,
+            use_prefetched=inference_config.use_prefetched,
+            prefetch_default_vect_path=inference_config.prefetch_default_vect_path,
         )
         model = self._make_params_contiguous(model)
         model.set_kv_cache(

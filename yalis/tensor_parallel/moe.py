@@ -258,15 +258,15 @@ class TPMoE(torch.nn.Module):
         x,
         router,
         # prefetched expert weights and ids
-        w_pf: Optional[torch.Tensor] = None,
-        ids_pf: Optional[torch.Tensor] = None,
+        prefetch_weights: Optional[torch.Tensor] = None,
+        prefetch_expert_ids: Optional[torch.Tensor] = None,
     ):
-        if w_pf is not None and ids_pf is not None:
+        if prefetch_weights is not None and prefetch_expert_ids is not None:
             y = fused_experts(x,
                               self.gate_up_proj,
                               self.proj,
-                              w_pf,
-                              ids_pf,
+                              prefetch_weights,
+                              prefetch_expert_ids,
                               inplace = False,
                               override_config = None,
                               use_fp8_w8a8 = False,

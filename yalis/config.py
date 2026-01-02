@@ -106,6 +106,8 @@ class InferenceConfig:
         symmetric_allreduce_strategy: Optional[
             Literal["one-shot", "two-shot", "nvshmem"]
         ] = None,
+        use_prefetched: bool = False,
+        prefetch_default_vect_path: Optional[str] = None,
     ):
         """
         Initialize the inference configuration.
@@ -131,6 +133,8 @@ class InferenceConfig:
             use_intra_head_parallelism (bool): Use intra-head parallelism.
             use_paged_kv_caching (bool): Use paged k/v caching for attention.
             prestore_kv_cache (bool): Pre-store k/v cache before attention.
+            use_prefetched: bool = False,
+            prefetch_default_vect_path: Optional[str] = None,
         """
         self.max_batch_size = max_batch_size
         # TODO - default max_length should be none.
@@ -145,6 +149,8 @@ class InferenceConfig:
         self.use_paged_kv_caching = use_paged_kv_caching
         self.prestore_kv_cache = prestore_kv_cache
         self.symmetric_allreduce_strategy = symmetric_allreduce_strategy
+        self.use_prefetched = use_prefetched
+        self.prefetch_default_vect_path = prefetch_default_vect_path
 
         if attention_backend not in ["flash", "sdpa", "flex"]:
             raise ValueError(
