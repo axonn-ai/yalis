@@ -17,6 +17,13 @@ from lightning.fabric.utilities.load import (
 from safetensors.torch import load_file as load_safetensors
 
 
+DEFAULT_SAFETENSOR_CHUNK_SIZE = int(
+    os.environ.get("YALIS_SAFETENSOR_CHUNK_SIZE", "1")
+)
+
+if DEFAULT_SAFETENSOR_CHUNK_SIZE < 1:
+    raise ValueError("YALIS_SAFETENSOR_CHUNK_SIZE must be at least 1")
+
 from config import Config
 from litgpt.utils import (
     extend_checkpoint_dir,
@@ -24,6 +31,7 @@ from litgpt.utils import (
     save_config,
     # incremental_save,
 )
+from safetensors import safe_open
 from safetensor_saver import incremental_save
 
 
@@ -1177,6 +1185,263 @@ def load_param(
     return param
 
 
+def copy_weights_gpt_oss(
+    config: Config,
+    qkv_weights: Dict[int, Dict[str, Any]],
+    moe_weights: Dict[int, Dict[str, Any]],
+    state_dict: Dict[str, torch.Tensor],
+    hf_weights: Dict[str, Union[torch.Tensor, NotYetLoadedTensor]],
+    saver: Optional[incremental_save] = None,
+    dtype: Optional[torch.dtype] = None,
+    pbar: Optional[tqdm] = None,
+    progress_per_file: Optional[float] = None,
+    debug_mode: Optional[bool] = False,
+) -> None:
+    """Convert GPT-OSS HF checkpoint to yalis format.
+    
+    Handles:
+    - Quantized MoE weights (blocks, scales, biases)
+    - Attention weights with biases (q/k/v/o projections)
+    - Sinks parameter
+    - Router weights and biases
+    - Layer norms (RMSNorm)
+    """
+    
+    weight_map = {
+        "model.embed_tokens.weight": "transformer.wte.weight",
+        "model.layers.{}.input_layernorm.weight": "transformer.h.{}.norm_1.weight",
+        "model.layers.{}.post_attention_layernorm.weight": "transformer.h.{}.norm_2.weight",
+        "model.norm.weight": "transformer.ln_f.weight",
+        "lm_head.weight": "lm_head.weight",
+    }
+    
+    for name, param in hf_weights.items():
+        if "model.layers" in name:
+            from_name, number = layer_template(name, idx=2)
+            
+            # Handle attention weights (q, k, v projections - collect for deferred assembly)
+            if "self_attn.q_proj.weight" in name:
+                if number not in qkv_weights:
+                    qkv_weights[number] = {}
+                qkv_weights[number]["q_proj"] = param
+            elif "self_attn.q_proj.bias" in name:
+                if number not in qkv_weights:
+                    qkv_weights[number] = {}
+                qkv_weights[number]["q_proj.bias"] = param
+            elif "self_attn.k_proj.weight" in name:
+                if number not in qkv_weights:
+                    qkv_weights[number] = {}
+                qkv_weights[number]["k_proj"] = param
+            elif "self_attn.k_proj.bias" in name:
+                if number not in qkv_weights:
+                    qkv_weights[number] = {}
+                qkv_weights[number]["k_proj.bias"] = param
+            elif "self_attn.v_proj.weight" in name:
+                if number not in qkv_weights:
+                    qkv_weights[number] = {}
+                qkv_weights[number]["v_proj"] = param
+            elif "self_attn.v_proj.bias" in name:
+                if number not in qkv_weights:
+                    qkv_weights[number] = {}
+                qkv_weights[number]["v_proj.bias"] = param
+            
+            # Handle attention output projection
+            elif "self_attn.o_proj.weight" in name:
+                to_name = f"transformer.h.{number}.attn.proj.weight"
+                param = load_param(param, name, dtype, verbose=debug_mode)
+                state_dict[to_name] = param
+            elif "self_attn.o_proj.bias" in name:
+                to_name = f"transformer.h.{number}.attn.proj.bias"
+                param = load_param(param, name, dtype, verbose=debug_mode)
+                state_dict[to_name] = param
+            
+            # Handle sinks
+            elif "self_attn.sinks" in name:
+                to_name = f"transformer.h.{number}.sinks"
+                param = load_param(param, name, dtype, verbose=debug_mode)
+                state_dict[to_name] = param
+            
+            # Handle layer norms
+            elif "input_layernorm.weight" in name:
+                to_name = f"transformer.h.{number}.norm_1.weight"
+                param = load_param(param, name, dtype, verbose=debug_mode)
+                state_dict[to_name] = param
+            elif "post_attention_layernorm.weight" in name:
+                to_name = f"transformer.h.{number}.norm_2.weight"
+                param = load_param(param, name, dtype, verbose=debug_mode)
+                state_dict[to_name] = param
+            
+            # Handle MoE router
+            elif "mlp.router.weight" in name:
+                to_name = f"transformer.h.{number}.mlp.router.weight"
+                param = load_param(param, name, dtype, verbose=debug_mode)
+                state_dict[to_name] = param
+            elif "mlp.router.bias" in name:
+                to_name = f"transformer.h.{number}.mlp.router.bias"
+                param = load_param(param, name, dtype, verbose=debug_mode)
+                state_dict[to_name] = param
+            
+            # Handle MoE expert weights (quantized format - collect for deferred dequantization)
+            elif "mlp.experts.gate_up_proj_blocks" in name:
+                if number not in moe_weights:
+                    moe_weights[number] = {}
+                moe_weights[number]["gate_up_proj_blocks"] = param
+            elif "mlp.experts.gate_up_proj_scales" in name:
+                if number not in moe_weights:
+                    moe_weights[number] = {}
+                moe_weights[number]["gate_up_proj_scales"] = param
+            elif "mlp.experts.gate_up_proj_bias" in name:
+                if number not in moe_weights:
+                    moe_weights[number] = {}
+                moe_weights[number]["gate_up_proj_bias"] = param
+            elif "mlp.experts.down_proj_blocks" in name:
+                if number not in moe_weights:
+                    moe_weights[number] = {}
+                moe_weights[number]["down_proj_blocks"] = param
+            elif "mlp.experts.down_proj_scales" in name:
+                if number not in moe_weights:
+                    moe_weights[number] = {}
+                moe_weights[number]["down_proj_scales"] = param
+            elif "mlp.experts.down_proj_bias" in name:
+                if number not in moe_weights:
+                    moe_weights[number] = {}
+                moe_weights[number]["down_proj_bias"] = param
+            
+        # Handle embeddings, norms, and lm_head via weight_map
+        else:
+            to_name = weight_map.get(name)
+            if to_name is not None:
+                param = load_param(param, name, dtype, verbose=debug_mode)
+                state_dict[to_name] = param
+        
+        if pbar is not None and progress_per_file is not None:
+            pbar.update(progress_per_file / len(hf_weights))
+    
+    # Deferred QKV assembly (interleave q, k, v for GQA)
+    for i in list(qkv_weights.keys()):
+        qkv = qkv_weights[i]
+        if len(qkv) == 6:  # All q/k/v weights and biases present
+            # Load weights
+            q_weight = load_param(qkv["q_proj"], f"layer {i} q_proj", dtype, verbose=debug_mode)
+            k_weight = load_param(qkv["k_proj"], f"layer {i} k_proj", dtype, verbose=debug_mode)
+            v_weight = load_param(qkv["v_proj"], f"layer {i} v_proj", dtype, verbose=debug_mode)
+            
+            # Interleave for GQA
+            q_per_kv = config.n_head // config.n_query_groups
+            qs = torch.split(q_weight, config.head_size * q_per_kv)
+            ks = torch.split(k_weight, config.head_size)
+            vs = torch.split(v_weight, config.head_size)
+            cycled = [t for group in zip(qs, ks, vs) for t in group]
+            qkv_weight = torch.cat(cycled)
+            state_dict[f"transformer.h.{i}.attn.attn.weight"] = qkv_weight
+            
+            # Load and interleave biases
+            q_bias = load_param(qkv["q_proj.bias"], f"layer {i} q_proj.bias", dtype, verbose=debug_mode)
+            k_bias = load_param(qkv["k_proj.bias"], f"layer {i} k_proj.bias", dtype, verbose=debug_mode)
+            v_bias = load_param(qkv["v_proj.bias"], f"layer {i} v_proj.bias", dtype, verbose=debug_mode)
+            
+            qs_bias = torch.split(q_bias, config.head_size * q_per_kv)
+            ks_bias = torch.split(k_bias, config.head_size)
+            vs_bias = torch.split(v_bias, config.head_size)
+            cycled_bias = [t for group in zip(qs_bias, ks_bias, vs_bias) for t in group]
+            qkv_bias = torch.cat(cycled_bias)
+            state_dict[f"transformer.h.{i}.attn.attn.bias"] = qkv_bias
+            
+            del qkv_weights[i]
+            if progress_per_file is not None and pbar is not None:
+                pbar.update(progress_per_file)
+    
+    # Deferred MoE weight dequantization and assembly (MXFP4 format)
+    # FP4 lookup table for MXFP4 decoding
+    FP4_VALUES = [
+        +0.0, +0.5, +1.0, +1.5, +2.0, +3.0, +4.0, +6.0,
+        -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0,
+    ]
+    
+    for i in list(moe_weights.keys()):
+        moe = moe_weights[i]
+        if len(moe) == 6:  # All gate_up and down weights present
+            # Load quantized gate_up weights
+            gate_up_blocks = load_param(moe["gate_up_proj_blocks"], f"layer {i} gate_up_proj_blocks", None, verbose=debug_mode)  # Keep as uint8
+            gate_up_scales = load_param(moe["gate_up_proj_scales"], f"layer {i} gate_up_proj_scales", None, verbose=debug_mode)  # Keep as uint8
+            gate_up_bias = load_param(moe["gate_up_proj_bias"], f"layer {i} gate_up_proj_bias", dtype, verbose=debug_mode)
+            
+            # Dequantize gate_up using MXFP4 decoding
+            # Blocks shape: (n_experts, out_features, in_blocks, block_size=16)
+            # Each uint8 byte contains TWO 4-bit FP4 values (nibbles)
+            n_experts, out_features, in_blocks, block_size = gate_up_blocks.shape
+            
+            # Split into low and high nibbles
+            gate_up_blocks_lo = gate_up_blocks & 0x0F
+            gate_up_blocks_hi = gate_up_blocks >> 4
+            
+            # Interleave nibbles: [lo0, hi0, lo1, hi1, ...]
+            gate_up_blocks_interleaved = torch.stack((gate_up_blocks_lo, gate_up_blocks_hi), dim=-1)
+            gate_up_blocks_flat = gate_up_blocks_interleaved.view(n_experts, out_features, in_blocks, block_size * 2)
+            
+            # Convert scales: uint8 -> int32, subtract bias (127)
+            gate_up_scales_adj = gate_up_scales.to(torch.int32) - 127
+            
+            # Expand scales to match the doubled block size
+            gate_up_scales_expanded = gate_up_scales_adj.unsqueeze(-1).expand(n_experts, out_features, in_blocks, block_size * 2)
+            
+            # Create FP4 lookup table
+            target_dtype = dtype if dtype is not None else torch.bfloat16
+            fp4_lut = torch.tensor(FP4_VALUES, dtype=target_dtype, device=gate_up_blocks.device)
+            
+            # Decode: lookup FP4 values, then scale using ldexp (value * 2^scale)
+            gate_up_decoded = fp4_lut[gate_up_blocks_flat.to(torch.int32)]
+            gate_up_weight = torch.ldexp(gate_up_decoded, gate_up_scales_expanded)
+            
+            # Reshape to final dimensions: (n_experts, out_features, in_features)
+            gate_up_weight = gate_up_weight.view(n_experts, out_features, -1)
+            
+            state_dict[f"transformer.h.{i}.mlp.gate_up_weight"] = gate_up_weight
+            state_dict[f"transformer.h.{i}.mlp.gate_up_bias"] = gate_up_bias
+            
+            # Load and dequantize down weights (same MXFP4 process)
+            down_blocks = load_param(moe["down_proj_blocks"], f"layer {i} down_proj_blocks", None, verbose=debug_mode)
+            down_scales = load_param(moe["down_proj_scales"], f"layer {i} down_proj_scales", None, verbose=debug_mode)
+            down_bias = load_param(moe["down_proj_bias"], f"layer {i} down_proj_bias", dtype, verbose=debug_mode)
+            
+            n_experts_d, out_features_d, in_blocks_d, block_size_d = down_blocks.shape
+            
+            # Split nibbles
+            down_blocks_lo = down_blocks & 0x0F
+            down_blocks_hi = down_blocks >> 4
+            down_blocks_interleaved = torch.stack((down_blocks_lo, down_blocks_hi), dim=-1)
+            down_blocks_flat = down_blocks_interleaved.view(n_experts_d, out_features_d, in_blocks_d, block_size_d * 2)
+            
+            # Convert scales
+            down_scales_adj = down_scales.to(torch.int32) - 127
+            down_scales_expanded = down_scales_adj.unsqueeze(-1).expand(n_experts_d, out_features_d, in_blocks_d, block_size_d * 2)
+            
+            # Decode
+            down_decoded = fp4_lut[down_blocks_flat.to(torch.int32)]
+            down_weight = torch.ldexp(down_decoded, down_scales_expanded)
+            down_weight = down_weight.view(n_experts_d, out_features_d, -1)
+            
+            state_dict[f"transformer.h.{i}.mlp.down_weight"] = down_weight
+            state_dict[f"transformer.h.{i}.mlp.down_bias"] = down_bias
+            
+            del moe_weights[i]
+            if progress_per_file is not None and pbar is not None:
+                pbar.update(progress_per_file)
+
+
+def _chunked_safetensors(
+    bin_file: Path, chunk_size: int = DEFAULT_SAFETENSOR_CHUNK_SIZE
+):
+    """Yield small dicts of tensors instead of loading the whole file at once."""
+    with safe_open(bin_file, framework="pt") as reader:
+        keys = list(reader.keys())
+        total_keys = len(keys)
+        for start in range(0, total_keys, chunk_size):
+            end = min(start + chunk_size, total_keys)
+            chunk = {name: reader.get_tensor(name) for name in keys[start:end]}
+            yield chunk, len(chunk), total_keys
+
+
 @torch.inference_mode()
 def convert_hf_checkpoint(
     checkpoint_dir: Path,
@@ -1210,6 +1475,13 @@ def convert_hf_checkpoint(
 
     if "falcon" in model_name:
         copy_fn = partial(copy_weights_falcon, model_name)
+    elif model_name.lower().startswith("gpt-oss") or config.mlp_class_name == "GptOssMoE":
+        # GPT-OSS models with quantized MoE
+        qkv_weights = {}
+        moe_weights = {}
+        copy_fn = partial(
+            copy_weights_gpt_oss, config, qkv_weights, moe_weights
+        )
     elif model_name.lower().startswith("gemma-2"):
         qkv_weights = {}
         gate_up_proj_weights = {}
@@ -1319,20 +1591,36 @@ def convert_hf_checkpoint(
                         current_file_size / total_size
                     ) * total_progress
 
-                    hf_weights = (
-                        load_safetensors(bin_file)
-                        if bin_file.suffix == ".safetensors"
-                        else lazy_load(bin_file)
-                    )
-                    copy_fn(
-                        sd,
-                        hf_weights,
-                        saver=saver,
-                        dtype=dtype,
-                        pbar=pbar,
-                        progress_per_file=progress_per_file,
-                        debug_mode=debug_mode,
-                    )
+                    if bin_file.suffix == ".safetensors":
+                        for chunk, chunk_len, total_keys in _chunked_safetensors(
+                            bin_file
+                        ):
+                            chunk_progress = (
+                                progress_per_file * chunk_len / total_keys
+                                if total_keys > 0 and progress_per_file is not None
+                                else None
+                            )
+                            copy_fn(
+                                sd,
+                                chunk,
+                                saver=saver,
+                                dtype=dtype,
+                                pbar=pbar,
+                                progress_per_file=chunk_progress,
+                                debug_mode=debug_mode,
+                            )
+                            del chunk
+                    else:
+                        hf_weights = load_safetensors(bin_file)
+                        copy_fn(
+                            sd,
+                            hf_weights,
+                            saver=saver,
+                            dtype=dtype,
+                            pbar=pbar,
+                            progress_per_file=progress_per_file,
+                            debug_mode=debug_mode,
+                        )
                 gc.collect()
 
                 if pbar.n < total_progress:
@@ -1341,14 +1629,25 @@ def convert_hf_checkpoint(
         else:
             # Handling files without progress bar in debug mode
             for bin_file in sorted(bin_files):
-                hf_weights = lazy_load(bin_file)
-                copy_fn(
-                    sd,
-                    hf_weights,
-                    saver=saver,
-                    dtype=dtype,
-                    debug_mode=debug_mode,
-                )
+                if bin_file.suffix == ".safetensors":
+                    for chunk, _, _ in _chunked_safetensors(bin_file):
+                        copy_fn(
+                            sd,
+                            chunk,
+                            saver=saver,
+                            dtype=dtype,
+                            debug_mode=debug_mode,
+                        )
+                        del chunk
+                else:
+                    hf_weights = lazy_load(bin_file)
+                    copy_fn(
+                        sd,
+                        hf_weights,
+                        saver=saver,
+                        dtype=dtype,
+                        debug_mode=debug_mode,
+                    )
 
         print(f"Saving converted checkpoint to {checkpoint_dir}")
         saver.save(sd)

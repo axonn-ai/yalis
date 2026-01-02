@@ -8,6 +8,7 @@ https://github.com/EleutherAI/gpt-neox/tree/main/megatron/model.
 """
 
 from typing import Any, Optional, Tuple
+import math
 from typing_extensions import Self
 from copy import deepcopy
 import warnings
@@ -228,11 +229,17 @@ class GPT(nn.Module):
     def rope_cache(
         self, device: Optional[torch.device] = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        # Support two RoPE modes:
+        # 1) legacy/simple RoPE via `rope_adjustments`
+        # 2) GPT-OSS NTK/YaRN parameterization when the config exposes
+        #    `rope_ntk_alpha`, `rope_ntk_beta`, `rope_scaling_factor`,
+        #    and `initial_context_length`.
+        # If neither is present, fall back to standard RoPE.
 
-        if self.config.rope_adjustments is None:
-            extra_config = None
+        extra_config = None
 
-        else:
+        # Legacy rope_adjustments handling
+        if getattr(self.config, "rope_adjustments", None) is not None:
             adjusted_params_required = [
                 "factor",
                 "low_freq_factor",
@@ -251,6 +258,7 @@ class GPT(nn.Module):
                 # These parameters should always be used together so that
                 # we don't interfere with standard rope
                 extra_config = {
+                    "mode": "adjust",
                     "original_max_seq_len": self.config.rope_adjustments[
                         "original_max_seq_len"
                     ],
@@ -275,6 +283,30 @@ class GPT(nn.Module):
                     f"The following adjusted RoPE parameters are missing in rope_adjustments: {', '.join(missing_params)}. "  # noqa: E501
                     "All adjusted RoPE parameters must be specified together."
                 )
+
+        # GPT-OSS NTK/YaRN parameterization support (opt-in via config attrs)
+        # If any of these attributes are present on `config`, enable GPT-OSS
+        # style RoPE. We pack params into `extra_config` and let
+        # `build_rope_cache` detect and compute accordingly.
+        elif any(
+            getattr(self.config, opt, None) is not None
+            for opt in (
+                "rope_ntk_alpha",
+                "rope_ntk_beta",
+                "rope_scaling_factor",
+                "initial_context_length",
+            )
+        ):
+            extra_config = {
+                "mode": "yaRN",
+                "initial_context_length": getattr(
+                    self.config, "initial_context_length", self.max_seq_length
+                ),
+                "rope_scaling_factor": getattr(self.config, "rope_scaling_factor", 1.0),
+                "rope_ntk_alpha": getattr(self.config, "rope_ntk_alpha", 1.0),
+                "rope_ntk_beta": getattr(self.config, "rope_ntk_beta", 32.0),
+                "base": getattr(self.config, "rope_base", 10000),
+            }
 
         return build_rope_cache(
             seq_len=self.max_seq_length,
@@ -427,6 +459,9 @@ class Block(nn.Module):
         )
 
         self.config = config
+        # optional sink logits used by GPT-OSS sdpa implementation for sliding-window
+        # (shape: n_head x 1 x 1). Initialized to zeros; only used in 'gpt_oss' mode.
+        self.sinks = nn.Parameter(torch.zeros(self.config.n_head, 1, 1))
 
     def forward(
         self,
@@ -437,6 +472,7 @@ class Block(nn.Module):
         token_counter: Optional[torch.Tensor] = None,
         block_table: Optional[torch.Tensor] = None,
         flex_attention_block_mask=None,
+        sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Non-parallel residual       Parallel residual
@@ -468,6 +504,7 @@ class Block(nn.Module):
             token_counter,
             block_table,
             flex_attention_block_mask,
+            sinks=sinks,
         )
         attention_output = self.post_attention_norm(attention_output)
 
@@ -578,6 +615,7 @@ class CausalSelfAttention(nn.Module):
         token_counter: torch.Tensor,
         block_table: torch.Tensor = None,
         flex_attention_block_mask=None,
+        sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         B, T, C = (
             x.size()
@@ -640,6 +678,9 @@ class CausalSelfAttention(nn.Module):
             use_intra_head_parallelism=self.config.use_intra_head_parallelism,
             prestore_kv_cache=self.config.prestore_kv_cache,
             flex_attention_block_mask=flex_attention_block_mask,
+            sliding_window=(self.config.sliding_window_size if self.apply_sliding_window_attention else 0),
+            sliding_window_mode=getattr(self.config, "sliding_window_mode", None),
+            sinks=sinks,
         )
 
         if not self.config.attention_backend == AttentionBackend.FLASH:
@@ -827,12 +868,67 @@ def build_rope_cache(
         Tuple[torch.Tensor, torch.Tensor]: Cosine and sine caches for RoPE.
     """
 
-    # Compute the inverse frequencies theta
+    # NTK/YaRN parameterization: compute concentration and
+    # inv_freq following the YaRN/NTK rotary parameterization. If
+    # `extra_config` has `mode == "yaRN"`, use that branch; if
+    # `mode == "adjust"`, use the legacy adjustment branch; if
+    # `extra_config` is None, use the plain theta computation.
+    if extra_config is not None and extra_config.get("mode") == "yaRN":
+        scaling_factor = extra_config.get("rope_scaling_factor", 1.0)
+        ntk_alpha = extra_config.get("rope_ntk_alpha", 1.0)
+        ntk_beta = extra_config.get("rope_ntk_beta", 32.0)
+        initial_context_length = extra_config.get("initial_context_length", seq_len)
+        base = extra_config.get("base", base)
+
+        # compute base frequency vector (half-dimension)
+        freq = base ** (
+            torch.arange(0, n_elem, 2, device=device).float() / n_elem
+        )
+
+        if scaling_factor > 1.0:
+            concentration = 0.1 * math.log(scaling_factor) + 1.0
+            d_half = n_elem // 2
+
+            low = (
+                d_half
+                * math.log(initial_context_length / (ntk_beta * 2 * math.pi))
+                / math.log(base)
+            )
+            high = (
+                d_half
+                * math.log(initial_context_length / (ntk_alpha * 2 * math.pi))
+                / math.log(base)
+            )
+
+            interpolation = 1.0 / (scaling_factor * freq)
+            extrapolation = 1.0 / freq
+
+            ramp = (
+                torch.arange(d_half, dtype=torch.float32, device=device) - low
+            ) / (high - low)
+            mask = 1 - ramp.clamp(0, 1)
+
+            inv_freq = interpolation * (1 - mask) + extrapolation * mask
+        else:
+            concentration = 1.0
+            inv_freq = 1.0 / freq
+
+        seq_idx = torch.arange(seq_len, device=device).float()
+        freqs = torch.einsum("i,j->ij", seq_idx, inv_freq)
+        cos = freqs.cos() * concentration
+        sin = freqs.sin() * concentration
+
+        if not is_attention_backend_flash:
+            cos = cos.repeat(1, 2)
+            sin = sin.repeat(1, 2)
+        return cos, sin
+
+    # Legacy/simple RoPE path
     theta = 1.0 / (
         base ** (torch.arange(0, n_elem, 2, device=device).float() / n_elem)
     )
 
-    if extra_config is not None:
+    if extra_config is not None and extra_config.get("mode") == "adjust":
         orig_context_len = extra_config["original_max_seq_len"]
         factor = extra_config["factor"]
         low_freq_factor = extra_config["low_freq_factor"]
@@ -845,23 +941,13 @@ def build_rope_cache(
         )
         smooth_factor = torch.clamp(smooth_factor, min=0.0, max=1.0)
 
-        # Compute adjusted_theta without masked indexing
-        adjusted_theta = (1 - smooth_factor) * (
-            theta / factor
-        ) + smooth_factor * theta
+        adjusted_theta = (1 - smooth_factor) * (theta / factor) + smooth_factor * theta
         theta = adjusted_theta
 
-    # Create position indices `[0, 1, ..., seq_len - 1]`
     seq_idx = torch.arange(seq_len, device=device) / condense_ratio
-
-    # Calculate the product of position index and $\theta_i$
-    idx_theta = torch.outer(
-        seq_idx, theta
-    )  # .repeat(1, 2) repeat is not needed for flash attention
-
+    idx_theta = torch.outer(seq_idx, theta)
     if not is_attention_backend_flash:
         idx_theta = idx_theta.repeat(1, 2)
-
     return torch.cos(idx_theta), torch.sin(idx_theta)
 
 
@@ -1071,7 +1157,6 @@ class GptOssMoE(nn.Module):
       - supports distributed all-reduce after expert down projection (matches GPT-OSS world-size sum)
 
     Notes:
-      - This is a correctness-first implementation (pure PyTorch, no fused triton kernels).
       - Use `config.n_expert` and `config.n_expert_per_token`.
       - The parameters are sharded in GPT-OSS by world size; here we create the
         same local shapes as GPT-OSS expects when loading a checkpoint.
@@ -1084,14 +1169,14 @@ class GptOssMoE(nn.Module):
         self.num_experts = config.n_expert
         self.experts_per_token = config.n_expert_per_token
 
-        # SWIGLU params (defaults used by GPT-OSS)
+        # SWIGLU params from config with defaults
         self.swiglu_alpha = getattr(config, "swiglu_alpha", 1.702)
         self.swiglu_limit = getattr(config, "swiglu_limit", 7.0)
 
         # gate
         self.gate = nn.Linear(config.n_embd, self.num_experts, bias=False)
 
-        # compute per-rank shapes similar to GPT-OSS loader
+        # compute per-rank shapes
         world_size = (
             dist.get_world_size() if dist.is_available() and dist.is_initialized() else 1
         )
@@ -1127,7 +1212,6 @@ class GptOssMoE(nn.Module):
         out_glu = x_glu * torch.sigmoid(alpha * x_glu)
         return out_glu * (x_lin + 1.0)
 
-    # TODO: ensure the forward matches the GPT-OSS implementation exactly
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: (B, T, C)
         B, T, C = x.size()

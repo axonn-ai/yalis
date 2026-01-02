@@ -106,6 +106,7 @@ def rotary_kv_update_sdpa_gen(
     use_intra_head_parallelism: bool = False,
     use_flex: bool = False,
     flex_attention_block_mask=None,
+    sliding_window: int = 0,
 ) -> torch.Tensor:
     # Get current batch size
     B = q.size(0)
@@ -144,7 +145,17 @@ def rotary_kv_update_sdpa_gen(
     else:
         k_cache[b_indices, :, t_indices, :] = k[:, :, 0, :]
         v_cache[b_indices, :, t_indices, :] = v[:, :, 0, :]
-    mask = build_mask_from_index(token_counter[:B], t_max=k_cache.size(-2))
+    # Build causal mask (allows keys up to the current index)
+    # Optionally constrain to a fixed sliding window if `sliding_window > 0`.
+    t_max = k_cache.size(-2)
+    arange_t = torch.arange(t_max, device=k_cache.device).view(1, -1)
+    upper_mask = arange_t <= token_counter[:B].view(-1, 1)
+    if sliding_window and sliding_window > 0:
+        lower_bound = (token_counter[:B].view(-1, 1) - sliding_window).clamp(min=0)
+        lower_mask = arange_t >= lower_bound
+        mask = upper_mask & lower_mask
+    else:
+        mask = upper_mask
 
     enable_gqa = q.size(1) != k.size(1)
 
@@ -188,6 +199,100 @@ def rotary_kv_update_sdpa_gen(
                 enable_gqa=enable_gqa,
             )
         return out
+
+
+def rotary_kv_update_sdpa_gen_gptoss(
+    q: torch.Tensor,  # B, nh, 1, hs
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+    token_counter: torch.Tensor,  # B,1
+    k_cache: torch.Tensor,  # B,nh,t_max,hs
+    v_cache: torch.Tensor,  # B,nh,t_max,hs,
+    sinks: Optional[torch.Tensor] = None,
+    sliding_window: int = 0,
+    use_intra_head_parallelism: bool = False,
+    use_flex: bool = False,
+    flex_attention_block_mask=None,
+) -> torch.Tensor:
+    """
+    Implements GPT-OSS-specific semantics: a sliding-window lower-bound
+    on the causal mask and an optional per-head "sink" logit column
+    appended to the attention logits. This function is intentionally
+    kept separate from :func:`rotary_kv_update_sdpa_gen` to avoid
+    adding branching inside the optimized, backend-aware path
+    (Flash/Flex/intra-head-parallelism) to reduce regression risk.
+
+    Behavior: compute Q@K^T, apply the combined mask, optionally
+    append sink logits, softmax, drop the sink column, and apply the
+    resulting weights to V.
+
+    Inputs are the per-batch Q and the key/value caches.
+    """
+    B = q.size(0)
+    _, nh, _, hs = q.shape
+
+    process_group = ax.comm_handle.inner_intra_layer_parallel_group
+    if use_intra_head_parallelism:
+        assert not use_flex, "GPT-OSS helper does not support flex attention"
+        q = Drop.apply(q, process_group).contiguous()
+
+    # Apply RoPE to the query token if cos/sin are provided.
+    # We do not re-rope the cached keys here because the cache
+    # stores keys that were written already
+    if cos is not None and sin is not None:
+        cos = index_into_rope_cache_gen(cos, token_counter[:B])
+        sin = index_into_rope_cache_gen(sin, token_counter[:B])
+        if cos.dim() > 1:
+            cos = cos.unsqueeze(-3)
+            sin = sin.unsqueeze(-3)
+        head_size = q.size(-1)
+        q1 = q[..., : head_size // 2]
+        q2 = q[..., head_size // 2 :]
+        rotated_q = torch.cat((-q2, q1), dim=-1)
+        q = ((q * cos) + (rotated_q * sin)).to(dtype=q.dtype)
+
+    # build mask up to current token_counter and optional sliding window
+    t_max = k_cache.size(-2)
+    arange_t = torch.arange(t_max, device=k_cache.device).view(1, -1)
+    upper_mask = arange_t <= token_counter[:B].view(-1, 1)
+    if sliding_window and sliding_window > 0:
+        lower_bound = (token_counter[:B].view(-1, 1) - sliding_window).clamp(min=0)
+        lower_mask = arange_t >= lower_bound
+        mask = upper_mask & lower_mask
+    else:
+        mask = upper_mask
+
+    # q: (B, nh, 1, hs), k_cache[:B]: (B, nh, t_max, hs)
+    # compute QK: (B, nh, 1, t_max)
+    Q = q
+    K = k_cache[:B]
+    V = v_cache[:B]
+
+    scale = 1.0 / math.sqrt(hs)
+    QK = torch.einsum("b h q d, b h k d -> b h q k", Q, K) * scale
+
+    # apply mask (broadcast over batch & heads)
+    mask_float = torch.zeros_like(mask, dtype=torch.float32)
+    mask_float = mask_float.masked_fill(~mask, float("-inf"))
+    QK = QK + mask_float.view(B, 1, 1, t_max)
+
+    # append sinks column if provided (sinks: nh x 1 x 1) -> expand to (1, nh, 1, 1)
+    if sinks is not None:
+        S = sinks.view(1, nh, 1, 1)
+        QK = torch.cat([QK, S.expand(B, -1, -1, -1)], dim=-1)
+
+    if use_intra_head_parallelism:
+        dist.all_reduce(QK, op=dist.ReduceOp.SUM, group=process_group)
+    W = torch.nn.functional.softmax(QK, dim=-1, dtype=torch.float).to(dtype=QK.dtype)
+    # drop sinks column
+    if sinks is not None:
+        W = W[..., :-1]
+
+    # weighted sum over KV: W (B, nh, 1, t_max) @ V (B, nh, t_max, hs) -> (B, nh, 1, hs)
+    Out = torch.einsum("b h q k, b h k d -> b h q d", W, V)
+    if use_intra_head_parallelism:
+        Out = Gather.apply(Out, process_group)
+    return Out
 
 
 def rotary_kv_update_sdpa_prefill(
@@ -340,19 +445,39 @@ def sdpa_and_flex_attention(
         ), "flex attention requires a block mask"
 
     if phase == EnginePhase.DECODE_SINGLE:
-        y = rotary_kv_update_sdpa_gen(
-            q,
-            k,
-            v,
-            rotary_cos,
-            rotary_sin,
-            cache_seqlens,  # B,1
-            k_cache,  # B,nh,t_max,hs
-            v_cache,  # B,nh,t_max,hs
-            use_intra_head_parallelism,
-            use_flex,
-            flex_attention_block_mask,
-        )
+        sliding_window = kwargs.get("sliding_window", 0)
+        sliding_window_mode = kwargs.get("sliding_window_mode", None)
+        # opt-in GPT-OSS style SDPA
+        if sliding_window_mode == "gpt_oss":
+            sinks = kwargs.get("sinks", None)
+            y = rotary_kv_update_sdpa_gen_gptoss(
+                q,
+                rotary_cos,
+                rotary_sin,
+                cache_seqlens,
+                k_cache,
+                v_cache,
+                sinks=sinks,
+                sliding_window=sliding_window,
+                use_intra_head_parallelism=use_intra_head_parallelism,
+                use_flex=use_flex,
+                flex_attention_block_mask=flex_attention_block_mask,
+            )
+        else:
+            y = rotary_kv_update_sdpa_gen(
+                q,
+                k,
+                v,
+                rotary_cos,
+                rotary_sin,
+                cache_seqlens,  # B,1
+                k_cache,  # B,nh,t_max,hs
+                v_cache,  # B,nh,t_max,hs
+                use_intra_head_parallelism,
+                use_flex,
+                flex_attention_block_mask,
+                sliding_window=sliding_window,
+            )
     elif phase == EnginePhase.DECODE_MULTI:
         y = rotary_kv_update_sdpa_multi(
             q,

@@ -3246,4 +3246,46 @@ r1_distill_llama = [
 
 configs.extend(r1_distill_llama)
 
+###############
+# OpenAI GPT-OSS
+###############
+gpt_oss = [
+    # https://huggingface.co/openai/gpt-oss-20b/blob/main/config.json
+    dict(
+        name="gpt-oss-20b",
+        hf_config=dict(org="openai", name="gpt-oss-20b"),
+        block_size=4096,
+        vocab_size=100277,
+        padded_vocab_size=100352,  # Pad to multiple of 512
+        n_layer=24,
+        n_head=64,
+        n_embd=2880,
+        n_query_groups=8,
+        head_size=45,
+        rotary_percentage=1.0,
+        parallel_residual=False,
+        bias=False,
+        attn_bias=True,  # GPT-OSS uses attention biases
+        norm_class_name="RMSNorm",
+        mlp_class_name="GptOssMoE",
+        intermediate_size=2880,  # Hidden size for MoE
+        n_expert=32,
+        n_expert_per_token=4,
+        rope_base=10000,
+        # GPT-OSS uses NTK/YaRN RoPE with specific parameterization
+        rope_adjustments=dict(
+            mode="yaRN",
+            alpha=1.0,
+            beta=32.0,
+            scaling=1.0,
+            initial_context_length=4096,
+        ),
+        # GPT-OSS uses alternating sliding/full attention
+        sliding_window_size=1024,
+        sliding_window_indices=[1, 0] * 12,  # Alternating pattern for 24 layers
+    ),
+]
+
+configs.extend(gpt_oss)
+
 name_to_config = {config["name"]: config for config in configs}
