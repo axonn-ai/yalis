@@ -12,7 +12,7 @@ _KinetoProfile._get_distributed_info = lambda self: None
 
 if __name__ == "__main__":
     # Model ID from Hugging Face
-    model_id = "meta-llama/Llama-3.1-8B-Instruct"
+    model_id = "gpt-oss-20b"
     # model_id = "Qwen/Qwen3-30B-A3B-Instruct-2507"
 
     user_prompts = [
@@ -75,7 +75,11 @@ if __name__ == "__main__":
         )
 
     # configs
-    model_config = ModelConfig(model_name=model_id, precision="bf16")
+    model_config = ModelConfig(
+        model_name=model_id,
+        model_path="yalis/external/checkpoints/openai/gpt-oss-20b/yalis_checkpoints",
+        precision="bf16",
+    )
     inference_config = InferenceConfig(
         max_batch_size=MAX_BATCH_SIZE,
         max_length_of_generated_sequences=1024,
