@@ -10,7 +10,27 @@ import torch
 from safetensors.torch import load_file as load_safetensors
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-REPO_ROOT = SCRIPT_DIR.parents[2]
+
+
+def find_repo_root(start: Path) -> Path:
+    """Locate the repository root by searching for repository markers.
+
+    This helper searches upward for files typically present at the project
+    root. If none are found it returns a conservative fallback parent.
+    """
+    cur = start
+    markers = ("setup.py", "LICENSE", "README.md", ".git")
+    for _ in range(10):
+        for m in markers:
+            if (cur / m).exists():
+                return cur
+        if cur.parent == cur:
+            break
+        cur = cur.parent
+    return start.parents[1] if len(start.parents) > 1 else start
+
+
+REPO_ROOT = find_repo_root(SCRIPT_DIR)
 HF_CHECKPOINT_DIR = REPO_ROOT / "yalis/external/checkpoints/openai/gpt-oss-20b"
 YALIS_CHECKPOINT_DIR = HF_CHECKPOINT_DIR / "yalis_checkpoints"
 
