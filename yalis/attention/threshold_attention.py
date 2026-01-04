@@ -1,9 +1,113 @@
 from typing import Optional, Tuple
-import torch
 import math
+import os
+import re
+import torch
+from torch.utils.cpp_extension import load
 from .utils import fit_powerlaw_linreg_torch
-from .threshold_attention_triton import thresh_attn_fused_wrapped, thresh_attn_reference
-#from .threshold_attention_triton import thresh_attn_reference
+from .threshold_attention_triton import thresh_attn_reference
+
+_BASE_DIR = os.path.dirname(__file__)
+_KERNEL_ENV = "YALIS_THRESH_KERNEL"
+_SKIP_RETAIN_ENV = "YALIS_THRESH_SKIP_RETAIN"
+_DEFAULT_KERNEL = os.path.join(
+    _BASE_DIR, "kernels", "thresh_attn_cuda_tiled_fused_v2.cu"
+)
+_DECODE_ATTN_EXT = None
+_DECODE_ATTN_USE_GMEM = None
+
+
+def _resolve_kernel_source() -> str:
+    kernel_source = os.getenv(_KERNEL_ENV, _DEFAULT_KERNEL)
+    if not os.path.isabs(kernel_source):
+        kernel_source = os.path.join(_BASE_DIR, kernel_source)
+    return os.path.normpath(kernel_source)
+
+
+def _ext_name_from_kernel(kernel_source: str) -> str:
+    stem = os.path.splitext(os.path.basename(kernel_source))[0]
+    safe_stem = re.sub(r"[^0-9A-Za-z_]+", "_", stem)
+    return f"decode_attn_cuda_{safe_stem}"
+
+
+def _kernel_uses_gmem(kernel_source: str) -> bool:
+    name = os.path.basename(kernel_source).lower()
+    return "tiled_fused" in name or "gmem" in name
+
+
+def _load_decode_attn_ext():
+    global _DECODE_ATTN_EXT, _DECODE_ATTN_USE_GMEM
+    if _DECODE_ATTN_EXT is not None:
+        return _DECODE_ATTN_EXT
+    kernel_source = _resolve_kernel_source()
+    _DECODE_ATTN_USE_GMEM = _kernel_uses_gmem(kernel_source)
+    _DECODE_ATTN_EXT = load(
+        name=_ext_name_from_kernel(kernel_source),
+        sources=[os.path.join(_BASE_DIR, "thresh_attn_c.cpp"), kernel_source],
+        verbose=False,
+        extra_cuda_cflags=["-O3"],
+    )
+    return _DECODE_ATTN_EXT
+
+
+@torch.library.custom_op("yalis::decode_attn", mutates_args=())
+def decode_attn(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    threshold: torch.Tensor,
+    scale_factor: float,
+    attn_bias: torch.Tensor,
+) -> torch.Tensor:
+    ext = _load_decode_attn_ext()
+    if _DECODE_ATTN_USE_GMEM:
+        return ext.decode_attn_fwd_gmem(query, key, value, attn_bias, threshold, scale_factor)
+    return ext.decode_attn_fwd(query, key, value, attn_bias, threshold, scale_factor)
+
+
+@decode_attn.register_fake
+def _(query, key, value, threshold, scale_factor, attn_bias):
+    return torch.empty_like(query)
+
+
+def _build_attn_bias(
+    query: torch.Tensor, key: torch.Tensor, attn_mask: Optional[torch.Tensor]
+) -> torch.Tensor:
+    B, H, L, S = query.size(0), query.size(1), query.size(-2), key.size(-2)
+    attn_bias = torch.zeros(B, H, L, S, dtype=torch.float32, device=query.device)
+    if attn_mask is not None:
+        if attn_mask.dtype == torch.bool:
+            attn_bias.masked_fill_(attn_mask.logical_not(), float("-inf"))
+        else:
+            attn_bias = attn_mask.to(torch.float32) + attn_bias
+    return attn_bias.contiguous()
+
+
+def _thresh_attn_cuda(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    threshold: torch.Tensor,
+    attn_mask: Optional[torch.Tensor] = None,
+    enable_gqa: bool = False,
+) -> torch.Tensor:
+    if query.dtype != torch.float16:
+        raise RuntimeError("thresh attention CUDA kernel only supports fp16 query/key/value")
+    if enable_gqa:
+        key = key.repeat_interleave(query.size(-3) // key.size(-3), -3)
+        value = value.repeat_interleave(query.size(-3) // value.size(-3), -3)
+    query = query.contiguous()
+    key = key.contiguous()
+    value = value.contiguous()
+    threshold_f32 = threshold.to(dtype=torch.float32).contiguous()
+    attn_bias = _build_attn_bias(query, key, attn_mask)
+    scale_factor = 1 / math.sqrt(query.size(-1))
+    return decode_attn(query, key, value, threshold_f32, scale_factor, attn_bias)
+
+
+def _should_compute_retain_perc() -> bool:
+    skip = os.getenv(_SKIP_RETAIN_ENV, "")
+    return skip.lower() not in {"1", "true", "yes"}
 
 
 # This function has been modified from torch's SDPA attention example: https://pytorch.org/docs/stable/generated/torch.nn.functional.scaled_dot_product_attention.html
@@ -103,7 +207,7 @@ def thresh_attention_forward(
     #threshold = threshold.to(dtype=torch.float32)
     #print ("[DEBUG] Threshold: ", threshold)
 
-    attn_output, count_nonzero = thresh_attn_reference(
+    attn_output = _thresh_attn_cuda(
         query,
         key,
         value,
@@ -112,8 +216,21 @@ def thresh_attention_forward(
         enable_gqa=enable_gqa,
     )
 
-    retain_perc = count_nonzero / (token_counter.unsqueeze(-1).unsqueeze(-1) + 1) * 100
-    retain_perc = retain_perc.squeeze().mean(dim=-1, keepdim=True) # B, 1
+    if _should_compute_retain_perc():
+        _, count_nonzero = thresh_attn_reference(
+            query,
+            key,
+            value,
+            threshold,
+            attn_mask=attn_mask,
+            enable_gqa=enable_gqa,
+        )
+        retain_perc = count_nonzero / (token_counter.unsqueeze(-1).unsqueeze(-1) + 1) * 100
+        retain_perc = retain_perc.squeeze().mean(dim=-1, keepdim=True) # B, 1
+    else:
+        retain_perc = torch.zeros(
+            (query.size(0), 1), device=query.device, dtype=torch.float32
+        )
     #print ("[DEBUG] Retain percentage: ", retain_perc)
     #mean_retain_perc = torch.mean(retain_perc)
     #print ("[DEBUG] Mean retain percentage: ", mean_retain_perc)

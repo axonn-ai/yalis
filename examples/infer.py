@@ -73,6 +73,8 @@ if __name__ == "__main__":
                                        temperature=1.0, 
                                        tp_dims=None,
                                        attention_backend="flash",
+                                       threshold_percentile=0.75,
+                                       num_warmup_steps=32,
                                        use_paged_kv_caching=False)
 
 
@@ -88,7 +90,7 @@ if __name__ == "__main__":
 
     with profiler_context as prof:
         for iter in range(10):
-            output_tokens, metrics = engine.generate(
+            output_tokens, metrics, _ = engine.generate(
                 input_prompts, report_throughput=True, tokens_to_generate=tokens_to_gen
             )
             if enable_profiling:
