@@ -17,7 +17,7 @@ except ImportError:
 
 if __name__ == "__main__":
     # Model ID from Hugging Face
-    model_id = "meta-llama/Meta-Llama-3.1-8B-Instruct"
+    model_id = "meta-llama/Llama-2-7b-hf"
     
     user_prompts = [
         "How to bake a cake?",
@@ -53,28 +53,31 @@ if __name__ == "__main__":
     
     input_prompts = []
     for user_prompt in user_prompts:
-        conversation = [
-            {"role": "system", "content": system_prompt},  # not needed for gemma
-            {"role": "user", "content": user_prompt},
-        ]
-        formatted_prompt = tokenizer.apply_chat_template(
-            conversation, add_generation_prompt=True, tokenize=False
-        )
+        if getattr(tokenizer, "chat_template", None):
+            conversation = [
+                {"role": "system", "content": system_prompt},  # not needed for gemma
+                {"role": "user", "content": user_prompt},
+            ]
+            formatted_prompt = tokenizer.apply_chat_template(
+                conversation, add_generation_prompt=True, tokenize=False
+            )
+        else:
+            formatted_prompt = f"{system_prompt}{user_prompt}\n"
         input_prompts.append(formatted_prompt)
 
     # Number of tokens to generate
     tokens_to_gen = 512
 
     # configs
-    model_config = ModelConfig(model_name=model_id, precision="bf16")
+    model_config = ModelConfig(model_name=model_id, precision="fp16")
     inference_config = InferenceConfig(batch_size=len(input_prompts), 
                                        max_length_of_generated_sequences=1024,
                                        top_p=0.80,
                                        temperature=1.0, 
                                        tp_dims=None,
-                                       attention_backend="flash",
-                                       threshold_percentile=0.75,
-                                       num_warmup_steps=32,
+                                       attention_backend="thresh",
+                                       threshold_percentile=0.5,
+                                       num_warmup_steps=16,
                                        use_paged_kv_caching=False)
 
 
@@ -89,7 +92,7 @@ if __name__ == "__main__":
         profiler_context = nullcontext()
 
     with profiler_context as prof:
-        for iter in range(10):
+        for iter in range(1):
             output_tokens, metrics, _ = engine.generate(
                 input_prompts, report_throughput=True, tokens_to_generate=tokens_to_gen
             )

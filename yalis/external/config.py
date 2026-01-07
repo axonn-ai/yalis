@@ -8,7 +8,16 @@ from typing import Any, Literal, Optional, Type, Union
 import torch
 import yaml
 from typing_extensions import Self
-from litgpt.utils import find_multiple
+from packaging.version import Version
+from importlib.metadata import version, PackageNotFoundError
+try:
+    litgpt_version = version("litgpt")
+except:
+    raise RuntimeError("litgpt isn't installed!")
+if Version(litgpt_version) >= Version("0.5.9"):
+    from litgpt.config import find_multiple
+else:
+    from litgpt.utils import find_multiple
 
 
 @dataclass
