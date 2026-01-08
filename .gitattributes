@@ -1,4 +1,0 @@
-yalis/external/checkpoints/**/*.safetensors filter=lfs diff=lfs merge=lfs -text
-yalis/external/checkpoints/**/*.pt filter=lfs diff=lfs merge=lfs -text
-yalis/external/checkpoints/**/*.bin filter=lfs diff=lfs merge=lfs -text
-yalis/external/checkpoints/**/*.ckpt filter=lfs diff=lfs merge=lfs -text
