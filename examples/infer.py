@@ -92,16 +92,16 @@ if __name__ == "__main__":
         model_config=model_config, inference_config=inference_config
     )
 
-    # NOTE: WARMUP CODE
-    prefill_batch_sizes = [1, MAX_BATCH_SIZE]
-    prefill_seq_lengths = [1, 1024]
-    decode_batch_sizes = [1, 2, 4, 6, 8]
+    # # NOTE: WARMUP CODE
+    # prefill_batch_sizes = [1, MAX_BATCH_SIZE]
+    # prefill_seq_lengths = [1, 1024]
+    # decode_batch_sizes = [1, 2, 4, 6, 8]
 
-    engine.warmup(
-        prefill_batch_sizes=prefill_batch_sizes,
-        prefill_seq_lengths=prefill_seq_lengths,
-        decode_batch_sizes=decode_batch_sizes,
-    )
+    # engine.warmup(
+    #     prefill_batch_sizes=prefill_batch_sizes,
+    #     prefill_seq_lengths=prefill_seq_lengths,
+    #     decode_batch_sizes=decode_batch_sizes,
+    # )
 
     if enable_profiling:
         profiler_context = torch.profiler.profile(
