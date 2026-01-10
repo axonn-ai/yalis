@@ -440,17 +440,20 @@ class LLMEngine:
         decode_iterations=2,
     ) -> None:
         """Warmup by calling prefill and decode"""
+        print("Prefill warmup start.")
         self.warmup_prefill(
             batch_sizes=prefill_batch_sizes,
             seq_lengths=prefill_seq_lens,
             iterations=1,
         )
+        print("Prefill warmup end.")
+        print("Decode warmup start.")
         self.warmup_decode(
             batch_sizes=decode_batch_sizes,
             prompt_length=decode_prompt_len,
             iterations=decode_iterations,
         )
-
+        print("Decode warmup end.")
     
     def generate(
         self,
