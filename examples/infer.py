@@ -1,5 +1,3 @@
-import sys
-sys.path.insert(0, "/scratch/10698/akarshsri/yalis-local")
 from yalis import ModelConfig, InferenceConfig, print_rank0, LLMEngine
 from transformers import AutoTokenizer
 import torch
