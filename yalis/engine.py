@@ -327,6 +327,131 @@ class LLMEngine:
             )
         return tokens_to_generate
 
+    def _fake_tokens(self, batch_size, seq_length) -> torch.Tensor:
+        """Create tokens with BOS on device with shape (bs, seqlen)."""
+        bos = getattr(self.tokenizer, "bos_token_id", None)
+        if bos is None:
+            raise ValueError("BOS token is none.")
+        return torch.full(
+            (batch_size, seq_length),
+            fill_value=int(bos),
+            device=self.device,
+            dtype=torch.long,
+        )
+    
+    def _reset_warmup_states(self, batch_size):
+        """Per-warmup request, reset token_counter and for paged kv cache, reset the manager."""
+        # NOTE: doesn't account for spec dec
+        if self.model.token_counter is not None:
+            if batch_size is None:
+                self.model.token_counter.zero_()
+            else:
+                self.model.token_counter[:batch_size].zero_()
+        else:
+            raise ValueError("Token counter is none.")
+
+        if self.inference_config.use_paged_kv_caching:
+            self.model.kv_cache_manager.reset()
+
+    def warmup_prefill(
+        self,
+        batch_sizes,
+        seq_lengths,
+        iterations,
+    ) -> None:
+        """Warmup prefill by calling module level prefill path"""
+        if batch_sizes is None or seq_lengths is None or iterations is None:
+            raise ValueError("batch_sizes, seq_lengths, and iterations must be provided.")
+        
+        with torch.inference_mode(), torch.autocast(
+            self.device, dtype=self.dtype, cache_enabled=False
+        ):
+            for bs in batch_sizes:
+                for sl in seq_lengths:
+                    for _ in range(iterations):
+                        self._reset_warmup_states(bs)
+
+                        tokens = self._fake_tokens(bs, sl)  # (bs, sl)
+                        lens = torch.full(
+                            (bs,),
+                            fill_value=int(sl),
+                            dtype=torch.long,
+                            device=self.device,
+                        )
+                        _next_token, _ = prefill(
+                            self.model,
+                            tokens,
+                            lens,
+                            temperature=self.inference_config.temperature,
+                            top_k=self.inference_config.top_k,
+                            top_p=self.inference_config.top_p,
+                        )
+        torch.cuda.synchronize()
+
+    def warmup_decode(
+        self,
+        batch_sizes,
+        prompt_length,
+        iterations,
+    ) -> None:
+        """Warmup decode by calling module level generate path"""
+        with torch.inference_mode(), torch.autocast(
+            self.device, dtype=self.dtype, cache_enabled=False
+        ):
+            for bs in batch_sizes:
+                self._reset_warmup_states(bs)
+
+                # Tiny prefill
+                tokens = self._fake_tokens(bs, int(prompt_length))
+                lens = torch.full(
+                    (bs,),
+                    fill_value=int(prompt_length),
+                    dtype=torch.long,
+                    device=self.device,
+                )
+                next_token, _ = prefill(
+                    self.model,
+                    tokens,
+                    lens,
+                    temperature=self.inference_config.temperature,
+                    top_k=self.inference_config.top_k,
+                    top_p=self.inference_config.top_p,
+                )
+
+                # Decode steps
+                token = next_token.clone()  # (bs, 1)
+                for _ in range(int(iterations)):
+                    with sdpa_kernel(SDPBackend.MATH):
+                        token, _ = generate(
+                            self.model,
+                            token,
+                            temperature=self.inference_config.temperature,
+                            top_k=self.inference_config.top_k,
+                            top_p=self.inference_config.top_p,
+                        )
+        torch.cuda.synchronize()
+
+    def warmup(
+        self,
+        prefill_batch_sizes,
+        prefill_seq_lengths,
+        decode_batch_sizes,
+        decode_prompt_length=8,
+        decode_iterations=2,
+    ) -> None:
+        """Warmup by calling prefill and decode"""
+        self.warmup_prefill(
+            batch_sizes=prefill_batch_sizes,
+            seq_lengths=prefill_seq_lens,
+            iterations=1,
+        )
+        self.warmup_decode(
+            batch_sizes=decode_batch_sizes,
+            prompt_length=decode_prompt_len,
+            iterations=decode_iterations,
+        )
+
+    
     def generate(
         self,
         prompts: Union[list[str], list[list[int]]],
