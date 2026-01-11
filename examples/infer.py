@@ -106,7 +106,7 @@ if __name__ == "__main__":
         max_batch_size=MAX_BATCH_SIZE,
         max_length_of_generated_sequences=1024,
         top_p=0.80,
-        temperature=1.0,
+        temperature=0.8,  # Match HF default (was 1.0)
         tp_dims=None,
         attention_backend="flash",
         use_paged_kv_caching=False,
