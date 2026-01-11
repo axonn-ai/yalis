@@ -1416,10 +1416,9 @@ def copy_weights_gpt_oss(
             # Reshape to final dimensions: (n_experts, out_features, in_features)
             gate_up_weight = gate_up_weight.view(n_experts, out_features, -1)
             
-            # Transpose to match model expectation: (n_experts, out_features, in_features) -> (n_experts, in_features, out_features)
-            # Model expects mlp1_weight: (E, 2*intermediate, hidden) for einsum "m k o c, m c -> m k o"
-            # But HF stores as (E, out, in), so we transpose last two dims
-            gate_up_weight = gate_up_weight.transpose(1, 2)  # (E, in, out) -> matches (E, hidden, 2*intermediate)
+            # Quantized format produces (E, 2880, 5760) but model expects (E, 5760, 2880)
+            # Transpose dimensions 1 and 2
+            gate_up_weight = gate_up_weight.transpose(1, 2)
             
             # Save with correct names for GptOssMoE (mlp1 = gate_up combined)
             state_dict[f"transformer.h.{i}.mlp.mlp1_weight"] = gate_up_weight
@@ -1447,10 +1446,8 @@ def copy_weights_gpt_oss(
             down_weight = torch.ldexp(down_decoded, down_scales_expanded)
             down_weight = down_weight.view(n_experts_d, out_features_d, -1)
             
-            # Transpose to match model expectation: (n_experts, out_features, in_features) -> (n_experts, in_features, out_features)
-            # Model expects mlp2_weight: (E, hidden, intermediate) for einsum "m k c p, m k p -> m k c"
-            # But HF stores as (E, out, in), so we transpose last two dims
-            down_weight = down_weight.transpose(1, 2)  # (E, in, out) -> matches (E, hidden, intermediate)
+            # Transpose to match model expectation
+            down_weight = down_weight.transpose(1, 2)
             
             # Save with correct names for GptOssMoE (mlp2 = down projection)
             state_dict[f"transformer.h.{i}.mlp.mlp2_weight"] = down_weight
