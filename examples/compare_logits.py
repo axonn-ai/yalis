@@ -45,6 +45,7 @@ yalis_model = get_model(
     use_paged_kv_caching=False,
     prestore_kv_cache=True,
 )
+yalis_model = yalis_model.to("cuda")  # Move to CUDA
 yalis_model.eval()
 
 # Set up KV cache for single sequence
