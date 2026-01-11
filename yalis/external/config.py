@@ -3283,6 +3283,8 @@ gpt_oss = [
         # GPT-OSS uses alternating sliding/full attention (sliding_window=128 from HF)
         sliding_window_size=128,
         sliding_window_indices=[1, 0] * 12,  # Alternating: 1=sliding, 0=full for 24 layers
+        # GPT-OSS requires special attention mode for proper sinks handling
+        sliding_window_mode="gpt_oss",
     ),
 ]
 

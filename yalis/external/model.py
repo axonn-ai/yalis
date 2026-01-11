@@ -506,6 +506,8 @@ class Block(nn.Module):
         """
 
         x_normed = self.norm_1(x)
+        # Use self.sinks if no sinks argument provided (for GPT-OSS mode)
+        effective_sinks = sinks if sinks is not None else self.sinks
         attention_output = self.attn(
             x_normed,
             cos,
@@ -514,7 +516,7 @@ class Block(nn.Module):
             token_counter,
             block_table,
             flex_attention_block_mask,
-            sinks=sinks,
+            sinks=effective_sinks,
         )
         attention_output = self.post_attention_norm(attention_output)
 
