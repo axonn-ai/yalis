@@ -1440,12 +1440,9 @@ def copy_weights_gpt_oss(
             down_decoded = fp4_lut[down_blocks.to(torch.int32)]
             down_weight = torch.ldexp(down_decoded, down_scales_adj.unsqueeze(-1))
             
-            # Reshape and transpose
-            # After dequantization: (E, intermediate, blocks*32)
-            in_features = in_blocks_d * block_size_d * 2  # blocks * 32 = 90 * 32 = 2880
-            down_weight = down_weight.view(n_experts_d, out_features_d, in_features)  # (32, 2880, 2880)
-            # Transpose to match model expectation: (E, hidden, intermediate) not (E, intermediate, hidden)
-            down_weight = down_weight.transpose(1, 2).contiguous()
+            # Reshape to final dimensions: (n_experts, hidden_size, intermediate_size)
+            in_features = in_blocks_d * block_size_d * 2  # blocks * 32
+            down_weight = down_weight.view(n_experts_d, out_features_d, in_features)
             
             # Save with correct names for GptOssMoE (mlp2 = down projection)
             state_dict[f"transformer.h.{i}.mlp.mlp2_weight"] = down_weight
