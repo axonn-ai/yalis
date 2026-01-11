@@ -3,6 +3,7 @@ import torch
 import torch.distributed as dist
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from yalis.model import get_model
+from yalis.constants import EnginePhase
 
 model_id = "yalis/external/checkpoints/openai/gpt-oss-20b"
 
@@ -45,12 +46,14 @@ yalis_model = get_model(
     prestore_kv_cache=True,
 )
 yalis_model.eval()
+
+# Set up KV cache for single sequence
+yalis_model.set_kv_cache(max_batch_size=1, max_seq_length=inputs.input_ids.shape[1])
+
 with torch.no_grad():
-    from yalis.constants import EnginePhase
     token_ids = inputs.input_ids.to("cuda")
-    token_counter = torch.zeros(token_ids.shape[0], dtype=torch.long, device="cuda")
-    block_table = None
-    yalis_outputs = yalis_model(token_ids, phase=EnginePhase.PREFILL, token_counter=token_counter, block_table=block_table)
+    # GPT.forward requires: input_ids, phase, actual_sequence_lengths (optional)
+    yalis_outputs = yalis_model(token_ids, phase=EnginePhase.PREFILL)
     yalis_logits = yalis_outputs["logits"][0, -1, :]  # last token logits
     yalis_top_tokens = torch.topk(yalis_logits, 5)
 
@@ -70,3 +73,4 @@ print(f"\nMax logit difference: {logit_diff}")
 # Cleanup
 if dist.is_initialized():
     dist.destroy_process_group()
+
