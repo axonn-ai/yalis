@@ -41,9 +41,11 @@ if __name__ == "__main__":
     user_prompts = user_prompts[:16]
     print(f"Number of prompts = {len(user_prompts)}")
 
-    system_prompt = (
-        "You are a helpful chatbot. Answer the following question.\n"
-    )
+    # Don't add a system prompt - let the chat template handle it
+    # GPT-OSS chat template adds its own system message
+    # system_prompt = (
+    #     "You are a helpful chatbot. Answer the following question.\n"
+    # )
 
     # profile the run or not
     enable_profiling = False
@@ -53,23 +55,18 @@ if __name__ == "__main__":
 
     input_prompts = []
     for user_prompt in user_prompts:
+        # Just use user message, let chat template handle system prompt
         conversation = [
-            {
-                "role": "system",
-                "content": system_prompt,
-            },  # not needed for gemma
             {"role": "user", "content": user_prompt},
         ]
         formatted_prompt = tokenizer.apply_chat_template(
             conversation, add_generation_prompt=True, tokenize=False
         )
         
-        # GPT-OSS models need the channel specification after <|start|>assistant
-        # The chat template ends with just "<|start|>assistant" but the model expects
-        # "<|start|>assistant<|channel|>final<|message|>" for direct answers
-        # For chain-of-thought, use "analysis" first, but for simplicity we use "final"
-        if formatted_prompt.endswith("<|start|>assistant"):
-            formatted_prompt += "<|channel|>final<|message|>"
+        # DEBUG: Try without manually adding channel tag
+        # The model might be trained to generate the channel tag itself
+        # if formatted_prompt.endswith("<|start|>assistant"):
+        #     formatted_prompt += "<|channel|>final<|message|>"
         
         input_prompts.append(formatted_prompt)
         # Print first prompt to verify Harmony format
@@ -109,9 +106,9 @@ if __name__ == "__main__":
         max_batch_size=MAX_BATCH_SIZE,
         max_length_of_generated_sequences=1024,
         top_p=0.80,
-        temperature=1.0,
+        temperature=0.8,  # Match HF default (was 1.0)
         tp_dims=None,
-        attention_backend="sdpa",
+        attention_backend="sdpa",  # Use SDPA with GQA fix (was "flash")
         use_paged_kv_caching=False,
         prestore_kv_cache=True,
     )
