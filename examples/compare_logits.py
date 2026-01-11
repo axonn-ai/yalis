@@ -46,8 +46,11 @@ yalis_model = get_model(
 )
 yalis_model.eval()
 with torch.no_grad():
+    from yalis.constants import EnginePhase
     token_ids = inputs.input_ids.to("cuda")
-    yalis_outputs = yalis_model(token_ids)
+    token_counter = torch.zeros(token_ids.shape[0], dtype=torch.long, device="cuda")
+    block_table = None
+    yalis_outputs = yalis_model(token_ids, phase=EnginePhase.PREFILL, token_counter=token_counter, block_table=block_table)
     yalis_logits = yalis_outputs["logits"][0, -1, :]  # last token logits
     yalis_top_tokens = torch.topk(yalis_logits, 5)
 
