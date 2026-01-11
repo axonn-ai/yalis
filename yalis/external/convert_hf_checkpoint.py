@@ -1414,13 +1414,8 @@ def copy_weights_gpt_oss(
             gate_up_weight = torch.ldexp(gate_up_decoded, gate_up_scales_expanded)
             
             # Reshape to final dimensions: (n_experts, out_features, in_features)
+            # After reshape we get (E, 5760, 2880) which is already correct!
             gate_up_weight = gate_up_weight.view(n_experts, out_features, -1)
-            print(f"DEBUG: Before transpose - shape: {gate_up_weight.shape}")
-            
-            # Quantized format produces (E, 2880, 5760) but model expects (E, 5760, 2880)
-            # Transpose dimensions 1 and 2
-            gate_up_weight = gate_up_weight.transpose(1, 2).contiguous()
-            print(f"DEBUG: After transpose - shape: {gate_up_weight.shape}")
             
             # Save with correct names for GptOssMoE (mlp1 = gate_up combined)
             state_dict[f"transformer.h.{i}.mlp.mlp1_weight"] = gate_up_weight
@@ -1448,8 +1443,7 @@ def copy_weights_gpt_oss(
             down_weight = torch.ldexp(down_decoded, down_scales_expanded)
             down_weight = down_weight.view(n_experts_d, out_features_d, -1)
             
-            # Transpose to match model expectation
-            down_weight = down_weight.transpose(1, 2).contiguous()
+            # After reshape we get (E, hidden, intermediate) which is already correct!
             
             # Save with correct names for GptOssMoE (mlp2 = down projection)
             state_dict[f"transformer.h.{i}.mlp.mlp2_weight"] = down_weight
