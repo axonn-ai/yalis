@@ -1503,8 +1503,11 @@ def convert_hf_checkpoint(
             if "num_hidden_layers" in hf_config:
                 config.n_layer = hf_config["num_hidden_layers"]
             
-            # Recompute head_size after updating n_embd and n_head
-            if config.n_embd and config.n_head:
+            # GPT-OSS uses head_dim instead of computing from n_embd/n_head
+            if "head_dim" in hf_config:
+                config.head_size = hf_config["head_dim"]
+            elif config.n_embd and config.n_head:
+                # Fallback: compute from n_embd // n_head
                 config.head_size = config.n_embd // config.n_head
             
             if debug_mode:
