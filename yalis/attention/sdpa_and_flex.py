@@ -262,14 +262,35 @@ def rotary_kv_update_sdpa_gen_gptoss(
     else:
         mask = upper_mask
 
-    # q: (B, nh, 1, hs), k_cache[:B]: (B, nh, t_max, hs)
-    # compute QK: (B, nh, 1, t_max)
+    # q: (B, nh, 1, hs), k_cache[:B]: (B, nh_k, t_max, hs)
+    # Handle GQA: q may have more heads than k/v
     Q = q
     K = k_cache[:B]
     V = v_cache[:B]
-
+    
+    # Check if we need to handle grouped-query attention
+    enable_gqa = Q.size(1) != K.size(1)
+    
     scale = 1.0 / math.sqrt(hs)
-    QK = torch.einsum("b h q d, b h k d -> b h q k", Q, K) * scale
+    
+    # Extract dimensions for later use
+    B_q, h, n_q, d = Q.shape
+    g = None
+    hpg = None
+    
+    if enable_gqa:
+        # Reshape for GQA: Q has h heads, K/V have g groups
+        g = K.size(1)  # number of key/value groups
+        hpg = h // g   # heads per group
+        Q_reshaped = Q.view(B_q, g, hpg, n_q, d)
+        B_k, g_k, n_k, d_k = K.shape
+        K_reshaped = K.view(B_k, g_k, 1, n_k, d_k)
+        QK = torch.einsum("b g h q d, b g o k d -> b g h q k", Q_reshaped * scale, K_reshaped)
+        # Flatten back to (B, h, n_q, n_k) for mask application
+        QK = QK.view(B, h, n_q, -1)
+    else:
+        # Standard MHA path
+        QK = torch.einsum("b h q d, b h k d -> b h q k", Q, K) * scale
 
     # apply mask (broadcast over batch & heads)
     mask_float = torch.zeros_like(mask, dtype=torch.float32)
@@ -288,8 +309,16 @@ def rotary_kv_update_sdpa_gen_gptoss(
     if sinks is not None:
         W = W[..., :-1]
 
-    # weighted sum over KV: W (B, nh, 1, t_max) @ V (B, nh, t_max, hs) -> (B, nh, 1, hs)
-    Out = torch.einsum("b h q k, b h k d -> b h q d", W, V)
+    # weighted sum over KV: W (B, nh, 1, t_max) @ V (B, nh_k, t_max, hs) -> (B, nh, 1, hs)
+    if enable_gqa:
+        # Reshape W and V for GQA
+        W_reshaped = W.view(B, g, hpg, n_q, -1)  # (B, g, hpg, 1, t_max)
+        B_v, g_v, n_v, d_v = V.shape
+        V_reshaped = V.view(B_v, g_v, 1, n_v, d_v)
+        Out = torch.einsum("b g h q k, b g o k d -> b g h q d", W_reshaped, V_reshaped)
+        Out = Out.view(B, h, n_q, -1)  # (B, nh, 1, hs)
+    else:
+        Out = torch.einsum("b h q k, b h k d -> b h q d", W, V)
     if use_intra_head_parallelism:
         Out = Gather.apply(Out, process_group)
     return Out
