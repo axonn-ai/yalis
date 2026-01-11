@@ -4,6 +4,7 @@ import torch.distributed as dist
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from yalis.model import get_model
 from yalis.constants import EnginePhase
+from yalis.attention.backends import AttentionBackend
 
 model_id = "yalis/external/checkpoints/openai/gpt-oss-20b"
 
@@ -41,7 +42,7 @@ print("Loading YALIS model...")
 yalis_model = get_model(
     model_id,
     model_dtype=torch.bfloat16,
-    attention_backend="sdpa",
+    attention_backend=AttentionBackend.SDPA,
     use_paged_kv_caching=False,
     prestore_kv_cache=True,
 )
