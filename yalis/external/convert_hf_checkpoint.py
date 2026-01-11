@@ -1413,6 +1413,10 @@ def copy_weights_gpt_oss(
             gate_up_decoded = fp4_lut[gate_up_blocks_flat.to(torch.int32)]
             gate_up_weight = torch.ldexp(gate_up_decoded, gate_up_scales_expanded)
             
+            # Debug: Check if weights look reasonable
+            if debug_mode or i == 0:
+                print(f"Layer {i} gate_up - min: {gate_up_weight.min():.6f}, max: {gate_up_weight.max():.6f}, mean: {gate_up_weight.mean():.6f}, std: {gate_up_weight.std():.6f}")
+            
             # Reshape to final dimensions: (n_experts, out_features, in_features)
             # After reshape we get (E, 5760, 2880) which is already correct!
             gate_up_weight = gate_up_weight.view(n_experts, out_features, -1)
