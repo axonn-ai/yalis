@@ -63,12 +63,20 @@ if __name__ == "__main__":
         formatted_prompt = tokenizer.apply_chat_template(
             conversation, add_generation_prompt=True, tokenize=False
         )
+        
+        # GPT-OSS models need the channel specification after <|start|>assistant
+        # The chat template ends with just "<|start|>assistant" but the model expects
+        # "<|start|>assistant<|channel|>final<|message|>" for direct answers
+        # For chain-of-thought, use "analysis" first, but for simplicity we use "final"
+        if formatted_prompt.endswith("<|start|>assistant"):
+            formatted_prompt += "<|channel|>final<|message|>"
+        
         input_prompts.append(formatted_prompt)
         # Print first prompt to verify Harmony format
         if len(input_prompts) == 1:
             print(f"First formatted prompt (first 300 chars):")
             print(repr(formatted_prompt[:300]))
-            print(f"Full first prompt contains Harmony tags: {('<|start|>user' in formatted_prompt and '<|end|>' in formatted_prompt)}")
+            print(f"Prompt ends with: {repr(formatted_prompt[-50:])}")
 
 
     # Number of tokens to generate
