@@ -23,7 +23,10 @@ prompt = tokenizer.apply_chat_template(
 )
 inputs = tokenizer(prompt, return_tensors="pt")
 print(f"Prompt tokens shape: {inputs.input_ids.shape}")
-print(f"Prompt length: {inputs.input_ids.shape[1]} tokens\n")
+print(f"Prompt length: {inputs.input_ids.shape[1]} tokens")
+print(f"First 10 token IDs: {inputs.input_ids[0, :10].tolist()}")
+print(f"Last 10 token IDs: {inputs.input_ids[0, -10:].tolist()}")
+print()
 
 # ============================================================================
 # PHASE 1: HuggingFace forward pass
@@ -47,6 +50,7 @@ with torch.no_grad():
 hf_top_tokens = torch.topk(hf_logits, 10)
 print(f"HF top 10 tokens: {hf_top_tokens.indices.tolist()}")
 print(f"HF top 10 logits: {[f'{v:.4f}' for v in hf_top_tokens.values.tolist()]}")
+print(f"HF decoded tokens: {[repr(tokenizer.decode([t])) for t in hf_top_tokens.indices[:5].tolist()]}")
 
 # Critical: Free HuggingFace model memory before loading YALIS
 print("\nCleaning up HuggingFace model from GPU...")
@@ -98,6 +102,7 @@ with torch.no_grad():
 yalis_top_tokens = torch.topk(yalis_logits, 10)
 print(f"YALIS top 10 tokens: {yalis_top_tokens.indices.tolist()}")
 print(f"YALIS top 10 logits: {[f'{v:.4f}' for v in yalis_top_tokens.values.tolist()]}")
+print(f"YALIS decoded tokens: {[repr(tokenizer.decode([t])) for t in yalis_top_tokens.indices[:5].tolist()]}")
 
 # ============================================================================
 # PHASE 3: Comparison
