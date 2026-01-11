@@ -108,7 +108,7 @@ if __name__ == "__main__":
         top_p=0.80,
         temperature=0.8,  # Match HF default (was 1.0)
         tp_dims=None,
-        attention_backend="flash",
+        attention_backend="sdpa",  # Use SDPA with GQA fix (was "flash")
         use_paged_kv_caching=False,
         prestore_kv_cache=True,
     )
