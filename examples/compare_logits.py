@@ -87,8 +87,13 @@ with torch.no_grad():
     token_ids = inputs.input_ids.to("cuda")
     yalis_outputs = yalis_model(token_ids, phase=EnginePhase.PREFILL)
     # Extract and move to CPU
-    yalis_logits = yalis_outputs["logits"][0, -1, :].cpu().clone()
+    # IMPORTANT: YALIS uses padded_vocab_size, but we need to slice to actual vocab_size
+    yalis_logits_full = yalis_outputs["logits"][0, -1, :].cpu().clone()
+    actual_vocab_size = yalis_model.config.vocab_size
+    yalis_logits = yalis_logits_full[:actual_vocab_size]  # Slice to match HF vocab size
     del yalis_outputs
+    
+    print(f"YALIS vocab info: padded={yalis_logits_full.shape[0]}, actual={actual_vocab_size}")
 
 yalis_top_tokens = torch.topk(yalis_logits, 10)
 print(f"YALIS top 10 tokens: {yalis_top_tokens.indices.tolist()}")
