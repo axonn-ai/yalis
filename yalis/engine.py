@@ -443,14 +443,14 @@ class LLMEngine:
         print("Prefill warmup start.")
         self.warmup_prefill(
             batch_sizes=prefill_batch_sizes,
-            seq_lengths=prefill_seq_lens,
+            seq_lengths=prefill_seq_lengths,
             iterations=1,
         )
         print("Prefill warmup end.")
         print("Decode warmup start.")
         self.warmup_decode(
             batch_sizes=decode_batch_sizes,
-            prompt_length=decode_prompt_len,
+            prompt_length=decode_prompt_length,
             iterations=decode_iterations,
         )
         print("Decode warmup end.")
