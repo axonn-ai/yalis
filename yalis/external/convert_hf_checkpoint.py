@@ -1529,6 +1529,41 @@ def convert_hf_checkpoint(
                 # Fallback: compute from n_embd // n_head
                 config.head_size = config.n_embd // config.n_head
             
+            # Load intermediate_size
+            if "intermediate_size" in hf_config:
+                config.intermediate_size = hf_config["intermediate_size"]
+            
+            # Load rope_theta (rope_base in YALIS)
+            if "rope_theta" in hf_config:
+                config.rope_base = hf_config["rope_theta"]
+            
+            # Load sliding_window
+            if "sliding_window" in hf_config:
+                config.sliding_window_size = hf_config["sliding_window"]
+            
+            # Load layer_types to set sliding_window_indices
+            # layer_types: ["sliding_attention", "full_attention", ...] -> [1, 0, ...]
+            if "layer_types" in hf_config:
+                layer_types = hf_config["layer_types"]
+                config.sliding_window_indices = [
+                    1 if lt == "sliding_attention" else 0 
+                    for lt in layer_types
+                ]
+            
+            # Load rope_scaling parameters
+            if "rope_scaling" in hf_config:
+                rope_scaling = hf_config["rope_scaling"]
+                if config.rope_adjustments is None:
+                    config.rope_adjustments = {}
+                if "factor" in rope_scaling:
+                    config.rope_adjustments["scaling"] = rope_scaling["factor"]
+                if "beta_fast" in rope_scaling:
+                    config.rope_adjustments["beta"] = rope_scaling["beta_fast"]
+                if "beta_slow" in rope_scaling:
+                    config.rope_adjustments["alpha"] = rope_scaling["beta_slow"]
+                if "original_max_position_embeddings" in rope_scaling:
+                    config.rope_adjustments["initial_context_length"] = rope_scaling["original_max_position_embeddings"]
+            
             if debug_mode:
                 print(f"Updated config from HF config.json:")
                 print(f"  vocab_size: {config.vocab_size}")
@@ -1536,6 +1571,9 @@ def convert_hf_checkpoint(
                 print(f"  n_head: {config.n_head}")
                 print(f"  n_query_groups: {config.n_query_groups}")
                 print(f"  head_size: {config.head_size}")
+                print(f"  rope_base: {config.rope_base}")
+                print(f"  sliding_window_size: {config.sliding_window_size}")
+                print(f"  sliding_window_indices: {config.sliding_window_indices}")
     
     # Save config to main checkpoint directory
     save_config(config, checkpoint_dir)
