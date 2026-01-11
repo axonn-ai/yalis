@@ -51,6 +51,8 @@ hf_model.eval()
 
 with torch.no_grad():
     hf_inputs = {k: v.to("cuda") for k, v in inputs.items()}
+    # Get embeddings to compare
+    hf_embeddings = hf_model.model.embed_tokens(hf_inputs["input_ids"])[0, -1, :].cpu()
     hf_outputs = hf_model(**hf_inputs, output_hidden_states=False)
     # Extract and move to CPU immediately to save GPU memory
     hf_logits = hf_outputs.logits[0, -1, :].cpu().clone()
@@ -60,6 +62,7 @@ hf_top_tokens = torch.topk(hf_logits, 10)
 print(f"HF top 10 tokens: {hf_top_tokens.indices.tolist()}")
 print(f"HF top 10 logits: {[f'{v:.4f}' for v in hf_top_tokens.values.tolist()]}")
 print(f"HF decoded tokens: {[repr(tokenizer.decode([t])) for t in hf_top_tokens.indices[:5].tolist()]}")
+print(f"HF last token embedding: mean={hf_embeddings.mean().item():.6f}, std={hf_embeddings.std().item():.6f}")
 
 # Critical: Free HuggingFace model memory before loading YALIS
 print("\nCleaning up HuggingFace model from GPU...")
@@ -105,6 +108,8 @@ yalis_model.set_kv_cache(max_batch_size=1, max_seq_length=inputs.input_ids.shape
 
 with torch.no_grad():
     token_ids = inputs.input_ids.to("cuda")
+    # Get embeddings to compare
+    yalis_embeddings = yalis_model.transformer.wte(token_ids)[0, -1, :].cpu()
     yalis_outputs = yalis_model(token_ids, phase=EnginePhase.PREFILL)
     # Extract and move to CPU
     # IMPORTANT: YALIS uses padded_vocab_size, but we need to slice to actual vocab_size
@@ -114,6 +119,7 @@ with torch.no_grad():
     del yalis_outputs
     
     print(f"YALIS vocab info: padded={yalis_logits_full.shape[0]}, actual={actual_vocab_size}")
+    print(f"YALIS last token embedding: mean={yalis_embeddings.mean().item():.6f}, std={yalis_embeddings.std().item():.6f}")
 
 yalis_top_tokens = torch.topk(yalis_logits, 10)
 print(f"YALIS top 10 tokens: {yalis_top_tokens.indices.tolist()}")
@@ -126,6 +132,15 @@ print(f"YALIS decoded tokens: {[repr(tokenizer.decode([t])) for t in yalis_top_t
 print("\n" + "=" * 80)
 print("PHASE 3: Comparison Results")
 print("=" * 80)
+
+# First check if embeddings match
+emb_diff = (hf_embeddings - yalis_embeddings).abs().max().item()
+print(f"Embedding difference for last token: {emb_diff:.6f}")
+if emb_diff > 0.001:
+    print("⚠️  Embeddings don't match! Weight loading issue suspected.")
+else:
+    print("✓ Embeddings match, issue is in forward computation")
+print()
 
 # Check top token match
 top_match = hf_top_tokens.indices[0].item() == yalis_top_tokens.indices[0].item()
