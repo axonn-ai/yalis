@@ -1332,6 +1332,15 @@ def copy_weights_gpt_oss(
                         param = torch.cat([param, padding], dim=0)
                         if debug_mode:
                             print(f"Padded {to_name} from {vocab_size_checkpoint} to {padded_vocab_size}")
+                    
+                    # GPT-OSS embeddings are pre-scaled by sliding_window (128)
+                    # We need to scale them down to match typical embedding magnitudes
+                    if "wte" in to_name and hasattr(config, 'sliding_window_size') and config.sliding_window_size:
+                        scale_factor = config.sliding_window_size
+                        param = param / scale_factor
+                        if debug_mode:
+                            print(f"Scaled {to_name} by 1/{scale_factor} (GPT-OSS embedding normalization)")
+                    
                     # Debug output for embedding/lm_head
                     if debug_mode or ("wte" in to_name or "lm_head" in to_name):
                         print(f"[DEBUG] {to_name} - shape: {param.shape}, min: {param.min():.6f}, max: {param.max():.6f}, mean: {param.mean():.6f}, std: {param.std():.6f}")
