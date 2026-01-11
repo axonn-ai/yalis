@@ -238,51 +238,61 @@ class GPT(nn.Module):
 
         extra_config = None
 
-        # Legacy rope_adjustments handling
+        # Check for yaRN mode in rope_adjustments (GPT-OSS style)
         if getattr(self.config, "rope_adjustments", None) is not None:
-            adjusted_params_required = [
-                "factor",
-                "low_freq_factor",
-                "high_freq_factor",
-                "original_max_seq_len",
-            ]
-            params_present = [
-                param in self.config.rope_adjustments
-                for param in adjusted_params_required
-            ]
-            num_params_present = sum(params_present)
-
-            if num_params_present == 0:
-                extra_config = None  # uses standard RoPE
-            elif num_params_present == 4:
-                # These parameters should always be used together so that
-                # we don't interfere with standard rope
+            rope_adj = self.config.rope_adjustments
+            
+            # Check if this is yaRN mode (GPT-OSS style)
+            if rope_adj.get("mode") == "yaRN":
                 extra_config = {
-                    "mode": "adjust",
-                    "original_max_seq_len": self.config.rope_adjustments[
-                        "original_max_seq_len"
-                    ],
-                    "factor": self.config.rope_adjustments["factor"],
-                    "low_freq_factor": self.config.rope_adjustments[
-                        "low_freq_factor"
-                    ],
-                    "high_freq_factor": self.config.rope_adjustments[
-                        "high_freq_factor"
-                    ],
+                    "mode": "yaRN",
+                    "initial_context_length": rope_adj.get(
+                        "initial_context_length", self.max_seq_length
+                    ),
+                    "rope_scaling_factor": rope_adj.get("scaling", 1.0),
+                    "rope_ntk_alpha": rope_adj.get("alpha", 1.0),
+                    "rope_ntk_beta": rope_adj.get("beta", 32.0),
+                    "base": getattr(self.config, "rope_base", 10000),
                 }
             else:
-                # Some but not all parameters are specified; raise an error
-                missing_params = [
-                    param
-                    for param, present in zip(
-                        adjusted_params_required, params_present
-                    )
-                    if not present
+                # Legacy rope_adjustments handling
+                adjusted_params_required = [
+                    "factor",
+                    "low_freq_factor",
+                    "high_freq_factor",
+                    "original_max_seq_len",
                 ]
-                raise ValueError(
-                    f"The following adjusted RoPE parameters are missing in rope_adjustments: {', '.join(missing_params)}. "  # noqa: E501
-                    "All adjusted RoPE parameters must be specified together."
-                )
+                params_present = [
+                    param in rope_adj
+                    for param in adjusted_params_required
+                ]
+                num_params_present = sum(params_present)
+
+                if num_params_present == 0:
+                    extra_config = None  # uses standard RoPE
+                elif num_params_present == 4:
+                    # These parameters should always be used together so that
+                    # we don't interfere with standard rope
+                    extra_config = {
+                        "mode": "adjust",
+                        "original_max_seq_len": rope_adj["original_max_seq_len"],
+                        "factor": rope_adj["factor"],
+                        "low_freq_factor": rope_adj["low_freq_factor"],
+                        "high_freq_factor": rope_adj["high_freq_factor"],
+                    }
+                else:
+                    # Some but not all parameters are specified; raise an error
+                    missing_params = [
+                        param
+                        for param, present in zip(
+                            adjusted_params_required, params_present
+                        )
+                        if not present
+                    ]
+                    raise ValueError(
+                        f"The following adjusted RoPE parameters are missing in rope_adjustments: {', '.join(missing_params)}. "  # noqa: E501
+                        "All adjusted RoPE parameters must be specified together."
+                    )
 
         # GPT-OSS NTK/YaRN parameterization support (opt-in via config attrs)
         # If any of these attributes are present on `config`, enable GPT-OSS
