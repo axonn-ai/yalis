@@ -70,6 +70,7 @@ class Config:
     attention_scores_scalar: Optional[int] = None
     sliding_window_size: Optional[int] = None
     sliding_window_indices: Optional[List] = None
+    sliding_window_mode: Optional[str] = None
     sliding_window_layer_placing: int = 1
     # if `attention_logit_softcapping` is used, cannot use optimized
     # `torch.nn.functional.scaled_dot_product_attention` (which implements
