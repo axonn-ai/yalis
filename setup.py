@@ -2,6 +2,7 @@ from setuptools import setup
 from torch.utils.cpp_extension import (
     BuildExtension,
     CppExtension,
+    CUDAExtension
 )
 import glob
 import os
@@ -31,12 +32,12 @@ setup(
     package_dir={"yalis": "yalis"},
     # Other metadata for your package
     ext_modules=[
-        CppExtension(
+        CUDAExtension(
             name="kvcache_manager",
             sources=["yalis/attention/paged_kv_cache.cpp"],
             extra_compile_args=["-O3"],
         ),
-        CppExtension(
+        CUDAExtension(
             name="vllm_ops",
             sources=vllm_ops_sources,
             extra_compile_args=["-O3"],

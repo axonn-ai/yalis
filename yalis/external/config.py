@@ -70,6 +70,7 @@ class Config:
     attention_scores_scalar: Optional[int] = None
     sliding_window_size: Optional[int] = None
     sliding_window_indices: Optional[List] = None
+    sliding_window_layer_placing: int = 1
     # if `attention_logit_softcapping` is used, cannot use optimized
     # `torch.nn.functional.scaled_dot_product_attention` (which implements
     # Flash attention), may result in higher memory and runtime footprint.
@@ -174,8 +175,7 @@ class Config:
             "norm_qk_type",
             "rope_indices",
             "rope_local_base_freq",
-            "sliding_window_indices",
-            "sliding_window_layer_placing",
+            "sliding_window_indices"
         ]
         for config in configs:
             conf_dict.pop(config, None)
