@@ -112,6 +112,13 @@ if __name__ == "__main__":
     else:
         profiler_context = nullcontext()
 
+    # Tokenize prompts to get input token IDs for concatenation
+    prompt_tokens = tokenizer(
+        input_prompts, 
+        return_tensors="pt", 
+        padding=True
+    ).input_ids
+
     with profiler_context as prof:
         for iter in range(10):
             output_tokens, metrics = engine.generate(
@@ -124,16 +131,35 @@ if __name__ == "__main__":
             dist.barrier()
 
     output_tokens = output_tokens.cpu()
+    prompt_tokens = prompt_tokens.cpu()
 
-    # Decode the token IDs into text
+    # Concatenate prompt tokens with generated tokens for proper decoding
+    # This is needed because GPT-OSS uses Harmony format tags that must be 
+    # present in the sequence for correct token decoding
+    full_sequences = torch.cat([prompt_tokens, output_tokens], dim=1)
+
+    # Decode the full token sequences into text
     detokenized_text = tokenizer.batch_decode(
-        output_tokens, skip_special_tokens=True
+        full_sequences, skip_special_tokens=False
     )
 
     for prompt, output in zip(user_prompts, detokenized_text):
         print_rank0("==========================\n\n")
         print_rank0(f"prompt = {prompt}")
-        print_rank0(f"output = {output}")
+        
+        # Extract the final answer from Harmony format
+        # The model outputs: <|start|>assistant<|channel|>analysis...<|end|><|channel|>final<|message|>ANSWER<|end|>
+        # We want to show the full output for debugging
+        print_rank0(f"full output = {output}")
+        
+        # Try to extract just the final answer
+        if "<|channel|>final<|message|>" in output:
+            final_start = output.find("<|channel|>final<|message|>") + len("<|channel|>final<|message|>")
+            final_end = output.find("<|end|>", final_start)
+            if final_end > final_start:
+                final_answer = output[final_start:final_end].strip()
+                print_rank0(f"\nfinal answer = {final_answer}")
+        
         print_rank0("==========================\n\n")
 
     if enable_profiling:
