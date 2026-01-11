@@ -1,5 +1,6 @@
 from yalis import ModelConfig, InferenceConfig, print_rank0, LLMEngine
 from transformers import AutoTokenizer
+import time
 import torch
 import torch.distributed as dist
 from contextlib import nullcontext
@@ -12,7 +13,7 @@ _KinetoProfile._get_distributed_info = lambda self: None
 
 if __name__ == "__main__":
     # Model ID from Hugging Face
-    model_id = "meta-llama/Llama-3.1-8B-Instruct"
+    model_id = "meta-llama/Meta-Llama-3.1-8B-Instruct"
 
     user_prompts = [
         "How to bake a cake?",
@@ -34,7 +35,7 @@ if __name__ == "__main__":
     ]
 
     # take 16 prompts from this dataset
-    user_prompts = user_prompts[:16]
+    user_prompts = user_prompts[:2]
     print(f"Number of prompts = {len(user_prompts)}")
 
     system_prompt = (
@@ -65,7 +66,7 @@ if __name__ == "__main__":
     tokens_to_gen = 512
 
     # Max batch size
-    MAX_BATCH_SIZE = 32
+    MAX_BATCH_SIZE = 8
 
     if len(input_prompts) > MAX_BATCH_SIZE:
         raise ValueError(
@@ -82,13 +83,27 @@ if __name__ == "__main__":
         temperature=1.0,
         tp_dims=None,
         attention_backend="flash",
-        use_paged_kv_caching=False,
+        use_paged_kv_caching=True,
         prestore_kv_cache=True,
     )
 
     engine = LLMEngine(
         model_config=model_config, inference_config=inference_config
     )
+
+    # # NOTE: WARMUP CODE
+    # prefill_batch_sizes = [1, MAX_BATCH_SIZE]
+    # prefill_seq_lengths = [1, 1024]
+    # decode_batch_sizes = [1, 2, 4, MAX_BATCH_SIZE]
+
+    # warmup_start = time.perf_counter()
+    # engine.warmup(
+    #     prefill_batch_sizes=prefill_batch_sizes,
+    #     prefill_seq_lengths=prefill_seq_lengths,
+    #     decode_batch_sizes=decode_batch_sizes,
+    # )
+    # warmup_elapsed = time.perf_counter() - warmup_start
+    # print_rank0(f"Full warmup completed in {warmup_elapsed:.2f}s")
 
     if enable_profiling:
         profiler_context = torch.profiler.profile(
