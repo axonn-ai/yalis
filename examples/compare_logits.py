@@ -84,6 +84,13 @@ yalis_model.eval()
 
 print(f"YALIS config: backend={yalis_model.config.attention_backend}, vocab_size={yalis_model.config.vocab_size}")
 
+# Diagnostic: Check if embeddings are properly loaded
+wte_weight = yalis_model.transformer.wte.weight
+print(f"Embedding shape: {wte_weight.shape}")
+print(f"Embedding stats: mean={wte_weight.mean().item():.6f}, std={wte_weight.std().item():.6f}")
+print(f"Embedding for token 200005: mean={wte_weight[200005].mean().item():.6f}, std={wte_weight[200005].std().item():.6f}")
+print(f"Embedding for token 6: mean={wte_weight[6].mean().item():.6f}, std={wte_weight[6].std().item():.6f}")
+
 # Allocate KV cache for this sequence length
 yalis_model.set_kv_cache(max_batch_size=1, max_seq_length=inputs.input_ids.shape[1])
 
