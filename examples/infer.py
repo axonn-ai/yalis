@@ -1,5 +1,6 @@
 from yalis import ModelConfig, InferenceConfig, print_rank0, LLMEngine
 from transformers import AutoTokenizer
+import time
 import torch
 import torch.distributed as dist
 from contextlib import nullcontext
@@ -95,11 +96,14 @@ if __name__ == "__main__":
     prefill_seq_lengths = [1, 1024]
     decode_batch_sizes = [2]
 
+    warmup_start = time.perf_counter()
     engine.warmup(
         prefill_batch_sizes=prefill_batch_sizes,
         prefill_seq_lengths=prefill_seq_lengths,
         decode_batch_sizes=decode_batch_sizes,
     )
+    warmup_elapsed = time.perf_counter() - warmup_start
+    print_rank0(f"Warmup completed in {warmup_elapsed:.2f}s")
 
     if enable_profiling:
         profiler_context = torch.profiler.profile(
