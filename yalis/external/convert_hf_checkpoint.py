@@ -24,7 +24,7 @@ DEFAULT_SAFETENSOR_CHUNK_SIZE = int(
 if DEFAULT_SAFETENSOR_CHUNK_SIZE < 1:
     raise ValueError("YALIS_SAFETENSOR_CHUNK_SIZE must be at least 1")
 
-from config import Config
+from config import Config, find_multiple
 from litgpt.utils import (
     extend_checkpoint_dir,
     lazy_load,
@@ -1255,10 +1255,13 @@ def copy_weights_gpt_oss(
                 param = load_param(param, name, dtype, verbose=debug_mode)
                 state_dict[to_name] = param
             
-            # Handle sinks
+            # Handle sinks (reshape from (n_head,) to (n_head, 1, 1))
             elif "self_attn.sinks" in name:
                 to_name = f"transformer.h.{number}.sinks"
                 param = load_param(param, name, dtype, verbose=debug_mode)
+                # Reshape from (n_head,) to (n_head, 1, 1) to match model expectation
+                if param.dim() == 1:
+                    param = param.view(-1, 1, 1)
                 state_dict[to_name] = param
             
             # Handle layer norms
@@ -1271,15 +1274,14 @@ def copy_weights_gpt_oss(
                 param = load_param(param, name, dtype, verbose=debug_mode)
                 state_dict[to_name] = param
             
-            # Handle MoE router
+            # Handle MoE router (maps to gate in GptOssMoE)
             elif "mlp.router.weight" in name:
-                to_name = f"transformer.h.{number}.mlp.router.weight"
+                to_name = f"transformer.h.{number}.mlp.gate.weight"
                 param = load_param(param, name, dtype, verbose=debug_mode)
                 state_dict[to_name] = param
             elif "mlp.router.bias" in name:
-                to_name = f"transformer.h.{number}.mlp.router.bias"
-                param = load_param(param, name, dtype, verbose=debug_mode)
-                state_dict[to_name] = param
+                # GptOssMoE gate has no bias - skip this
+                pass
             
             # Handle MoE expert weights (quantized format - collect for deferred dequantization)
             elif "mlp.experts.gate_up_proj_blocks" in name:
@@ -1396,8 +1398,9 @@ def copy_weights_gpt_oss(
             # Reshape to final dimensions: (n_experts, out_features, in_features)
             gate_up_weight = gate_up_weight.view(n_experts, out_features, -1)
             
-            state_dict[f"transformer.h.{i}.mlp.gate_up_weight"] = gate_up_weight
-            state_dict[f"transformer.h.{i}.mlp.gate_up_bias"] = gate_up_bias
+            # Save with correct names for GptOssMoE (mlp1 = gate_up combined)
+            state_dict[f"transformer.h.{i}.mlp.mlp1_weight"] = gate_up_weight
+            state_dict[f"transformer.h.{i}.mlp.mlp1_bias"] = gate_up_bias
             
             # Load and dequantize down weights (same MXFP4 process)
             down_blocks = load_param(moe["down_proj_blocks"], f"layer {i} down_proj_blocks", None, verbose=debug_mode)
@@ -1421,8 +1424,9 @@ def copy_weights_gpt_oss(
             down_weight = torch.ldexp(down_decoded, down_scales_expanded)
             down_weight = down_weight.view(n_experts_d, out_features_d, -1)
             
-            state_dict[f"transformer.h.{i}.mlp.down_weight"] = down_weight
-            state_dict[f"transformer.h.{i}.mlp.down_bias"] = down_bias
+            # Save with correct names for GptOssMoE (mlp2 = down projection)
+            state_dict[f"transformer.h.{i}.mlp.mlp2_weight"] = down_weight
+            state_dict[f"transformer.h.{i}.mlp.mlp2_bias"] = down_bias
             
             del moe_weights[i]
             if progress_per_file is not None and pbar is not None:
@@ -1471,6 +1475,45 @@ def convert_hf_checkpoint(
         dtype = getattr(torch, dtype)
 
     config = Config.from_name(model_name)
+    
+    # For GPT-OSS, load actual dimensions from HF config.json
+    if model_name.lower().startswith("gpt-oss") or config.mlp_class_name == "GptOssMoE":
+        hf_config_path = checkpoint_dir / "config.json"
+        if hf_config_path.exists():
+            import json
+            with open(hf_config_path, "r") as f:
+                hf_config = json.load(f)
+            
+            # Update config with actual HF values
+            if "vocab_size" in hf_config:
+                config.vocab_size = hf_config["vocab_size"]
+                # Recompute padded vocab size
+                config.padded_vocab_size = find_multiple(config.vocab_size, config.padding_multiple)
+            
+            if "hidden_size" in hf_config:
+                config.n_embd = hf_config["hidden_size"]
+            
+            if "num_attention_heads" in hf_config:
+                config.n_head = hf_config["num_attention_heads"]
+            
+            if "num_key_value_heads" in hf_config:
+                config.n_query_groups = hf_config["num_key_value_heads"]
+            
+            if "num_hidden_layers" in hf_config:
+                config.n_layer = hf_config["num_hidden_layers"]
+            
+            # Recompute head_size after updating n_embd and n_head
+            if config.n_embd and config.n_head:
+                config.head_size = config.n_embd // config.n_head
+            
+            if debug_mode:
+                print(f"Updated config from HF config.json:")
+                print(f"  vocab_size: {config.vocab_size}")
+                print(f"  n_embd: {config.n_embd}")
+                print(f"  n_head: {config.n_head}")
+                print(f"  n_query_groups: {config.n_query_groups}")
+                print(f"  head_size: {config.head_size}")
+    
     save_config(config, checkpoint_dir)
 
     if "falcon" in model_name:

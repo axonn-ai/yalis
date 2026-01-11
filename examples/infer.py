@@ -14,6 +14,9 @@ if __name__ == "__main__":
     # Model ID from Hugging Face
     model_id = "/home/hoffmuki/scratch/yalis/yalis/external/checkpoints/openai/gpt-oss-20b"
     # model_id = "Qwen/Qwen3-30B-A3B-Instruct-2507"
+    
+    # For GPT-OSS, use config name for model architecture, path for tokenizer/checkpoint
+    model_name = "gpt-oss-20b"
 
     user_prompts = [
         "How to bake a cake?",
@@ -76,7 +79,7 @@ if __name__ == "__main__":
 
     # configs
     model_config = ModelConfig(
-        model_name=model_id,
+        model_name=model_name,  # Use config name, not path
         model_path="/home/hoffmuki/scratch/yalis/yalis/external/checkpoints/openai/gpt-oss-20b",
         precision="bf16",
     )
