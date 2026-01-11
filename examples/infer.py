@@ -77,6 +77,14 @@ if __name__ == "__main__":
             print(f"First formatted prompt (first 300 chars):")
             print(repr(formatted_prompt[:300]))
             print(f"Prompt ends with: {repr(formatted_prompt[-50:])}")
+            
+            # Debug: Check how the prompt is tokenized
+            prompt_token_ids = tokenizer.encode(formatted_prompt, add_special_tokens=False)
+            print(f"Prompt length in tokens: {len(prompt_token_ids)}")
+            print(f"Last 10 tokens: {prompt_token_ids[-10:]}")
+            print(f"Last 10 tokens decoded: {[tokenizer.decode([t]) for t in prompt_token_ids[-10:]]}")
+            print(f"EOS token ID: {tokenizer.eos_token_id}")
+            print()
 
 
     # Number of tokens to generate
@@ -147,26 +155,31 @@ if __name__ == "__main__":
     full_sequences = torch.cat([prompt_tokens, output_tokens], dim=1)
 
     # Decode the full token sequences into text
-    detokenized_text = tokenizer.batch_decode(
+    # Try both with and without special tokens to see which works
+    detokenized_text_with_special = tokenizer.batch_decode(
         full_sequences, skip_special_tokens=False
     )
+    detokenized_text = tokenizer.batch_decode(
+        full_sequences, skip_special_tokens=True
+    )
 
-    for prompt, output in zip(user_prompts, detokenized_text):
+    for idx, (prompt, output, output_with_special) in enumerate(zip(user_prompts, detokenized_text, detokenized_text_with_special)):
         print_rank0("==========================\n\n")
         print_rank0(f"prompt = {prompt}")
         
-        # Extract the final answer from Harmony format
-        # The model outputs: <|start|>assistant<|channel|>analysis...<|end|><|channel|>final<|message|>ANSWER<|end|>
-        # We want to show the full output for debugging
-        print_rank0(f"full output = {output}")
+        # Debug: Show token IDs for the first few generated tokens
+        if idx == 0:
+            # Get the first sequence from output_tokens
+            first_output_tokens = output_tokens[0][:20]  # First 20 generated tokens
+            print_rank0(f"\nFirst 20 generated token IDs: {first_output_tokens.tolist()}")
+            print_rank0(f"Decoded individually: {[tokenizer.decode([t]) for t in first_output_tokens.tolist()]}")
+            print_rank0(f"EOS token ID: {tokenizer.eos_token_id}")
+            print_rank0(f"endoftext token ID: {tokenizer.encode('<|endoftext|>', add_special_tokens=False)}\n")
         
-        # Try to extract just the final answer
-        if "<|channel|>final<|message|>" in output:
-            final_start = output.find("<|channel|>final<|message|>") + len("<|channel|>final<|message|>")
-            final_end = output.find("<|end|>", final_start)
-            if final_end > final_start:
-                final_answer = output[final_start:final_end].strip()
-                print_rank0(f"\nfinal answer = {final_answer}")
+        # Show both versions
+        print_rank0(f"output (skip_special_tokens=True) = {output[:500]}")
+        if idx == 0:
+            print_rank0(f"\noutput (skip_special_tokens=False) = {output_with_special[:500]}")
         
         print_rank0("==========================\n\n")
 
