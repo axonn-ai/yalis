@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+"""
+Compare HuggingFace vs YALIS logits for GPT-OSS-20B.
+Runs models sequentially to avoid OOM, with proper memory cleanup between runs.
+"""
+import gc
 import torch
 import torch.distributed as dist
 from transformers import AutoTokenizer, AutoModelForCausalLM
@@ -8,7 +13,8 @@ from yalis.attention.backends import AttentionBackend
 
 model_id = "yalis/external/checkpoints/openai/gpt-oss-20b"
 
-# Setup
+# Prepare prompt (shared for both models)
+print("Preparing prompt...")
 tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True, local_files_only=True)
 prompt = tokenizer.apply_chat_template(
     [{"role": "user", "content": "How to bake a cake?"}],
@@ -16,83 +22,131 @@ prompt = tokenizer.apply_chat_template(
     tokenize=False,
 )
 inputs = tokenizer(prompt, return_tensors="pt")
+print(f"Prompt tokens shape: {inputs.input_ids.shape}")
+print(f"Prompt length: {inputs.input_ids.shape[1]} tokens\n")
 
-# HuggingFace forward pass
-print("Loading HuggingFace model...")
+# ============================================================================
+# PHASE 1: HuggingFace forward pass
+# ============================================================================
+print("=" * 80)
+print("PHASE 1: Running HuggingFace model")
+print("=" * 80)
+
 hf_model = AutoModelForCausalLM.from_pretrained(
     model_id, device_map="cuda", dtype=torch.bfloat16, trust_remote_code=True
 )
 hf_model.eval()
 
-print(f"HF model loaded. Prompt tokens shape: {inputs.input_ids.shape}")
-
 with torch.no_grad():
     hf_inputs = {k: v.to("cuda") for k, v in inputs.items()}
     hf_outputs = hf_model(**hf_inputs, output_hidden_states=False)
-    hf_logits = hf_outputs.logits[0, -1, :].cpu()  # Move to CPU immediately
-    hf_top_tokens = torch.topk(hf_logits, 5)
+    # Extract and move to CPU immediately to save GPU memory
+    hf_logits = hf_outputs.logits[0, -1, :].cpu().clone()
+    del hf_outputs  # Free output tensor
 
-print("HF top 5 next tokens:", hf_top_tokens.indices.tolist())
-print("HF top 5 logits:", hf_top_tokens.values.tolist())
+hf_top_tokens = torch.topk(hf_logits, 10)
+print(f"HF top 10 tokens: {hf_top_tokens.indices.tolist()}")
+print(f"HF top 10 logits: {[f'{v:.4f}' for v in hf_top_tokens.values.tolist()]}")
 
-# Initialize distributed for YALIS (torchrun sets RANK, WORLD_SIZE, etc.)
-print("\nInitializing distributed...")
+# Critical: Free HuggingFace model memory before loading YALIS
+print("\nCleaning up HuggingFace model from GPU...")
+del hf_model
+del hf_inputs
+torch.cuda.empty_cache()
+gc.collect()
+print(f"GPU memory after cleanup: {torch.cuda.memory_allocated(0) / 1024**3:.2f} GB allocated")
+
+# ============================================================================
+# PHASE 2: YALIS forward pass
+# ============================================================================
+print("\n" + "=" * 80)
+print("PHASE 2: Running YALIS model")
+print("=" * 80)
+
+# Initialize distributed for YALIS (required even for single GPU)
 if not dist.is_initialized():
     dist.init_process_group(backend="nccl")
 
-# YALIS forward pass
-print("Loading YALIS model...")
 yalis_model = get_model(
     model_id,
     model_dtype=torch.bfloat16,
     attention_backend=AttentionBackend.SDPA,
     use_paged_kv_caching=False,
     prestore_kv_cache=True,
-    disable_tp=True,  # Disable tensor parallelism for diagnostic script
+    disable_tp=True,
 )
-yalis_model = yalis_model.to("cuda")  # Move to CUDA
+yalis_model = yalis_model.to("cuda")
 yalis_model.eval()
 
-print(f"YALIS model loaded with attention backend: {yalis_model.config.attention_backend}")
-print(f"YALIS model vocab size: {yalis_model.config.vocab_size}")
+print(f"YALIS config: backend={yalis_model.config.attention_backend}, vocab_size={yalis_model.config.vocab_size}")
 
-# Set up KV cache for single sequence
+# Allocate KV cache for this sequence length
 yalis_model.set_kv_cache(max_batch_size=1, max_seq_length=inputs.input_ids.shape[1])
 
 with torch.no_grad():
     token_ids = inputs.input_ids.to("cuda")
-    # GPT.forward requires: input_ids, phase, actual_sequence_lengths (optional)
     yalis_outputs = yalis_model(token_ids, phase=EnginePhase.PREFILL)
-    yalis_logits = yalis_outputs["logits"][0, -1, :].to("cpu")  # Move to CPU for comparison
-    yalis_top_tokens = torch.topk(yalis_logits, 5)
+    # Extract and move to CPU
+    yalis_logits = yalis_outputs["logits"][0, -1, :].cpu().clone()
+    del yalis_outputs
 
-print("YALIS top 5 next tokens:", yalis_top_tokens.indices.cpu().tolist())
-print("YALIS top 5 logits:", yalis_top_tokens.values.cpu().tolist())
+yalis_top_tokens = torch.topk(yalis_logits, 10)
+print(f"YALIS top 10 tokens: {yalis_top_tokens.indices.tolist()}")
+print(f"YALIS top 10 logits: {[f'{v:.4f}' for v in yalis_top_tokens.values.tolist()]}")
 
-# Compare
-print("\nComparison:")
-print(f"HF top token: {hf_top_tokens.indices[0].item()}")
-print(f"YALIS top token: {yalis_top_tokens.indices[0].item()}")
-print(f"Match: {hf_top_tokens.indices[0].item() == yalis_top_tokens.indices[0].item()}")
+# ============================================================================
+# PHASE 3: Comparison
+# ============================================================================
+print("\n" + "=" * 80)
+print("PHASE 3: Comparison Results")
+print("=" * 80)
 
-# Check if logits are completely different - ensure both are on CPU for comparison
-hf_logits_cpu = hf_logits.cpu()
-yalis_logits_cpu = yalis_logits.cpu()
+# Check top token match
+top_match = hf_top_tokens.indices[0].item() == yalis_top_tokens.indices[0].item()
+print(f"Top token match: {'✓ YES' if top_match else '✗ NO'}")
+print(f"  HF top token:    {hf_top_tokens.indices[0].item()} (logit: {hf_top_tokens.values[0].item():.4f})")
+print(f"  YALIS top token: {yalis_top_tokens.indices[0].item()} (logit: {yalis_top_tokens.values[0].item():.4f})")
 
-if hf_logits_cpu.shape != yalis_logits_cpu.shape:
-    print(f"\nWARNING: Logit shape mismatch! HF: {hf_logits_cpu.shape}, YALIS: {yalis_logits_cpu.shape}")
+# Check top-5 overlap
+top5_hf = set(hf_top_tokens.indices[:5].tolist())
+top5_yalis = set(yalis_top_tokens.indices[:5].tolist())
+overlap = len(top5_hf & top5_yalis)
+print(f"\nTop-5 overlap: {overlap}/5 tokens")
+print(f"  HF top 5:    {list(top5_hf)}")
+print(f"  YALIS top 5: {list(top5_yalis)}")
+
+# Full logit comparison
+if hf_logits.shape != yalis_logits.shape:
+    print(f"\n⚠️  ERROR: Shape mismatch! HF: {hf_logits.shape}, YALIS: {yalis_logits.shape}")
 else:
-    logit_diff = (hf_logits_cpu - yalis_logits_cpu).abs().max().item()
-    print(f"\nMax logit difference: {logit_diff}")
+    # Compute differences
+    logit_diff = (hf_logits - yalis_logits).abs()
+    max_diff = logit_diff.max().item()
+    mean_diff = logit_diff.mean().item()
     
-    # Check if they're suspiciously different
-    if logit_diff > 100:
-        print("LARGE DIVERGENCE - Logits are very different!")
-    elif logit_diff > 10:
-        print("MODERATE DIVERGENCE - Logits are somewhat different")
+    print(f"\nLogit statistics:")
+    print(f"  Max difference:  {max_diff:.4f}")
+    print(f"  Mean difference: {mean_diff:.4f}")
+    print(f"  Vocab size:      {hf_logits.shape[0]}")
+    
+    # Diagnosis
+    if max_diff > 100:
+        print("\n❌ VERDICT: LARGE DIVERGENCE - Models produce very different outputs")
+        print("   This suggests fundamental computation differences (attention/MLP/norms)")
+    elif max_diff > 10:
+        print("\n⚠️  VERDICT: MODERATE DIVERGENCE - Some numerical differences")
+        print("   Could be due to precision, operation ordering, or minor implementation differences")
+    elif max_diff > 1:
+        print("\n⚡ VERDICT: MINOR DIVERGENCE - Small numerical differences")
+        print("   Likely due to floating point precision or operation fusion differences")
     else:
-        print("Logits are reasonably close")
+        print("\n✓ VERDICT: MODELS MATCH - Outputs are nearly identical")
+
 # Cleanup
+print("\n" + "=" * 80)
+del yalis_model
+torch.cuda.empty_cache()
 if dist.is_initialized():
     dist.destroy_process_group()
+print("Cleanup complete.")
 
