@@ -48,6 +48,7 @@ yalis_model = get_model(
     attention_backend=AttentionBackend.SDPA,
     use_paged_kv_caching=False,
     prestore_kv_cache=True,
+    disable_tp=True,  # Disable tensor parallelism for diagnostic script
 )
 yalis_model = yalis_model.to("cuda")  # Move to CUDA
 yalis_model.eval()
