@@ -911,7 +911,8 @@ def build_rope_cache(
 
         if scaling_factor > 1.0:
             concentration = 0.1 * math.log(scaling_factor) + 1.0
-            d_half = n_elem // 2
+            # Use the actual number of frequency elements (handles odd n_elem)
+            d_half = freq.numel()
 
             low = (
                 d_half
