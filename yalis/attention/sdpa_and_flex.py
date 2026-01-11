@@ -297,10 +297,12 @@ def rotary_kv_update_sdpa_gen_gptoss(
     mask_float = mask_float.masked_fill(~mask, float("-inf"))
     QK = QK + mask_float.view(B, 1, 1, t_max)
 
-    # append sinks column if provided (sinks: nh x 1 x 1) -> expand to (1, nh, 1, 1)
+    # append sinks column if provided
+    # QK is (B, h, n_q, t_max) where h is the number of query heads
     if sinks is not None:
-        S = sinks.view(1, nh, 1, 1)
-        QK = torch.cat([QK, S.expand(B, -1, -1, -1)], dim=-1)
+        # sinks is (n_head, 1, 1) - expand to (B, n_head, 1, 1)
+        S = sinks.view(1, -1, 1, 1)
+        QK = torch.cat([QK, S.expand(B, h, n_q, 1)], dim=-1)
 
     if use_intra_head_parallelism:
         dist.all_reduce(QK, op=dist.ReduceOp.SUM, group=process_group)
