@@ -1251,9 +1251,10 @@ def copy_weights_gpt_oss(
                 param = load_param(param, name, dtype, verbose=debug_mode)
                 state_dict[to_name] = param
             elif "self_attn.o_proj.bias" in name:
-                to_name = f"transformer.h.{number}.attn.proj.bias"
-                param = load_param(param, name, dtype, verbose=debug_mode)
-                state_dict[to_name] = param
+                # Skip o_proj bias - model uses config.bias=False for proj
+                if debug_mode:
+                    print(f"Skipping {name} - model has no proj bias (config.bias=False)")
+                pass
             
             # Handle sinks (reshape from (n_head,) to (n_head, 1, 1))
             elif "self_attn.sinks" in name:
@@ -1514,7 +1515,13 @@ def convert_hf_checkpoint(
                 print(f"  n_query_groups: {config.n_query_groups}")
                 print(f"  head_size: {config.head_size}")
     
+    # Save config to main checkpoint directory
     save_config(config, checkpoint_dir)
+    
+    # Also save to yalis_checkpoints subdirectory where model will load from
+    save_dir = checkpoint_dir / "yalis_checkpoints"
+    os.makedirs(save_dir, exist_ok=True)
+    save_config(config, save_dir)
 
     if "falcon" in model_name:
         copy_fn = partial(copy_weights_falcon, model_name)
@@ -1606,8 +1613,7 @@ def convert_hf_checkpoint(
             f"Expected {str(checkpoint_dir)!r} to contain .bin files"
         )
 
-    save_dir = checkpoint_dir / "yalis_checkpoints"
-    os.makedirs(save_dir, exist_ok=True)
+    # save_dir already created when saving config above (reuse the same path)
 
     # with incremental_save(checkpoint_dir / "lit_model.pth") as saver:
     with incremental_save(save_dir) as saver:
