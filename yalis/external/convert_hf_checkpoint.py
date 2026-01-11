@@ -1418,7 +1418,7 @@ def copy_weights_gpt_oss(
             
             # Quantized format produces (E, 2880, 5760) but model expects (E, 5760, 2880)
             # Transpose dimensions 1 and 2
-            gate_up_weight = gate_up_weight.transpose(1, 2)
+            gate_up_weight = gate_up_weight.transpose(1, 2).contiguous()
             
             # Save with correct names for GptOssMoE (mlp1 = gate_up combined)
             state_dict[f"transformer.h.{i}.mlp.mlp1_weight"] = gate_up_weight
@@ -1447,7 +1447,7 @@ def copy_weights_gpt_oss(
             down_weight = down_weight.view(n_experts_d, out_features_d, -1)
             
             # Transpose to match model expectation
-            down_weight = down_weight.transpose(1, 2)
+            down_weight = down_weight.transpose(1, 2).contiguous()
             
             # Save with correct names for GptOssMoE (mlp2 = down projection)
             state_dict[f"transformer.h.{i}.mlp.mlp2_weight"] = down_weight
