@@ -1386,32 +1386,27 @@ def copy_weights_gpt_oss(
             gate_up_scales = load_param(moe["gate_up_proj_scales"], f"layer {i} gate_up_proj_scales", None, verbose=debug_mode)  # Keep as uint8
             gate_up_bias = load_param(moe["gate_up_proj_bias"], f"layer {i} gate_up_proj_bias", dtype, verbose=debug_mode)
             
-            # Dequantize gate_up using MXFP4 decoding
+            # Dequantize gate_up using MXFP4 decoding (following GPT-OSS reference)
             # Blocks shape: (n_experts, out_features, in_blocks, block_size=16)
             # Each uint8 byte contains TWO 4-bit FP4 values (nibbles)
             n_experts, out_features, in_blocks, block_size = gate_up_blocks.shape
             
-            # Split into low and high nibbles
+            # Split into low and high nibbles, then interleave
             gate_up_blocks_lo = gate_up_blocks & 0x0F
             gate_up_blocks_hi = gate_up_blocks >> 4
-            
-            # Interleave nibbles: [lo0, hi0, lo1, hi1, ...]
-            gate_up_blocks_interleaved = torch.stack((gate_up_blocks_lo, gate_up_blocks_hi), dim=-1)
-            gate_up_blocks_flat = gate_up_blocks_interleaved.view(n_experts, out_features, in_blocks, block_size * 2)
+            gate_up_blocks = torch.stack((gate_up_blocks_lo, gate_up_blocks_hi), dim=-1)
+            gate_up_blocks = gate_up_blocks.view(*gate_up_blocks.shape[:-2], gate_up_blocks.shape[-2] * 2)
             
             # Convert scales: uint8 -> int32, subtract bias (127)
             gate_up_scales_adj = gate_up_scales.to(torch.int32) - 127
-            
-            # Expand scales to match the doubled block size
-            gate_up_scales_expanded = gate_up_scales_adj.unsqueeze(-1).expand(n_experts, out_features, in_blocks, block_size * 2)
             
             # Create FP4 lookup table
             target_dtype = dtype if dtype is not None else torch.bfloat16
             fp4_lut = torch.tensor(FP4_VALUES, dtype=target_dtype, device=gate_up_blocks.device)
             
             # Decode: lookup FP4 values, then scale using ldexp (value * 2^scale)
-            gate_up_decoded = fp4_lut[gate_up_blocks_flat.to(torch.int32)]
-            gate_up_weight = torch.ldexp(gate_up_decoded, gate_up_scales_expanded)
+            # Let broadcasting handle the scale expansion
+            gate_up_weight = torch.ldexp(fp4_lut[gate_up_blocks.to(torch.int32)], gate_up_scales_adj.unsqueeze(-1))
             
             # Debug: Check if weights look reasonable
             if debug_mode or i == 0:
@@ -1435,16 +1430,15 @@ def copy_weights_gpt_oss(
             # Split nibbles
             down_blocks_lo = down_blocks & 0x0F
             down_blocks_hi = down_blocks >> 4
-            down_blocks_interleaved = torch.stack((down_blocks_lo, down_blocks_hi), dim=-1)
-            down_blocks_flat = down_blocks_interleaved.view(n_experts_d, out_features_d, in_blocks_d, block_size_d * 2)
+            down_blocks = torch.stack((down_blocks_lo, down_blocks_hi), dim=-1)
+            down_blocks = down_blocks.view(*down_blocks.shape[:-2], down_blocks.shape[-2] * 2)
             
             # Convert scales
             down_scales_adj = down_scales.to(torch.int32) - 127
-            down_scales_expanded = down_scales_adj.unsqueeze(-1).expand(n_experts_d, out_features_d, in_blocks_d, block_size_d * 2)
             
             # Decode
-            down_decoded = fp4_lut[down_blocks_flat.to(torch.int32)]
-            down_weight = torch.ldexp(down_decoded, down_scales_expanded)
+            down_decoded = fp4_lut[down_blocks.to(torch.int32)]
+            down_weight = torch.ldexp(down_decoded, down_scales_adj.unsqueeze(-1))
             down_weight = down_weight.view(n_experts_d, out_features_d, -1)
             
             # After reshape we get (E, hidden, intermediate) which is already correct!
