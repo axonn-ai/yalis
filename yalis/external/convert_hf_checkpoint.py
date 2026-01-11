@@ -1333,13 +1333,8 @@ def copy_weights_gpt_oss(
                         if debug_mode:
                             print(f"Padded {to_name} from {vocab_size_checkpoint} to {padded_vocab_size}")
                     
-                    # GPT-OSS embeddings are pre-scaled by sliding_window (128)
-                    # We need to scale them down to match typical embedding magnitudes
-                    if "wte" in to_name and hasattr(config, 'sliding_window_size') and config.sliding_window_size:
-                        scale_factor = config.sliding_window_size
-                        param = param / scale_factor
-                        if debug_mode:
-                            print(f"Scaled {to_name} by 1/{scale_factor} (GPT-OSS embedding normalization)")
+                    # NOTE: GPT-OSS embeddings in HF checkpoint appear to be pre-scaled by sliding_window (128)
+                    # We keep them as-is and handle scaling in the forward pass if needed
                     
                     # Debug output for embedding/lm_head
                     if debug_mode or ("wte" in to_name or "lm_head" in to_name):

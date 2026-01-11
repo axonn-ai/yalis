@@ -159,6 +159,12 @@ class GPT(nn.Module):
         x = self.transformer.wte(
             idx
         )  # token embeddings of shape (b, t, n_embd)
+        
+        # GPT-OSS: embeddings in checkpoint are pre-scaled by sliding_window (128)
+        # Descale them here to get normal magnitude activations
+        if hasattr(self.config, 'sliding_window_size') and self.config.sliding_window_size:
+            x = x / self.config.sliding_window_size
+        
         if self.config.scale_embeddings:
             x = x * torch.tensor(self.config.n_embd**0.5, dtype=x.dtype)
         if self.config.tensor_parallel:
