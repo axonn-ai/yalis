@@ -77,6 +77,14 @@ if __name__ == "__main__":
             print(f"First formatted prompt (first 300 chars):")
             print(repr(formatted_prompt[:300]))
             print(f"Prompt ends with: {repr(formatted_prompt[-50:])}")
+            
+            # Debug: Check how the prompt is tokenized
+            prompt_token_ids = tokenizer.encode(formatted_prompt, add_special_tokens=False)
+            print(f"Prompt length in tokens: {len(prompt_token_ids)}")
+            print(f"Last 10 tokens: {prompt_token_ids[-10:]}")
+            print(f"Last 10 tokens decoded: {[tokenizer.decode([t]) for t in prompt_token_ids[-10:]]}")
+            print(f"EOS token ID: {tokenizer.eos_token_id}")
+            print()
 
 
     # Number of tokens to generate
@@ -154,6 +162,15 @@ if __name__ == "__main__":
     for prompt, output in zip(user_prompts, detokenized_text):
         print_rank0("==========================\n\n")
         print_rank0(f"prompt = {prompt}")
+        
+        # Debug: Show token IDs for the first few generated tokens
+        if prompt == user_prompts[0]:
+            # Get the first sequence from output_tokens
+            first_output_tokens = output_tokens[0][:20]  # First 20 generated tokens
+            print_rank0(f"\nFirst 20 generated token IDs: {first_output_tokens.tolist()}")
+            print_rank0(f"Decoded individually: {[tokenizer.decode([t]) for t in first_output_tokens.tolist()]}")
+            print_rank0(f"EOS token ID: {tokenizer.eos_token_id}")
+            print_rank0(f"endoftext token ID: {tokenizer.encode('<|endoftext|>', add_special_tokens=False)}\n")
         
         # Extract the final answer from Harmony format
         # The model outputs: <|start|>assistant<|channel|>analysis...<|end|><|channel|>final<|message|>ANSWER<|end|>
