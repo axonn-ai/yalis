@@ -4,6 +4,14 @@
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+def format_harmony_prompt(content):
+    """Format prompt using the Harmony format required by GPT-OSS.
+    
+    GPT-OSS models require the Harmony response format for proper inference.
+    Without this, the model generates code/symbols instead of natural language.
+    """
+    return f"<|start|>user<|message|>{content}<|end|><|start|>assistant"
+
 def main():
     model_path = "yalis/external/checkpoints/openai/gpt-oss-20b"
     
@@ -29,7 +37,12 @@ def main():
     
     for prompt in prompts:
         print(f"\n=== Prompt: {prompt} ===")
-        inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+        
+        # Format with Harmony prompt structure
+        formatted_prompt = format_harmony_prompt(prompt)
+        print(f"Formatted prompt: {formatted_prompt[:80]}...")
+        
+        inputs = tokenizer(formatted_prompt, return_tensors="pt").to(model.device)
         
         with torch.no_grad():
             outputs = model.generate(
