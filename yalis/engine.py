@@ -447,19 +447,23 @@ class LLMEngine:
     ) -> None:
         """Warmup by calling prefill and decode"""
         print("Prefill warmup start.")
+        prefill_start = time.perf_counter()
         self.warmup_prefill(
             batch_sizes=prefill_batch_sizes,
             seq_lengths=prefill_seq_lengths,
             iterations=1,
         )
-        print("Prefill warmup end.")
+        prefill_elapsed = time.perf_counter() - prefill_start
+        print(f"Prefill warmup end. Elapsed {prefill_elapsed:.2f}s")
         print("Decode warmup start.")
+        decode_start = time.perf_counter()
         self.warmup_decode(
             batch_sizes=decode_batch_sizes,
             prompt_length=decode_prompt_length,
             iterations=decode_iterations,
         )
-        print("Decode warmup end.")
+        decode_elapsed = time.perf_counter() - decode_start
+        print(f"Decode warmup end. Elapsed {decode_elapsed:.2f}s")
     
     def generate(
         self,
