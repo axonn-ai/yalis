@@ -1415,10 +1415,12 @@ def copy_weights_gpt_oss(
             
             # Reshape to final dimensions: (n_experts, out_features, in_features)
             gate_up_weight = gate_up_weight.view(n_experts, out_features, -1)
+            print(f"DEBUG: Before transpose - shape: {gate_up_weight.shape}")
             
             # Quantized format produces (E, 2880, 5760) but model expects (E, 5760, 2880)
             # Transpose dimensions 1 and 2
             gate_up_weight = gate_up_weight.transpose(1, 2).contiguous()
+            print(f"DEBUG: After transpose - shape: {gate_up_weight.shape}")
             
             # Save with correct names for GptOssMoE (mlp1 = gate_up combined)
             state_dict[f"transformer.h.{i}.mlp.mlp1_weight"] = gate_up_weight
