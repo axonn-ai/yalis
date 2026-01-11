@@ -93,7 +93,7 @@ if __name__ == "__main__":
     # NOTE: WARMUP CODE
     prefill_batch_sizes = [1, MAX_BATCH_SIZE]
     prefill_seq_lengths = [1, 1024]
-    decode_batch_sizes = [1, 2, 4, 6, 8]
+    decode_batch_sizes = [2]
 
     engine.warmup(
         prefill_batch_sizes=prefill_batch_sizes,

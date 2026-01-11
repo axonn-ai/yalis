@@ -368,6 +368,7 @@ class LLMEngine:
         ):
             for bs in batch_sizes:
                 for sl in seq_lengths:
+                    print(f"Warmup prefill for batch size {bs} and sequence length {sl}")
                     for _ in range(iterations):
                         self._reset_warmup_states(bs)
 
@@ -386,6 +387,7 @@ class LLMEngine:
                             top_k=self.inference_config.top_k,
                             top_p=self.inference_config.top_p,
                         )
+                        print(f"Warmup prefill for batch size {bs} and sequence length {sl} completed")
         torch.cuda.synchronize()
 
     def warmup_decode(
@@ -399,6 +401,7 @@ class LLMEngine:
             self.device, dtype=self.dtype, cache_enabled=False
         ):
             for bs in batch_sizes:
+                print(f"Warmup decode for batch size {bs} and prompt length {prompt_length}")
                 self._reset_warmup_states(bs)
 
                 # Tiny prefill
@@ -429,6 +432,7 @@ class LLMEngine:
                             top_k=self.inference_config.top_k,
                             top_p=self.inference_config.top_p,
                         )
+                print(f"Warmup decode for batch size {bs} and prompt length {prompt_length} completed")
         torch.cuda.synchronize()
 
     def warmup(
