@@ -421,17 +421,19 @@ class LLMEngine:
                     top_p=self.inference_config.top_p,
                 )
 
+                current_input_to_model = next_token.clone()
+
                 # Decode steps
-                token = next_token.clone()  # (bs, 1)
                 for _ in range(int(iterations)):
                     with sdpa_kernel(SDPBackend.MATH):
-                        token, _ = generate(
+                        next_token, _ = generate(
                             self.model,
-                            token,
+                            current_input_to_model,
                             temperature=self.inference_config.temperature,
                             top_k=self.inference_config.top_k,
                             top_p=self.inference_config.top_p,
                         )
+                    current_input_to_model.copy_(next_token)
                 print(f"Warmup decode for batch size {bs} and prompt length {prompt_length} completed")
         torch.cuda.synchronize()
 
