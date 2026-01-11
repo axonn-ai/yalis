@@ -1416,6 +1416,11 @@ def copy_weights_gpt_oss(
             # Reshape to final dimensions: (n_experts, out_features, in_features)
             gate_up_weight = gate_up_weight.view(n_experts, out_features, -1)
             
+            # Transpose to match model expectation: (n_experts, out_features, in_features) -> (n_experts, in_features, out_features)
+            # Model expects mlp1_weight: (E, 2*intermediate, hidden) for einsum "m k o c, m c -> m k o"
+            # But HF stores as (E, out, in), so we transpose last two dims
+            gate_up_weight = gate_up_weight.transpose(1, 2)  # (E, in, out) -> matches (E, hidden, 2*intermediate)
+            
             # Save with correct names for GptOssMoE (mlp1 = gate_up combined)
             state_dict[f"transformer.h.{i}.mlp.mlp1_weight"] = gate_up_weight
             state_dict[f"transformer.h.{i}.mlp.mlp1_bias"] = gate_up_bias
@@ -1441,6 +1446,11 @@ def copy_weights_gpt_oss(
             down_decoded = fp4_lut[down_blocks_flat.to(torch.int32)]
             down_weight = torch.ldexp(down_decoded, down_scales_expanded)
             down_weight = down_weight.view(n_experts_d, out_features_d, -1)
+            
+            # Transpose to match model expectation: (n_experts, out_features, in_features) -> (n_experts, in_features, out_features)
+            # Model expects mlp2_weight: (E, hidden, intermediate) for einsum "m k c p, m k p -> m k c"
+            # But HF stores as (E, out, in), so we transpose last two dims
+            down_weight = down_weight.transpose(1, 2)  # (E, in, out) -> matches (E, hidden, intermediate)
             
             # Save with correct names for GptOssMoE (mlp2 = down projection)
             state_dict[f"transformer.h.{i}.mlp.mlp2_weight"] = down_weight
