@@ -159,6 +159,19 @@ def rotary_kv_update_sdpa_gen(
 
     enable_gqa = q.size(1) != k.size(1)
 
+    # For GQA, expand K and V to match Q's head count
+    # PyTorch SDPA doesn't natively support GQA, so we repeat K/V heads
+    if enable_gqa:
+        q_heads = q.size(1)
+        kv_heads = k.size(1)
+        q_per_kv = q_heads // kv_heads
+        # Expand K and V caches by repeating each head q_per_kv times
+        k_cache_expanded = k_cache.repeat_interleave(q_per_kv, dim=1)
+        v_cache_expanded = v_cache.repeat_interleave(q_per_kv, dim=1)
+    else:
+        k_cache_expanded = k_cache
+        v_cache_expanded = v_cache
+
     # Pass sliced K V caches for current batch size
     if use_intra_head_parallelism:
         assert (
@@ -170,8 +183,8 @@ def rotary_kv_update_sdpa_gen(
         mask_float = mask_float.unsqueeze(1)
         out = intra_head_sdpa(
             q,
-            k_cache[:B],
-            v_cache[:B],
+            k_cache_expanded[:B],
+            v_cache_expanded[:B],
             mask_float,
             ax.comm_handle.inner_intra_layer_parallel_group,
             enable_gqa,
@@ -185,18 +198,17 @@ def rotary_kv_update_sdpa_gen(
             ), "flex attention requires a block mask"
             out = flex_attention(
                 q,
-                k_cache[:B],
-                v_cache[:B],
+                k_cache_expanded[:B],
+                v_cache_expanded[:B],
                 enable_gqa=enable_gqa,
                 block_mask=flex_attention_block_mask,
             )
         else:
             out = torch.nn.functional.scaled_dot_product_attention(
                 q,
-                k_cache[:B],
-                v_cache[:B],
+                k_cache_expanded[:B],
+                v_cache_expanded[:B],
                 attn_mask=mask[:, None, None, :],
-                enable_gqa=enable_gqa,
             )
         return out
 
