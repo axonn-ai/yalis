@@ -1315,6 +1315,23 @@ def copy_weights_gpt_oss(
             to_name = weight_map.get(name)
             if to_name is not None:
                 param = load_param(param, name, dtype, verbose=debug_mode)
+                
+                # Pad embedding and lm_head to match padded_vocab_size
+                if ("wte" in to_name or "lm_head" in to_name) and param.dim() >= 1:
+                    vocab_size_checkpoint = param.shape[0]
+                    padded_vocab_size = config.padded_vocab_size
+                    if vocab_size_checkpoint < padded_vocab_size:
+                        # Pad with zeros to match padded vocab size
+                        pad_size = padded_vocab_size - vocab_size_checkpoint
+                        padding = torch.zeros(
+                            (pad_size,) + param.shape[1:],
+                            dtype=param.dtype,
+                            device=param.device
+                        )
+                        param = torch.cat([param, padding], dim=0)
+                        if debug_mode:
+                            print(f"Padded {to_name} from {vocab_size_checkpoint} to {padded_vocab_size}")
+                
                 state_dict[to_name] = param
         
         if pbar is not None and progress_per_file is not None:
