@@ -48,8 +48,8 @@ if __name__ == "__main__":
     # profile the run or not
     enable_profiling = False
 
-    # Tokenizer for encoding the prompt
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    # Tokenizer for encoding the prompt (load from local checkpoint directory)
+    tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True, local_files_only=True)
 
     input_prompts = []
     for user_prompt in user_prompts:
