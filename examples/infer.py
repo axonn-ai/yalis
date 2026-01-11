@@ -64,6 +64,12 @@ if __name__ == "__main__":
             conversation, add_generation_prompt=True, tokenize=False
         )
         input_prompts.append(formatted_prompt)
+        # Print first prompt to verify Harmony format
+        if len(input_prompts) == 1:
+            print(f"First formatted prompt (first 300 chars):")
+            print(repr(formatted_prompt[:300]))
+            print(f"Full first prompt contains Harmony tags: {('<|start|>user' in formatted_prompt and '<|end|>' in formatted_prompt)}")
+
 
     # Number of tokens to generate
     tokens_to_gen = 512
