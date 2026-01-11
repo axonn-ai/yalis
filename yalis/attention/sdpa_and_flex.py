@@ -135,7 +135,7 @@ def rotary_kv_update_sdpa_gen(
     b_indices = torch.arange(B, device=k_cache.device)
     t_indices = token_counter[:B].view(-1)
 
-    if ax.config.G_intra_c > 1 and use_intra_head_parallelism:
+    if hasattr(ax.config, 'G_intra_c') and ax.config.G_intra_c > 1 and use_intra_head_parallelism:
         k_cache[b_indices, :, t_indices, :] = Drop.apply(
             k[:, :, 0, :], ax.comm_handle.inner_intra_layer_parallel_group
         )
@@ -372,7 +372,7 @@ def rotary_kv_update_sdpa_prefill(
     B = q.size(0)
 
     # Index K V caches with respect to current batch size
-    if ax.config.G_intra_c > 1 and use_intra_head_parallelism:
+    if hasattr(ax.config, 'G_intra_c') and ax.config.G_intra_c > 1 and use_intra_head_parallelism:
         k_cache[:B, :, :T, :] = Drop.apply(
             k[:B, :, :T, :], ax.comm_handle.inner_intra_layer_parallel_group
         )
