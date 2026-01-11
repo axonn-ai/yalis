@@ -552,26 +552,38 @@ class CausalSelfAttention(nn.Module):
         # output projection
         # if `head_size` is explicitly specified in the config,
         # `n_embd` might not be equal to `head_size * n_head`
+        # Use attn_bias for output projection as well (GPT-OSS uses attention_bias=True)
         if not config.tensor_parallel:
             self.proj = nn.Linear(
                 config.head_size * config.n_head,
                 config.n_embd,
-                bias=config.bias,
+                bias=attn_bias,
             )
         else:
             self.proj = TPLinear(
                 config.head_size * config.n_head,
                 config.n_embd,
-                bias=config.bias,
+                bias=attn_bias,
                 transpose=True,
                 init_device=config.init_device,
             )
         # disabled by default
         self.kv_cache: Optional[KVCache] = None
-        self.apply_sliding_window_attention = (
-            config.sliding_window_size is not None
-            and block_idx % config.sliding_window_layer_placing == 0
-        )
+        
+        # Determine if this layer uses sliding window attention
+        # Priority: sliding_window_indices (per-layer) > sliding_window_layer_placing (modulo)
+        if config.sliding_window_indices is not None and block_idx < len(config.sliding_window_indices):
+            # Use per-layer indices: 1 = sliding window, 0 = full attention
+            self.apply_sliding_window_attention = (
+                config.sliding_window_size is not None
+                and config.sliding_window_indices[block_idx] == 1
+            )
+        else:
+            # Fallback to modulo-based placement
+            self.apply_sliding_window_attention = (
+                config.sliding_window_size is not None
+                and block_idx % config.sliding_window_layer_placing == 0
+            )
 
         if config.norm_qk:
             assert config.norm_qk_type == "default"

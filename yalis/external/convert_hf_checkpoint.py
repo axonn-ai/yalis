@@ -1251,10 +1251,10 @@ def copy_weights_gpt_oss(
                 param = load_param(param, name, dtype, verbose=debug_mode)
                 state_dict[to_name] = param
             elif "self_attn.o_proj.bias" in name:
-                # Skip o_proj bias - model uses config.bias=False for proj
-                if debug_mode:
-                    print(f"Skipping {name} - model has no proj bias (config.bias=False)")
-                pass
+                # GPT-OSS uses attention biases (attention_bias=True in HF config)
+                to_name = f"transformer.h.{number}.attn.proj.bias"
+                param = load_param(param, name, dtype, verbose=debug_mode)
+                state_dict[to_name] = param
             
             # Handle sinks (reshape from (n_head,) to (n_head, 1, 1))
             elif "self_attn.sinks" in name:
