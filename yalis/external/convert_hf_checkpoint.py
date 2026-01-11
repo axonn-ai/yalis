@@ -1263,6 +1263,7 @@ def copy_weights_gpt_oss(
                 # Reshape from (n_head,) to (n_head, 1, 1) to match model expectation
                 if param.dim() == 1:
                     param = param.view(-1, 1, 1)
+                print(f"[DEBUG] Loaded sinks for layer {number}: shape={param.shape}, mean={param.mean().item():.6f}, std={param.std().item():.6f}, min={param.min().item():.6f}, max={param.max().item():.6f}")
                 state_dict[to_name] = param
             
             # Handle layer norms
@@ -1331,6 +1332,9 @@ def copy_weights_gpt_oss(
                         param = torch.cat([param, padding], dim=0)
                         if debug_mode:
                             print(f"Padded {to_name} from {vocab_size_checkpoint} to {padded_vocab_size}")
+                    # Debug output for embedding/lm_head
+                    if debug_mode or ("wte" in to_name or "lm_head" in to_name):
+                        print(f"[DEBUG] {to_name} - shape: {param.shape}, min: {param.min():.6f}, max: {param.max():.6f}, mean: {param.mean():.6f}, std: {param.std():.6f}")
                 
                 state_dict[to_name] = param
         
@@ -1366,6 +1370,11 @@ def copy_weights_gpt_oss(
             cycled_bias = [t for group in zip(qs_bias, ks_bias, vs_bias) for t in group]
             qkv_bias = torch.cat(cycled_bias)
             state_dict[f"transformer.h.{i}.attn.attn.bias"] = qkv_bias
+            
+            # Debug: Check QKV weight statistics for first layer
+            if debug_mode or i == 0:
+                print(f"Layer {i} QKV weight - shape: {qkv_weight.shape}, min: {qkv_weight.min():.6f}, max: {qkv_weight.max():.6f}, mean: {qkv_weight.mean():.6f}, std: {qkv_weight.std():.6f}")
+                print(f"Layer {i} QKV bias - shape: {qkv_bias.shape}, min: {qkv_bias.min():.6f}, max: {qkv_bias.max():.6f}, mean: {qkv_bias.mean():.6f}, std: {qkv_bias.std():.6f}")
             
             del qkv_weights[i]
             if progress_per_file is not None and pbar is not None:
