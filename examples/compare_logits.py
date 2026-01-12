@@ -110,15 +110,14 @@ print(f"Embedding stats: mean={wte_weight.mean().item():.6f}, std={wte_weight.st
 print(f"Embedding for token 200005: mean={wte_weight[200005].mean().item():.6f}, std={wte_weight[200005].std().item():.6f}")
 print(f"Embedding for token 6: mean={wte_weight[6].mean().item():.6f}, std={wte_weight[6].std().item():.6f}")
 
-    # FIX: Apply 128x scaling correction
-    print("\n⚠️  APPLYING 128x SCALING FIX TO EMBEDDINGS ⚠️")
-    yalis_model.transformer.wte.weight.data *= 128.0
-    # Also scale lm_head if sharing weights (not shared in config, but maybe needed?)
-    yalis_model.lm_head.weight.data *= 128.0
-    print("Scaling applied. Re-checking stats:")
-    print(f"Fixed Embedding stats: mean={wte_weight.mean().item():.6f}, std={wte_weight.std().item():.6f}")
-
-    # Allocate KV cache for this sequence length
+# FIX: Apply 128x scaling correction
+print("\n⚠️  APPLYING 128x SCALING FIX TO EMBEDDINGS ⚠️")
+yalis_model.transformer.wte.weight.data *= 128.0
+# Also scale lm_head if sharing weights (not shared in config, but maybe needed?)
+yalis_model.lm_head.weight.data *= 128.0
+print("Scaling applied. Re-checking stats:")
+print(f"Fixed Embedding stats: mean={wte_weight.mean().item():.6f}, std={wte_weight.std().item():.6f}")
+# Allocate KV cache for this sequence length
 yalis_model.set_kv_cache(max_batch_size=1, max_seq_length=inputs.input_ids.shape[1])
 
 with torch.no_grad():
