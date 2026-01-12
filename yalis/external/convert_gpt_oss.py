@@ -50,7 +50,7 @@ def main() -> None:
             checkpoint_dir=CHECKPOINT_DIR,
             model_name="gpt-oss-20b",
             dtype="float16",
-            debug_mode=False,
+            debug_mode=True,
         )
     except Exception:
         import traceback
