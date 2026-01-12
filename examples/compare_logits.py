@@ -51,8 +51,9 @@ hf_model.eval()
 
 with torch.no_grad():
     hf_inputs = {k: v.to("cuda") for k, v in inputs.items()}
-    # Get embeddings to compare
-    hf_embeddings = hf_model.model.embed_tokens(hf_inputs["input_ids"])[0, -1, :].cpu()
+    # Get RAW embeddings (before any model processing) to compare
+    hf_embed_layer = hf_model.model.embed_tokens
+    hf_embeddings_raw = hf_embed_layer(hf_inputs["input_ids"])[0, -1, :].cpu()
     hf_outputs = hf_model(**hf_inputs, output_hidden_states=False)
     # Extract and move to CPU immediately to save GPU memory
     hf_logits = hf_outputs.logits[0, -1, :].cpu().clone()
@@ -62,7 +63,7 @@ hf_top_tokens = torch.topk(hf_logits, 10)
 print(f"HF top 10 tokens: {hf_top_tokens.indices.tolist()}")
 print(f"HF top 10 logits: {[f'{v:.4f}' for v in hf_top_tokens.values.tolist()]}")
 print(f"HF decoded tokens: {[repr(tokenizer.decode([t])) for t in hf_top_tokens.indices[:5].tolist()]}")
-print(f"HF last token embedding: mean={hf_embeddings.mean().item():.6f}, std={hf_embeddings.std().item():.6f}")
+print(f"HF last token RAW embedding: mean={hf_embeddings_raw.mean().item():.6f}, std={hf_embeddings_raw.std().item():.6f}")
 
 # Critical: Free HuggingFace model memory before loading YALIS
 print("\nCleaning up HuggingFace model from GPU...")
@@ -133,13 +134,13 @@ print("\n" + "=" * 80)
 print("PHASE 3: Comparison Results")
 print("=" * 80)
 
-# First check if embeddings match
-emb_diff = (hf_embeddings - yalis_embeddings).abs().max().item()
-print(f"Embedding difference for last token: {emb_diff:.6f}")
+# First check if RAW embeddings match
+emb_diff = (hf_embeddings_raw - yalis_embeddings).abs().max().item()
+print(f"RAW embedding difference for last token: {emb_diff:.6f}")
 if emb_diff > 0.001:
-    print("⚠️  Embeddings don't match! Weight loading issue suspected.")
+    print("⚠️  RAW embeddings don't match! Weight loading issue.")
 else:
-    print("✓ Embeddings match, issue is in forward computation")
+    print("✓ RAW embeddings match, issue is in forward computation")
 print()
 
 # Check top token match
