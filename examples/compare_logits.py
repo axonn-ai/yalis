@@ -17,17 +17,16 @@ model_id = "yalis/external/checkpoints/openai/gpt-oss-20b"
 print("Preparing prompt...")
 tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True, local_files_only=True)
 
-# Test with a simple prompt WITHOUT chat template first to isolate the issue
-use_simple_prompt = True
-if use_simple_prompt:
-    prompt = "The capital of France is"
-    print("Using simple prompt (no chat template)")
-else:
-    prompt = tokenizer.apply_chat_template(
-        [{"role": "user", "content": "How to bake a cake?"}],
-        add_generation_prompt=True,
-        tokenize=False,
-    )
+# Test with various simple prompts WITHOUT chat template
+prompts_to_test = [
+    "The capital of France is",
+    "How to bake a cake?",
+    "How to drive a car on a freeway?",
+    "What are the best practices for time management?",
+]
+
+prompt = prompts_to_test[0]  # Start with first prompt
+print(f"Using simple prompt (no chat template): {repr(prompt)}")
     print("Using Harmony chat template")
 
 inputs = tokenizer(prompt, return_tensors="pt")
