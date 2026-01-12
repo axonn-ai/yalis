@@ -27,7 +27,7 @@ prompts_to_test = [
 
 prompt = prompts_to_test[0]  # Start with first prompt
 print(f"Using simple prompt (no chat template): {repr(prompt)}")
-    print("Using Harmony chat template")
+print("Using Harmony chat template")
 
 inputs = tokenizer(prompt, return_tensors="pt")
 print(f"Prompt tokens shape: {inputs.input_ids.shape}")
