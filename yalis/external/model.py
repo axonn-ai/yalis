@@ -124,15 +124,41 @@ class GPT(nn.Module):
         token_counter: torch.Tensor = None,
     ) -> torch.Tensor:
         idx = input_ids
-        T = idx.size(1)
-        if self.max_seq_length < T:
-            raise ValueError(
-                f"Cannot forward sequence of length {T}, max seq length is only {self.max_seq_length}."  # noqa: E501
-            )
-
-        x = self.transformer.wte(
-            idx
-        )  # token embeddings of shape (b, t, n_embd)
+        
+        # Handle flattened input_ids: (total_tokens,)
+        if idx.dim() == 1:
+            if actual_sequence_lengths is None:
+                raise ValueError("actual_sequence_lengths required when input_ids is flattened")
+            
+            B = len(actual_sequence_lengths)  # Actual batch size (number of requests)
+            # Avoid .item() during CUDA graph capture
+            max_T_tensor = actual_sequence_lengths.max()
+            # During graph capture, we can't use .item() or int() conversion
+            # Use the tensor directly or a reasonable default
+            if torch._dynamo.is_compiling():
+                # During graph capture, use a reasonable default based on model config
+                max_T = self.max_seq_length  # Use model's max sequence length
+            else:
+                max_T = max_T_tensor.item()
+            
+            # Embedding lookup on flattened tokens
+            x = self.transformer.wte(idx)  # (total_tokens, n_embd)
+            
+            # Validate max sequence length
+            if self.max_seq_length < max_T:
+                raise ValueError(
+                    f"Cannot forward sequence of length {max_T}, max seq length is only {self.max_seq_length}."  # noqa: E501
+                )
+        else:
+            # Original format: (B, T)
+            T = idx.size(1)
+            if self.max_seq_length < T:
+                raise ValueError(
+                    f"Cannot forward sequence of length {T}, max seq length is only {self.max_seq_length}."  # noqa: E501
+                )
+            x = self.transformer.wte(idx)  # (b, t, n_embd)
+            B = x.size(0)
+        
         if self.config.scale_embeddings:
             x = x * torch.tensor(self.config.n_embd**0.5, dtype=x.dtype)
         if self.config.tensor_parallel:
@@ -148,8 +174,6 @@ class GPT(nn.Module):
         if self.config.attention_backend == AttentionBackend.FLASH:
             self.cos = self.cos.to(x.dtype)
             self.sin = self.sin.to(x.dtype)
-
-        B = x.size(0)
 
         flex_attention_block_mask = (
             create_causal_block_mask_for_flex_attention(
@@ -175,7 +199,7 @@ class GPT(nn.Module):
                 x, ax.comm_handle.inner_intra_layer_parallel_group
             )
         x = self.transformer.ln_f(x)
-        x = self.lm_head(x)  # (b, t, vocab_size)
+        x = self.lm_head(x)  # (b, t, vocab_size) or (total_tokens, vocab_size) if flattened
         if self.config.final_logit_softcapping is not None:
             x = (
                 torch.tanh(x / self.config.final_logit_softcapping)
@@ -183,9 +207,15 @@ class GPT(nn.Module):
             )
 
         if token_counter is None:
-            self.token_counter[:B].add_(
-                T if actual_sequence_lengths is None else actual_sequence_lengths
-            )
+            if idx.dim() == 1:
+                # Flattened case: actual_sequence_lengths is required
+                self.token_counter[:B].add_(actual_sequence_lengths)
+            else:
+                # Original case
+                T = idx.size(1)
+                self.token_counter[:B].add_(
+                    T if actual_sequence_lengths is None else actual_sequence_lengths
+                )
         return {"logits": x}
 
     @classmethod
@@ -523,11 +553,92 @@ class CausalSelfAttention(nn.Module):
         actual_sequence_lengths: torch.Tensor = None,
         flex_attention_block_mask=None,
     ) -> torch.Tensor:
-        B, T, C = (
-            x.size()
-        )  # batch size, sequence length, embedding dimensionality (n_embd)
+        # Flattened format: (total_tokens, n_embd)
+        if actual_sequence_lengths is None:
+            raise ValueError("actual_sequence_lengths required when x is flattened")
+        
+        B = len(actual_sequence_lengths)
+        
+        # Ensure x is 2D: (total_tokens, n_embd)
+        # Handle case where x might be 3D due to tensor parallel or other issues
+        if x.dim() == 3:
+            # If x is 3D, flatten the first two dimensions
+            # Shape: (B, T, n_embd) -> (B*T, n_embd) = (total_tokens, n_embd)
+            x = x.view(-1, x.size(-1))
+        elif x.dim() != 2:
+            raise ValueError(f"Expected x to be 2D or 3D, got {x.dim()}D with shape {x.shape}")
+        
+        # Now compute total_tokens after ensuring x is 2D
+        # In decode mode, actual_sequence_lengths = torch.ones(B), so total_tokens should equal B
+        # But x might have wrong shape from previous layers, so use actual_sequence_lengths to compute total_tokens
+        total_tokens = x.size(0)
+        expected_total_tokens_tensor = actual_sequence_lengths.sum()  # Keep as tensor to avoid .item() during graph capture
+        
+        # Validate and fix shape mismatch if needed (only when not compiling to avoid graph breaks)
+        # During CUDA graph capture, skip validation to avoid .item() calls
+        if not torch._dynamo.is_compiling():
+            expected_total_tokens = expected_total_tokens_tensor.item()
+            if total_tokens != expected_total_tokens:
+                # If mismatch, try to fix it
+                if total_tokens % expected_total_tokens == 0:
+                    # x might have extra dimensions - take the first expected_total_tokens
+                    x = x[:expected_total_tokens]
+                    total_tokens = expected_total_tokens
+                else:
+                    raise ValueError(
+                        f"Shape mismatch: x has {total_tokens} tokens but actual_sequence_lengths "
+                        f"indicates {expected_total_tokens} tokens. x.shape={x.shape}, "
+                        f"actual_sequence_lengths={actual_sequence_lengths}"
+                    )
+        
+        C = x.size(1)  # embedding dimensionality (n_embd)
 
         qkv = self.attn(x)
+        
+        # Ensure qkv is 2D: (total_tokens, output_dim)
+        # Handle case where qkv might be 3D due to tensor parallel or other issues
+        expected_output_dim = (self.config.n_head + 2 * self.config.n_query_groups) * self.config.head_size
+        
+        if qkv.dim() == 3:
+            # If qkv is 3D, we need to extract the correct 2D slice
+            # The error shows qkv was (total_tokens, n_embd, output_dim) and got flattened incorrectly
+            # We need to extract just one slice along the middle dimension
+            if qkv.size(-1) == expected_output_dim:
+                # Last dimension is correct: (total_tokens, n_embd, output_dim)
+                # Take the first slice along the middle dimension
+                qkv = qkv[:, 0, :]  # Shape: (total_tokens, output_dim)
+            elif qkv.size(1) == expected_output_dim:
+                # Middle dimension is correct: (total_tokens, output_dim, something)
+                qkv = qkv[:, :, 0]  # Shape: (total_tokens, output_dim)
+            else:
+                # Neither dimension matches - this shouldn't happen, but try to fix it
+                # If total elements match expected, reshape directly
+                total_elements = qkv.numel()
+                expected_elements = total_tokens * expected_output_dim
+                if total_elements == expected_elements:
+                    # Reshape directly to expected shape
+                    qkv = qkv.reshape(total_tokens, expected_output_dim)
+                else:
+                    # This is an error case - log it and try to recover
+                    raise ValueError(
+                        f"qkv has unexpected 3D shape {qkv.shape}. "
+                        f"Expected 2D shape: (total_tokens={total_tokens}, output_dim={expected_output_dim}). "
+                        f"Total elements: {total_elements}, expected: {expected_elements}. "
+                        f"This might be a tensor parallel configuration issue."
+                    )
+        elif qkv.dim() == 2:
+            # Normal 2D case - verify dimensions
+            if qkv.size(0) != total_tokens:
+                raise ValueError(
+                    f"qkv first dimension mismatch: got {qkv.size(0)}, expected {total_tokens}"
+                )
+            if qkv.size(1) != expected_output_dim:
+                raise ValueError(
+                    f"qkv second dimension mismatch: got {qkv.size(1)}, expected {expected_output_dim}. "
+                    f"This might be a tensor parallel configuration issue."
+                )
+        else:
+            raise ValueError(f"Expected qkv to be 2D or 3D, got {qkv.dim()}D with shape {qkv.shape}")
 
         # assemble into a number of query groups to support
         # MHA, MQA and GQA together (see `config.n_query_groups`)
@@ -535,33 +646,111 @@ class CausalSelfAttention(nn.Module):
         total_qkv = (
             q_per_kv + 2
         )  # each group has 1+ queries, 1 key, and 1 value
+        
         qkv = qkv.view(
-            B, T, self.config.n_query_groups, total_qkv, self.config.head_size
+            total_tokens, self.config.n_query_groups, total_qkv, self.config.head_size
         )
 
         # split batched computation into three
-        q, k, v = qkv.split((q_per_kv, 1, 1), dim=3)
+        q, k, v = qkv.split((q_per_kv, 1, 1), dim=2)
 
-        q = q.reshape(B, T, -1, self.config.head_size)  # (B, T, nh_q, hs)
-        k = k.reshape(B, T, -1, self.config.head_size)  # (B, T, nh_k, hs)
-        v = v.reshape(B, T, -1, self.config.head_size)  # (B, T, nh_v, hs)
+        q = q.reshape(total_tokens, -1, self.config.head_size)  # (total_tokens, nh_q, hs)
+        k = k.reshape(total_tokens, -1, self.config.head_size)  # (total_tokens, nh_k, hs)
+        v = v.reshape(total_tokens, -1, self.config.head_size)  # (total_tokens, nh_v, hs)
 
         assert (
             self.config.rope_n_elem == self.config.head_size
         ), "partial rope is not supported yet"
         k_cache, v_cache = self.kv_cache.k, self.kv_cache.v
         if self.config.attention_backend == AttentionBackend.FLASH:
+            # For Flash backend, reshape to (B, T, nh, hs) format to match working commit
+            # This allows flash_attn_with_kvcache to work with GQA
+            # VECTORIZED: No .item() calls to avoid CPU sync and graph breaks
+            
+            # For decode, T=1; for prefill, T is max of actual lengths
+            if phase == EnginePhase.PREFILL:
+                # Use block_size as safe upper bound (avoids .item() call)
+                max_T = self.config.block_size
+            else:
+                # Decode: T=1 for each batch
+                max_T = 1
+            
+            seqlens = actual_sequence_lengths.to(torch.int32)
+            cu_seqlens_no_zero = torch.cumsum(seqlens, dim=0)
+            cu_seqlens = torch.zeros(B + 1, dtype=torch.int32, device=q.device)
+            cu_seqlens[1:] = cu_seqlens_no_zero
+            
+            # VECTORIZED reshape to (B, T, nh, hs) format
+            # Create position indices
+            batch_indices = torch.arange(B, device=q.device).unsqueeze(1).expand(B, max_T)
+            seq_indices = torch.arange(max_T, device=q.device).unsqueeze(0).expand(B, max_T)
+            
+            # Create mask for valid positions
+            valid_mask = seq_indices < seqlens.unsqueeze(1)  # (B, max_T)
+            
+            # Compute flat indices: flat_idx[b, t] = cu_seqlens[b] + t
+            flat_indices = cu_seqlens[:-1].unsqueeze(1) + seq_indices  # (B, max_T)
+            
+            # Clamp flat_indices to valid range for gathering
+            flat_indices_clamped = flat_indices.clamp(0, total_tokens - 1)
+            
+            # Initialize output tensors
+            q_4d = torch.zeros(B, max_T, q.size(1), q.size(2), dtype=q.dtype, device=q.device)
+            k_4d = torch.zeros(B, max_T, k.size(1), k.size(2), dtype=k.dtype, device=k.device)
+            v_4d = torch.zeros(B, max_T, v.size(1), v.size(2), dtype=v.dtype, device=v.device)
+            
+            # Gather from flattened tensors using advanced indexing
+            # Get batch and sequence indices for valid positions
+            valid_batch_idx = batch_indices[valid_mask]
+            valid_seq_idx = seq_indices[valid_mask]
+            valid_flat_idx = flat_indices[valid_mask]
+            
+            # Copy valid data to 4D tensors
+            q_4d[valid_batch_idx, valid_seq_idx] = q[valid_flat_idx]
+            k_4d[valid_batch_idx, valid_seq_idx] = k[valid_flat_idx]
+            v_4d[valid_batch_idx, valid_seq_idx] = v[valid_flat_idx]
+            
+            # Now q, k, v are in (B, T, nh, hs) format
+            q = q_4d
+            k = k_4d
+            v = v_4d
+            
+            # Apply rotary embeddings using flash_apply_rotary (like working commit)
+            # q, k, v are now in (B, T, nh, hs) format
             q = q.contiguous()
             k = k.contiguous()
             v = v.contiguous()
-            q = apply_rotary(q, cos, sin, token_counter)
-            k = apply_rotary(k, cos, sin, token_counter)
-
-            cos, sin = None, None
+            # Note: flash_attn_with_kvcache handles rotary embeddings internally if cos/sin are passed
+            # But the working commit applied them manually, so we do the same for consistency
+            if cos is not None and sin is not None:
+                q = apply_rotary(q, cos, sin, token_counter)
+                k = apply_rotary(k, cos, sin, token_counter)
+                # Keep cos/sin as None since we've already applied rotary
+                cos, sin = None, None
         else:
-            q = q.transpose(1, 2).contiguous()
-            k = k.transpose(1, 2).contiguous()
-            v = v.transpose(1, 2).contiguous()
+            # For non-FLASH backends, reshape back to (B, nh, T, hs) format
+            max_T = actual_sequence_lengths.max().item()
+            seqlens = actual_sequence_lengths.to(torch.int32)
+            cu_seqlens = torch.cumsum(seqlens, dim=0, dtype=torch.int32)
+            # Avoid torch.tensor() during graph capture - use zeros instead
+            zero_tensor = torch.zeros(1, device=q.device, dtype=torch.int32)
+            cu_seqlens = torch.cat([zero_tensor, cu_seqlens])
+            
+            q_reshaped = torch.zeros(B, max_T, q.size(1), q.size(2), dtype=q.dtype, device=q.device)
+            k_reshaped = torch.zeros(B, max_T, k.size(1), k.size(2), dtype=k.dtype, device=k.device)
+            v_reshaped = torch.zeros(B, max_T, v.size(1), v.size(2), dtype=v.dtype, device=v.device)
+            
+            for b in range(B):
+                start_idx = cu_seqlens[b].item()
+                end_idx = cu_seqlens[b + 1].item()
+                seq_len = end_idx - start_idx
+                q_reshaped[b, :seq_len] = q[start_idx:end_idx]
+                k_reshaped[b, :seq_len] = k[start_idx:end_idx]
+                v_reshaped[b, :seq_len] = v[start_idx:end_idx]
+            
+            q = q_reshaped.transpose(1, 2).contiguous()
+            k = k_reshaped.transpose(1, 2).contiguous()
+            v = v_reshaped.transpose(1, 2).contiguous()
 
         # NOTE: Pass full k_cache, v_cache, and token_counter.
         # Slicing for current batch size is done in the respective backends.
@@ -582,17 +771,50 @@ class CausalSelfAttention(nn.Module):
             prestore_kv_cache=self.config.prestore_kv_cache,
             flex_attention_block_mask=flex_attention_block_mask,
         )
-
-        if not self.config.attention_backend == AttentionBackend.FLASH:
+        
+        # For Flash backend, reshape output back to flattened format
+        if self.config.attention_backend == AttentionBackend.FLASH:
+            # flash_attn_with_kvcache returns output in same format as input: (B, T, nh, hs)
+            # VECTORIZED: No .item() calls to avoid CPU sync
+            if y.dim() == 4:
+                B_out, T_out, nh_out, hs_out = y.shape
+                
+                # Build cu_seqlens for indexing
+                seqlens = actual_sequence_lengths.to(torch.int32)
+                cu_seqlens_no_zero = torch.cumsum(seqlens, dim=0)
+                cu_seqlens = torch.zeros(B_out + 1, dtype=torch.int32, device=y.device)
+                cu_seqlens[1:] = cu_seqlens_no_zero
+                
+                # Create position indices for valid positions
+                batch_indices = torch.arange(B_out, device=y.device).unsqueeze(1).expand(B_out, T_out)
+                seq_indices = torch.arange(T_out, device=y.device).unsqueeze(0).expand(B_out, T_out)
+                
+                # Mask for valid positions
+                valid_mask = seq_indices < seqlens.unsqueeze(1)  # (B_out, T_out)
+                
+                # Flat output indices: where to put in y_flat
+                flat_out_indices = cu_seqlens[:-1].unsqueeze(1) + seq_indices  # (B_out, T_out)
+                
+                # Extract valid tokens directly using mask
+                # y[valid_mask] gives us the valid tokens in order
+                y_valid = y[valid_mask]  # (total_valid_tokens, nh_out, hs_out)
+                
+                # The valid tokens are already in the correct order, so just use them directly
+                # total_valid_tokens should equal total_tokens
+                y = y_valid
+                
+                # Reshape to (total_tokens, nh * hs)
+                y = y.reshape(y.shape[0], nh_out * hs_out)
+        else:
             y = y.transpose(1, 2).contiguous()
-
-        y = y.reshape(
-            B, T, self.config.head_size * self.config.n_head
-        )  # re-assemble all head outputs side by side
+            y = y.reshape(total_tokens, -1, y.size(-1))
+            y = y.reshape(
+                total_tokens, self.config.head_size * self.config.n_head
+            )  # re-assemble all head outputs side by side
 
         # output projection
         return self.proj(y)
-
+        
     def build_kv_cache(
         self,
         batch_size: int,

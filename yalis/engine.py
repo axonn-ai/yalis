@@ -87,19 +87,31 @@ def prefill(
         logits: (Optional) The raw logits from the model.
     """
 
+    # tokens is now flattened: (total_tokens,)
     logits = model(tokens, phase, unpadded_prompt_lengths, block_table=block_table, token_counter=token_counter)["logits"].to(
         torch.float32
     )
-    logits = logits[torch.arange(logits.size(0)), unpadded_prompt_lengths - 1]
+    
+    # Extract logits for the last token of each sequence
+    # With flattened format, logits shape is (total_tokens, vocab_size)
+    # We need to index into the last token of each sequence using cu_seqlens
+    B = len(unpadded_prompt_lengths)
+    seqlens = unpadded_prompt_lengths.to(torch.int32)
+    cu_seqlens = torch.cumsum(seqlens, dim=0, dtype=torch.int32)
+    cu_seqlens = torch.cat([torch.tensor([0], device=logits.device, dtype=torch.int32), cu_seqlens])
+    
+    # Get indices of last tokens: cu_seqlens[1:] - 1
+    last_token_indices = cu_seqlens[1:] - 1
+    last_token_logits = logits[last_token_indices]
+    
     token_id = sample(
-        logits=logits, temperature=temperature, top_k=top_k, top_p=top_p
+        logits=last_token_logits, temperature=temperature, top_k=top_k, top_p=top_p
     )
     # TODO: We should return a dict to support more return values in the future
     if get_logits:
-        return token_id, logits
+        return token_id, last_token_logits
     else:
         return token_id, None
-
 
 @torch.inference_mode()
 @torch.compile(mode=YALIS_DECODE_MODE, disable=YALIS_DISABLE_COMPILE)
@@ -119,20 +131,27 @@ def generate(
 
     Args:
         model: The model to generate from.
-        tokens: Input tokens tensor.
-        input_pos: Position indices for the tokens.
+        tokens: Input tokens tensor. In decode phase, this is flattened (B,) where B is batch size.
         get_logits: If True, returns logits as well.
 
     Returns:
         token_id: The next predicted token.
         logits: (Optional) The raw logits from the model.
     """
-    logits = model(tokens, phase, block_table=block_table, token_counter=token_counter)["logits"].to(torch.float32)
+    # In decode phase, tokens are flattened (B,) - one token per request
+    # We need to pass actual_sequence_lengths to indicate each sequence has length 1
+    B = tokens.size(0) if tokens.dim() > 0 else 1
+    actual_sequence_lengths = torch.ones(B, dtype=torch.int32, device=tokens.device)
+    
+    logits = model(tokens, phase, actual_sequence_lengths=actual_sequence_lengths, block_table=block_table, token_counter=token_counter)["logits"].to(torch.float32)
+    
+    # In decode with flattened format, logits shape is (B, vocab_size) or (total_tokens, vocab_size) where total_tokens = B
+    # Since each request processes 1 token, we use logits directly (not logits[:, -1])
     token_id = sample(
-        logits=logits[:, -1], temperature=temperature, top_k=top_k, top_p=top_p
+        logits=logits, temperature=temperature, top_k=top_k, top_p=top_p
     )
     if get_logits:
-        return token_id, logits[:, -1]
+        return token_id, logits
     else:
         return token_id, None
 
@@ -292,33 +311,29 @@ class LLMEngine:
             )
 
     def _tokenize_prompts(self, prompts):
-        """Tokenize the input prompts and return tokens and seq lengths."""
+        """Tokenize the input prompts and return flattened tokens and seq lengths."""
         if isinstance(prompts, list) and all(
             isinstance(p, str) for p in prompts
         ):
-            prompt_tokens_and_mask = self.tokenizer(
-                prompts, return_tensors="pt", padding=True
-            )
-            prompt_tokens = prompt_tokens_and_mask.input_ids
-            prompt_sequence_lengths = (
-                prompt_tokens_and_mask.attention_mask.sum(dim=1)
-            )
+            # Tokenize each prompt separately without padding
+            prompt_tokens_list = []
+            prompt_sequence_lengths = []
+            for p in prompts:
+                tokens = self.tokenizer(p, return_tensors="pt", padding=False)
+                prompt_tokens_list.append(tokens.input_ids[0])
+                prompt_sequence_lengths.append(len(tokens.input_ids[0]))
+            
+            # Flatten all tokens into single tensor: (total_tokens,)
+            prompt_tokens = torch.cat(prompt_tokens_list, dim=0)
+            prompt_sequence_lengths = torch.tensor(prompt_sequence_lengths, dtype=torch.long)
         elif isinstance(prompts, list) and all(
             isinstance(p, list) and all(isinstance(x, int) for x in p)
             for p in prompts
         ):
-            max_length = max(len(p) for p in prompts)
-            prompt_tokens = torch.tensor(
-                [
-                    (
-                        p + [self.tokenizer.pad_token] * (max_length - len(p))
-                        if len(p) < max_length
-                        else p
-                    )
-                    for p in prompts
-                ]
-            )
-            prompt_sequence_lengths = torch.tensor([len(p) for p in prompts])
+            # Flatten without padding
+            prompt_tokens_list = [torch.tensor(p, dtype=torch.long) for p in prompts]
+            prompt_sequence_lengths = torch.tensor([len(p) for p in prompts], dtype=torch.long)
+            prompt_tokens = torch.cat(prompt_tokens_list, dim=0)  # Flattened: (total_tokens,)
         else:
             raise TypeError(
                 "prompts must be a list of strings or a list of lists of ints"
@@ -399,7 +414,7 @@ class LLMEngine:
             f"Tokenization took {timers.get_times()[0][('tokenize',)]} ms"
         )
 
-        batch_size = prompt_tokens.size(0)
+        batch_size = len(prompt_sequence_lengths)  # Number of requests (can't use prompt_tokens.size(0) since tokens are flattened)
         if not ignore_eos:
             done_mask = torch.zeros(
                 batch_size, dtype=torch.bool, device=self.device
@@ -419,10 +434,10 @@ class LLMEngine:
         ):
             current_input_to_model = prompt_tokens.clone().to(
                 self.device
-            )  # Move prompt tokens to the device
+            )  # Move prompt tokens to the device - flattened: (total_tokens,)
 
             prompt_sequence_lengths = prompt_sequence_lengths.to(self.device).to(torch.int32)
-            B = current_input_to_model.shape[0]
+            B = len(prompt_sequence_lengths)  # Number of requests (can't use shape[0] since tokens are flattened)
             req_ids = [f"req_{i}" for i in range(B)]
             token_counter = torch.zeros(B, dtype=torch.int32, device=self.device)
             slot_ids = self.kv_slots_manager.allocate(req_ids, prompt_sequence_lengths)
@@ -445,7 +460,8 @@ class LLMEngine:
                         token_counter=token_counter,
                     )  # Call prefill function
 
-                    current_input_to_model = next_token.clone()
+                    # next_token from prefill has shape (B, 1) from sample(), squeeze to (B,) for flattened format
+                    current_input_to_model = next_token.squeeze(-1).clone()  # Flattened: (B,)
                     nvtx_range_pop()
                 else:  # Generation step
                     timer_key = "decode"
@@ -467,9 +483,12 @@ class LLMEngine:
                             token_counter=token_counter,
                         )  # Call generate function
 
-                    current_input_to_model.copy_(
-                        next_token
-                    )  # Copy the new token into tokens
+                    # next_token from generate has shape (B, 1) from sample(), squeeze to (B,) for flattened format
+                    # Ensure current_input_to_model has the right shape for copy_
+                    if current_input_to_model.dim() > 1:
+                        # If current_input_to_model somehow got reshaped, flatten it
+                        current_input_to_model = current_input_to_model.view(-1)
+                    current_input_to_model.copy_(next_token.squeeze(-1))  # Copy the new token into tokens
                     nvtx_range_pop()
 
                 # EOS Support:
@@ -511,8 +530,8 @@ class LLMEngine:
             tbt = 0
 
         metrics = {
-            "BatchSize": prompt_tokens.shape[0],
-            "PromptLength": prompt_tokens.shape[1],
+            "BatchSize": len(prompt_sequence_lengths),  # Use len() since prompt_tokens is flattened
+            "PromptLength": prompt_sequence_lengths.max().item(),  # Max prompt length
             "DecodeLength": tokens_to_generate,
             "Throughput": tput,
             "TTFT": ttft,
@@ -525,8 +544,8 @@ class LLMEngine:
         }
         if dist.get_rank() == 0 and report_throughput:
             print(
-                f"[Metrics] BatchSize = {prompt_tokens.shape[0]},"
-                f" PromptLength = {prompt_tokens.shape[1]},"
+                f"[Metrics] BatchSize = {len(prompt_sequence_lengths)},"
+                f" PromptLength = {prompt_sequence_lengths.max().item()},"
                 f" DecodeLength = {tokens_to_generate},"
                 f" Throughput = {tput:.2f} tok/s,"
                 f" TTFT = {ttft:.4f} ms,"
@@ -902,8 +921,8 @@ class SpeculativeLLMEngine(LLMEngine):
         acceptance_rate = global_accepted_tokens / generated_draft_tokens
 
         metrics = {
-            "BatchSize": prompt_tokens.shape[0],
-            "PromptLength": prompt_tokens.shape[1],
+            "BatchSize": len(prompt_sequence_lengths),  # Use len() since prompt_tokens is flattened
+            "PromptLength": prompt_sequence_lengths.max().item(),  # Max prompt length
             "DecodeLength": tokens_to_generate,
             "Throughput": tput,
             "TTFT": ttft,
@@ -919,8 +938,8 @@ class SpeculativeLLMEngine(LLMEngine):
         }
         if dist.get_rank() == 0 and report_throughput:
             print(
-                f"[Metrics] BatchSize = {prompt_tokens.shape[0]},"
-                f" PromptLength = {prompt_tokens.shape[1]},"
+                f"[Metrics] BatchSize = {len(prompt_sequence_lengths)},"
+                f" PromptLength = {prompt_sequence_lengths.max().item()},"
                 f" DecodeLength = {tokens_to_generate},"
                 f" Throughput = {tput:.2f} tok/s,"
                 f" TTFT = {ttft:.4f} ms,"
