@@ -49,6 +49,12 @@ hf_model = AutoModelForCausalLM.from_pretrained(
 )
 hf_model.eval()
 
+# Check HF embedding weight stats
+hf_embed_weight = hf_model.model.embed_tokens.weight
+print(f"HF embedding weight shape: {hf_embed_weight.shape}")
+print(f"HF embedding weight stats: mean={hf_embed_weight.mean().item():.6f}, std={hf_embed_weight.std().item():.6f}")
+print(f"HF embedding for token 382: mean={hf_embed_weight[382].mean().item():.6f}, std={hf_embed_weight[382].std().item():.6f}")
+
 with torch.no_grad():
     hf_inputs = {k: v.to("cuda") for k, v in inputs.items()}
     # Get RAW embeddings (before any model processing) to compare
