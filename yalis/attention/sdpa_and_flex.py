@@ -219,6 +219,8 @@ def rotary_kv_update_sdpa_gen(
 
 def rotary_kv_update_sdpa_gen_gptoss(
     q: torch.Tensor,  # B, nh, 1, hs
+    k: torch.Tensor,  # B, nh, 1, hs
+    v: torch.Tensor,  # B, nh, 1, hs
     cos: torch.Tensor,
     sin: torch.Tensor,
     token_counter: torch.Tensor,  # B,1
@@ -261,11 +263,33 @@ def rotary_kv_update_sdpa_gen_gptoss(
         if cos.dim() > 1:
             cos = cos.unsqueeze(-3)
             sin = sin.unsqueeze(-3)
-        head_size = q.size(-1)
-        q1 = q[..., : head_size // 2]
-        q2 = q[..., head_size // 2 :]
-        rotated_q = torch.cat((-q2, q1), dim=-1)
-        q = ((q * cos) + (rotated_q * sin)).to(dtype=q.dtype)
+        
+        # Apply RoPE to both Q and K
+        roped_tensors = []
+        for x in [q, k]:
+            head_size = x.size(-1)
+            x1 = x[..., : head_size // 2]
+            x2 = x[..., head_size // 2 :]
+            rotated = torch.cat((-x2, x1), dim=-1)
+            roped = ((x * cos) + (rotated * sin)).to(dtype=x.dtype)
+            roped_tensors.append(roped)
+        
+        q, k = roped_tensors
+
+    # Write the newly generated K and V to the cache at the current position
+    b_indices = torch.arange(B, device=k_cache.device)
+    t_indices = token_counter[:B].view(-1)
+
+    if use_intra_head_parallelism:
+        k_cache[b_indices, :, t_indices, :] = Drop.apply(
+            k[:, :, 0, :], process_group
+        )
+        v_cache[b_indices, :, t_indices, :] = Drop.apply(
+            v[:, :, 0, :], process_group
+        )
+    else:
+        k_cache[b_indices, :, t_indices, :] = k[:, :, 0, :]
+        v_cache[b_indices, :, t_indices, :] = v[:, :, 0, :]
 
     # build mask up to current token_counter and optional sliding window
     t_max = k_cache.size(-2)
@@ -503,6 +527,8 @@ def sdpa_and_flex_attention(
             sinks = kwargs.get("sinks", None)
             y = rotary_kv_update_sdpa_gen_gptoss(
                 q,
+                k,
+                v,
                 rotary_cos,
                 rotary_sin,
                 cache_seqlens,
