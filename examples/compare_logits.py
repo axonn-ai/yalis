@@ -190,7 +190,8 @@ for prompt_idx, raw_prompt in enumerate(prompts_to_test):
         
         # Sample first token from PREFILL output
         first_logits = prefill_out["logits"][0, -1, :actual_vocab_size].cpu()
-        next_token = sample_token(first_logits, temperature=0.7, top_p=0.9)
+        #next_token = sample_token(first_logits, temperature=0.7, top_p=0.9)
+        next_token = first_logits.argmax().item()  # GREEDY for debugging
         print(f"[DEBUG] First sampled token: {next_token} -> '{tokenizer.decode([next_token])}'")
         yalis_generated_ids = torch.cat([yalis_generated_ids, torch.tensor([[next_token]])], dim=1)
         torch.cuda.synchronize()
@@ -201,7 +202,8 @@ for prompt_idx, raw_prompt in enumerate(prompts_to_test):
             print(f"[DEBUG] Step {gen_step}: token_counter={yalis_model_gen.token_counter[:1]}, input_token={current_token[0,0].item()}")
             yalis_out_gen = yalis_model_gen(current_token, phase=EnginePhase.DECODE_SINGLE)
             yalis_logits_gen = yalis_out_gen["logits"][0, -1, :actual_vocab_size].cpu()
-            next_token = sample_token(yalis_logits_gen, temperature=0.7, top_p=0.9)
+            #next_token = sample_token(yalis_logits_gen, temperature=0.7, top_p=0.9)
+            next_token = yalis_logits_gen.argmax().item()  # GREEDY for debugging
             print(f"[DEBUG] Step {gen_step}: sampled token={next_token} -> '{tokenizer.decode([next_token])}'")
             
             # After step 2, check if cache was updated
