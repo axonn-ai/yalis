@@ -153,12 +153,7 @@ for prompt_idx, raw_prompt in enumerate(prompts_to_test):
     yalis_model_gen.eval()
     # Use YALIS model's vocab size for slicing logits
     actual_vocab_size = getattr(yalis_model_gen.config, "vocab_size", None)
-    
-    # DIAGNOSTIC: Check token_counter initialization
-    print(f"[DEBUG] token_counter before generation: {yalis_model_gen.token_counter[:1]}")
-    print(f"[DEBUG] KV cache shapes: k={yalis_model_gen.transformer.h[0].attn.kv_cache.k.shape}, v={yalis_model_gen.transformer.h[0].attn.kv_cache.v.shape}")
-    print(f"[DEBUG] vocab_size: {actual_vocab_size}")
-    
+        
     # Check if sinks are loaded (not zeros)
     first_block_sinks = yalis_model_gen.transformer.h[0].sinks
     print(f"[DEBUG] Layer 0 sinks: shape={first_block_sinks.shape}, mean={first_block_sinks.mean().item():.6f}, std={first_block_sinks.std().item():.6f}")
