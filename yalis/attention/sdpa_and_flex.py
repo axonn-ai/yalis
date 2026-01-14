@@ -476,8 +476,8 @@ def rotary_kv_update_sdpa_multi(
         q, k = roped_tensors
 
     index_kv = index_pos.view(B, 1, T, 1).expand(B, nh, T, hs)
-    k_cache[:B].scatter_(dim=2, index=index_kv, src=k)
-    v_cache[:B].scatter_(dim=2, index=index_kv, src=v)
+    k_cache[:B].scatter_(dim=2, index=index_kv, src=k.to(k_cache.dtype))
+    v_cache[:B].scatter_(dim=2, index=index_kv, src=v.to(v_cache.dtype))
 
     # Create the mask
     arange_t = torch.arange(k_cache.size(-2), device=k_cache.device).view(
