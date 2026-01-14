@@ -297,16 +297,15 @@ def rotary_kv_update_sdpa_gen_gptoss(
     
     if enable_gqa:
         # Reshape for GQA: Q has h heads, K/V have g groups
+        # Following OpenAI's convention: expand K/V to match Q's head count
         g = K.size(1)  # number of key/value groups
-        hpg = h // g   # heads per group
-        Q_reshaped = Q.view(B_q, g, hpg, n_q, d)
-        B_k, g_k, n_k, d_k = K.shape
-        K_reshaped = K.view(B_k, g_k, 1, n_k, d_k)
-        # Ensure both operands are in the same dtype before einsum
-        Q_scaled = (Q_reshaped * scale).to(dtype=K_reshaped.dtype)
-        QK = torch.einsum("b g h q d, b g o k d -> b g h q k", Q_scaled, K_reshaped)
-        # Flatten back to (B, h, n_q, n_k) for mask application
-        QK = QK.view(B, h, n_q, -1)
+        hpg = h // g   # heads per group (q_mult in OpenAI's code)
+        # Expand K and V by repeating each head hpg times to match Q's head count
+        K_expanded = K.repeat_interleave(hpg, dim=1)  # (B, h, t_max, hs)
+        V_expanded = V.repeat_interleave(hpg, dim=1)  # (B, h, t_max, hs)
+        # Now both Q and K/V have the same number of heads
+        Q_scaled = (Q * scale).to(dtype=K_expanded.dtype)
+        QK = torch.einsum("b h q d, b h k d -> b h q k", Q_scaled, K_expanded)
     else:
         # Standard MHA path
         # Ensure both operands are in the same dtype before einsum
@@ -319,9 +318,10 @@ def rotary_kv_update_sdpa_gen_gptoss(
     QK = QK + mask_float.view(B, 1, 1, t_max)
 
     # append sinks column if provided
+    # sinks is (n_head, 1, 1) and matches the query head count
     # QK is (B, h, n_q, t_max) where h is the number of query heads
     if sinks is not None:
-        # sinks is (n_head, 1, 1) - expand to (B, n_head, 1, 1)
+        # sinks shape: (n_head, 1, 1) -> reshape to (1, n_head, 1, 1) for broadcasting
         S = sinks.view(1, -1, 1, 1)
         QK = torch.cat([QK, S.expand(B, h, n_q, 1)], dim=-1)
 
@@ -332,14 +332,10 @@ def rotary_kv_update_sdpa_gen_gptoss(
     if sinks is not None:
         W = W[..., :-1]
 
-    # weighted sum over KV: W (B, nh, 1, t_max) @ V (B, nh_k, t_max, hs) -> (B, nh, 1, hs)
+    # weighted sum over KV: W (B, nh, 1, t_max) @ V (B, nh, t_max, hs) -> (B, nh, 1, hs)
     if enable_gqa:
-        # Reshape W and V for GQA
-        W_reshaped = W.view(B, g, hpg, n_q, -1)  # (B, g, hpg, 1, t_max)
-        B_v, g_v, n_v, d_v = V.shape
-        V_reshaped = V.view(B_v, g_v, 1, n_v, d_v)
-        Out = torch.einsum("b g h q k, b g o k d -> b g h q d", W_reshaped, V_reshaped)
-        Out = Out.view(B, h, n_q, -1)  # (B, nh, 1, hs)
+        # Both W and V_expanded now have matching head dimensions
+        Out = torch.einsum("b h q k, b h k d -> b h q d", W, V_expanded)
     else:
         Out = torch.einsum("b h q k, b h k d -> b h q d", W, V)
     # Ensure output matches original Q dtype (may have been promoted to float during softmax)
