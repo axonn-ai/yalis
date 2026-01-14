@@ -162,16 +162,22 @@ for prompt_idx, raw_prompt in enumerate(prompts_to_test):
     with torch.no_grad():
         # PREFILL initial prompt
         token_ids = inputs.input_ids.to("cuda")
-        _ = yalis_model_gen(token_ids, phase=EnginePhase.PREFILL)
+        prefill_out = yalis_model_gen(token_ids, phase=EnginePhase.PREFILL)
+        
+        # Sample first token from PREFILL output
+        first_logits = prefill_out["logits"][0, -1, :actual_vocab_size].cpu()
+        next_token = sample_token(first_logits, temperature=0.7, top_p=0.9)
+        yalis_generated_ids = torch.cat([yalis_generated_ids, torch.tensor([[next_token]])], dim=1)
         torch.cuda.synchronize()
         
-        # DECODE_SINGLE loop for 20 tokens
-        for gen_step in range(20):
-            last_token = yalis_generated_ids[:, -1:].to("cuda")
-            yalis_out_gen = yalis_model_gen(last_token, phase=EnginePhase.DECODE_SINGLE)
+        # DECODE_SINGLE loop for remaining 19 tokens
+        current_token = torch.tensor([[next_token]], dtype=torch.long, device="cuda")
+        for gen_step in range(19):
+            yalis_out_gen = yalis_model_gen(current_token, phase=EnginePhase.DECODE_SINGLE)
             yalis_logits_gen = yalis_out_gen["logits"][0, -1, :actual_vocab_size].cpu()
             next_token = sample_token(yalis_logits_gen, temperature=0.7, top_p=0.9)
             yalis_generated_ids = torch.cat([yalis_generated_ids, torch.tensor([[next_token]])], dim=1)
+            current_token = torch.tensor([[next_token]], dtype=torch.long, device="cuda")
             if gen_step % 5 == 4:
                 torch.cuda.synchronize()
     
