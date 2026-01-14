@@ -76,7 +76,7 @@ args = parse_args()
 
 for prompt_idx, raw_prompt in enumerate(prompts_to_test):
     print(f"\n\n{'='*80}")
-    print(f"TESTING HARMONY PROMPT {prompt_idx}: {repr(raw_prompt)}")
+    print(f"TESTING PROMPT {prompt_idx}: {repr(raw_prompt)}")
     print(f"{'='*80}")
 
     # Format input using Harmony tokens when requested, otherwise use raw prompt
@@ -158,6 +158,13 @@ for prompt_idx, raw_prompt in enumerate(prompts_to_test):
     first_block_sinks = yalis_model_gen.transformer.h[0].sinks
     print(f"[DEBUG] Layer 0 sinks: shape={first_block_sinks.shape}, mean={first_block_sinks.mean().item():.6f}, std={first_block_sinks.std().item():.6f}")
     
+    # Check sliding window configuration per layer
+    print(f"[DEBUG] Sliding window pattern (first 8 layers):")
+    for i in range(min(8, len(yalis_model_gen.transformer.h))):
+        block = yalis_model_gen.transformer.h[i]
+        sw_size = yalis_model_gen.config.sliding_window_size if block.attn.apply_sliding_window_attention else 0
+        print(f"  Layer {i}: sliding_window={sw_size}, sinks_mean={block.sinks.mean().item():.3f}")
+    
     # Allocate KV cache (with buffer for 20 new tokens)
     total_seq_len = inputs.input_ids.shape[1] + 20
     yalis_model_gen.set_kv_cache(max_batch_size=1, max_seq_length=total_seq_len, device=torch.device("cuda"))
@@ -172,6 +179,12 @@ for prompt_idx, raw_prompt in enumerate(prompts_to_test):
         print(f"[DEBUG] Before PREFILL: token_counter={yalis_model_gen.token_counter[:1]}")
         prefill_out = yalis_model_gen(token_ids, phase=EnginePhase.PREFILL)
         print(f"[DEBUG] After PREFILL: token_counter={yalis_model_gen.token_counter[:1]}")
+        
+        # Check KV cache after prefill (layer 0)
+        layer0_k_cache = yalis_model_gen.transformer.h[0].attn.kv_cache.k
+        layer0_v_cache = yalis_model_gen.transformer.h[0].attn.kv_cache.v
+        prompt_len = inputs.input_ids.shape[1]
+        print(f"[DEBUG] Layer 0 K cache after PREFILL: shape={layer0_k_cache.shape}, filled[:, :, :{prompt_len}] mean={layer0_k_cache[0, :, :prompt_len, :].abs().mean().item():.4f}")
         
         # Sample first token from PREFILL output
         first_logits = prefill_out["logits"][0, -1, :actual_vocab_size].cpu()
@@ -188,6 +201,13 @@ for prompt_idx, raw_prompt in enumerate(prompts_to_test):
             yalis_logits_gen = yalis_out_gen["logits"][0, -1, :actual_vocab_size].cpu()
             next_token = sample_token(yalis_logits_gen, temperature=0.7, top_p=0.9)
             print(f"[DEBUG] Step {gen_step}: sampled token={next_token} -> '{tokenizer.decode([next_token])}'")
+            
+            # After step 2, check if cache was updated
+            if gen_step == 2:
+                current_pos = yalis_model_gen.token_counter[0].item()
+                k_at_pos = layer0_k_cache[0, :, current_pos-1, :].abs().mean().item()
+                print(f"[DEBUG] After step 2: K cache at position {current_pos-1} has mean={k_at_pos:.4f}")
+            
             yalis_generated_ids = torch.cat([yalis_generated_ids, torch.tensor([[next_token]])], dim=1)
             current_token = torch.tensor([[next_token]], dtype=torch.long, device="cuda")
             if gen_step % 5 == 4:
