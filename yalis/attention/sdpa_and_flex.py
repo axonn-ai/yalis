@@ -204,6 +204,8 @@ def rotary_kv_update_sdpa_gen(
                 enable_gqa=enable_gqa,
                 block_mask=flex_attention_block_mask,
             )
+            # Ensure output matches original Q dtype
+            return out.to(dtype=q.dtype)
         else:
             out = torch.nn.functional.scaled_dot_product_attention(
                 q,
@@ -211,7 +213,8 @@ def rotary_kv_update_sdpa_gen(
                 v_cache_expanded[:B],
                 attn_mask=mask[:, None, None, :],
             )
-        return out
+        # Ensure output matches original Q dtype
+        return out.to(dtype=q.dtype)
 
 
 def rotary_kv_update_sdpa_gen_gptoss(
@@ -339,6 +342,8 @@ def rotary_kv_update_sdpa_gen_gptoss(
         Out = Out.view(B, h, n_q, -1)  # (B, nh, 1, hs)
     else:
         Out = torch.einsum("b h q k, b h k d -> b h q d", W, V)
+    # Ensure output matches original Q dtype (may have been promoted to float during softmax)
+    Out = Out.to(dtype=q.dtype)
     if use_intra_head_parallelism:
         Out = Gather.apply(Out, process_group)
     return Out
@@ -405,7 +410,8 @@ def rotary_kv_update_sdpa_prefill(
         out = torch.nn.functional.scaled_dot_product_attention(
             q, k, v, is_causal=True, enable_gqa=enable_gqa
         )
-        return out
+        # Ensure output matches original Q dtype
+        return out.to(dtype=q.dtype)
 
 
 def rotary_kv_update_sdpa_multi(
