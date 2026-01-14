@@ -108,8 +108,8 @@ for prompt_idx, raw_prompt in enumerate(prompts_to_test):
     ).to("cuda")
     yalis_model.eval()
 
-    # Allocate KV cache for sequence length
-    yalis_model.set_kv_cache(max_batch_size=1, max_seq_length=inputs.input_ids.shape[1])
+    # Allocate KV cache for sequence length (ensure allocations are on GPU)
+    yalis_model.set_kv_cache(max_batch_size=1, max_seq_length=inputs.input_ids.shape[1], device=torch.device("cuda"))
 
     with torch.no_grad():
         token_ids = inputs.input_ids.to("cuda")
