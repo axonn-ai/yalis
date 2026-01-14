@@ -415,23 +415,10 @@ def rotary_kv_update_sdpa_prefill(
         v_cache[:B, :, :T, :] = v[:B, :, :T, :].to(v_cache.dtype)
 
     enable_gqa = q.size(1) != k.size(1)
-    if False:  # do not use intra head in
-        out = intra_head_sdpa(
-            q,
-            k,
-            v,
-            None,
-            ax.comm_handle.inner_intra_layer_parallel_group,
-            enable_gqa,
-            parallel=True,
-        )
-        return out
-    else:
-        out = torch.nn.functional.scaled_dot_product_attention(
-            q, k, v, is_causal=True, enable_gqa=enable_gqa
-        )
-        # Ensure output matches original Q dtype
-        return out.to(dtype=q.dtype)
+    out = torch.nn.functional.scaled_dot_product_attention(
+        q, k, v, is_causal=True, enable_gqa=enable_gqa
+    )
+    return out.to(dtype=q.dtype)
 
 
 def rotary_kv_update_sdpa_multi(

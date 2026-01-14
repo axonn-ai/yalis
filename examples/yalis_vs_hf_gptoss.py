@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
-Compare HuggingFace vs YALIS logits for GPT-OSS-20B using OpenAI Harmony format.
-Ensures identical tokenization and channel conditioning for both models.
+Compare HuggingFace vs YALIS logits for GPT-OSS-20B.
+Tests generation quality and consistency across both implementations.
 """
-import argparse
 import gc
 import torch
 import torch.distributed as dist
@@ -33,30 +32,8 @@ def sample_token(logits, temperature=1.0, top_p=0.9):
 # Local path to GPT-OSS-20B checkpoint
 model_id = "yalis/external/checkpoints/openai/gpt-oss-20b"
 
-def format_harmony_prompt(prompt_text, tokenizer):
-    """
-    Renders the Harmony Schema tokens required for GPT-OSS models.
-    Structure: <|start|>system...<|end|><|start|>user...<|end|><|start|>assistant<|message|>
-    """
-    # Standard GPT-OSS system message from OpenAI docs
-    system_content = (
-        "You are ChatGPT, a large language model trained by OpenAI. "
-        "Knowledge cutoff: 2024-06 Current date: 2026-01-13 "
-        "Reasoning: high # Valid channels: analysis, commentary, final."
-    )
-    
-    # Constructing the raw string for the Harmony envelope
-    # GPT-OSS uses the o200k_harmony tokenizer where these are special tokens
-    harmony_string = (
-        f"<|start|>system<|message|>{system_content}<|end|>"
-        f"<|start|>user<|message|>{prompt_text}<|end|>"
-        f"<|start|>assistant<|message|>"
-    )
-    
-    return tokenizer(harmony_string, return_tensors="pt")
-
-# Initialize Tokenizer (o200k_harmony)
-print("Loading o200k_harmony tokenizer...")
+# Initialize Tokenizer
+print("Loading tokenizer...")
 tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True, local_files_only=True)
 
 prompts_to_test = [
@@ -65,25 +42,13 @@ prompts_to_test = [
     "Explain quantum entanglement like I'm five.",
 ]
 
-
-def parse_args():
-    p = argparse.ArgumentParser()
-    p.add_argument("--harmony", action="store_true", help="Use Harmony chat-format tokens for prompts")
-    return p.parse_args()
-
-
-args = parse_args()
-
 for prompt_idx, raw_prompt in enumerate(prompts_to_test):
     print(f"\n\n{'='*80}")
     print(f"TESTING PROMPT {prompt_idx}: {repr(raw_prompt)}")
     print(f"{'='*80}")
 
-    # Format input using Harmony tokens when requested, otherwise use raw prompt
-    if args.harmony:
-        inputs = format_harmony_prompt(raw_prompt, tokenizer)
-    else:
-        inputs = tokenizer(raw_prompt, return_tensors="pt")
+    # Tokenize raw prompt
+    inputs = tokenizer(raw_prompt, return_tensors="pt")
     print(f"Prompt tokens shape: {inputs.input_ids.shape}")
     print(f"Prompt length: {inputs.input_ids.shape[1]} tokens")
 
