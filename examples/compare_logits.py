@@ -154,28 +154,45 @@ for prompt_idx, raw_prompt in enumerate(prompts_to_test):
     # Use YALIS model's vocab size for slicing logits
     actual_vocab_size = getattr(yalis_model_gen.config, "vocab_size", None)
     
+    # DIAGNOSTIC: Check token_counter initialization
+    print(f"[DEBUG] token_counter before generation: {yalis_model_gen.token_counter[:1]}")
+    print(f"[DEBUG] KV cache shapes: k={yalis_model_gen.transformer.h[0].attn.kv_cache.k.shape}, v={yalis_model_gen.transformer.h[0].attn.kv_cache.v.shape}")
+    print(f"[DEBUG] vocab_size: {actual_vocab_size}")
+    
+    # Check if sinks are loaded (not zeros)
+    first_block_sinks = yalis_model_gen.transformer.h[0].sinks
+    print(f"[DEBUG] Layer 0 sinks: shape={first_block_sinks.shape}, mean={first_block_sinks.mean().item():.6f}, std={first_block_sinks.std().item():.6f}")
+    
     # Allocate KV cache (with buffer for 20 new tokens)
     total_seq_len = inputs.input_ids.shape[1] + 20
     yalis_model_gen.set_kv_cache(max_batch_size=1, max_seq_length=total_seq_len, device=torch.device("cuda"))
+    
+    # DIAGNOSTIC: Check token_counter after set_kv_cache
+    print(f"[DEBUG] token_counter after set_kv_cache: {yalis_model_gen.token_counter[:1]}")
     
     yalis_generated_ids = inputs.input_ids.clone()
     with torch.no_grad():
         # PREFILL initial prompt
         token_ids = inputs.input_ids.to("cuda")
+        print(f"[DEBUG] Before PREFILL: token_counter={yalis_model_gen.token_counter[:1]}")
         prefill_out = yalis_model_gen(token_ids, phase=EnginePhase.PREFILL)
+        print(f"[DEBUG] After PREFILL: token_counter={yalis_model_gen.token_counter[:1]}")
         
         # Sample first token from PREFILL output
         first_logits = prefill_out["logits"][0, -1, :actual_vocab_size].cpu()
         next_token = sample_token(first_logits, temperature=0.7, top_p=0.9)
+        print(f"[DEBUG] First sampled token: {next_token} -> '{tokenizer.decode([next_token])}'")
         yalis_generated_ids = torch.cat([yalis_generated_ids, torch.tensor([[next_token]])], dim=1)
         torch.cuda.synchronize()
         
         # DECODE_SINGLE loop for remaining 19 tokens
         current_token = torch.tensor([[next_token]], dtype=torch.long, device="cuda")
         for gen_step in range(19):
+            print(f"[DEBUG] Step {gen_step}: token_counter={yalis_model_gen.token_counter[:1]}, input_token={current_token[0,0].item()}")
             yalis_out_gen = yalis_model_gen(current_token, phase=EnginePhase.DECODE_SINGLE)
             yalis_logits_gen = yalis_out_gen["logits"][0, -1, :actual_vocab_size].cpu()
             next_token = sample_token(yalis_logits_gen, temperature=0.7, top_p=0.9)
+            print(f"[DEBUG] Step {gen_step}: sampled token={next_token} -> '{tokenizer.decode([next_token])}'")
             yalis_generated_ids = torch.cat([yalis_generated_ids, torch.tensor([[next_token]])], dim=1)
             current_token = torch.tensor([[next_token]], dtype=torch.long, device="cuda")
             if gen_step % 5 == 4:
