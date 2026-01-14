@@ -139,13 +139,13 @@ def rotary_kv_update_sdpa_gen(
     if hasattr(ax.config, 'G_intra_c') and ax.config.G_intra_c > 1 and use_intra_head_parallelism:
         k_cache[b_indices, :, t_indices, :] = Drop.apply(
             k[:, :, 0, :], ax.comm_handle.inner_intra_layer_parallel_group
-        )
+        ).to(k_cache.dtype)
         v_cache[b_indices, :, t_indices, :] = Drop.apply(
             v[:, :, 0, :], ax.comm_handle.inner_intra_layer_parallel_group
-        )
+        ).to(v_cache.dtype)
     else:
-        k_cache[b_indices, :, t_indices, :] = k[:, :, 0, :]
-        v_cache[b_indices, :, t_indices, :] = v[:, :, 0, :]
+        k_cache[b_indices, :, t_indices, :] = k[:, :, 0, :].to(k_cache.dtype)
+        v_cache[b_indices, :, t_indices, :] = v[:, :, 0, :].to(v_cache.dtype)
     # Build causal mask (allows keys up to the current index)
     # Optionally constrain to a fixed sliding window if `sliding_window > 0`.
     t_max = k_cache.size(-2)
@@ -283,13 +283,13 @@ def rotary_kv_update_sdpa_gen_gptoss(
     if use_intra_head_parallelism:
         k_cache[b_indices, :, t_indices, :] = Drop.apply(
             k[:, :, 0, :], process_group
-        )
+        ).to(k_cache.dtype)
         v_cache[b_indices, :, t_indices, :] = Drop.apply(
             v[:, :, 0, :], process_group
-        )
+        ).to(v_cache.dtype)
     else:
-        k_cache[b_indices, :, t_indices, :] = k[:, :, 0, :]
-        v_cache[b_indices, :, t_indices, :] = v[:, :, 0, :]
+        k_cache[b_indices, :, t_indices, :] = k[:, :, 0, :].to(k_cache.dtype)
+        v_cache[b_indices, :, t_indices, :] = v[:, :, 0, :].to(v_cache.dtype)
 
     # build mask up to current token_counter and optional sliding window
     t_max = k_cache.size(-2)
