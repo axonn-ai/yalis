@@ -53,7 +53,7 @@ if __name__ == "__main__":
             {
                 "role": "system",
                 "content": system_prompt,
-            },
+            },  # not needed for gemma
             {"role": "user", "content": user_prompt},
         ]
         formatted_prompt = tokenizer.apply_chat_template(
