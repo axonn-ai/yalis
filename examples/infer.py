@@ -41,12 +41,6 @@ if __name__ == "__main__":
     user_prompts = user_prompts[:16]
     print(f"Number of prompts = {len(user_prompts)}")
 
-    # Don't add a system prompt - let the chat template handle it
-    # GPT-OSS chat template adds its own system message
-    # system_prompt = (
-    #     "You are a helpful chatbot. Answer the following question.\n"
-    # )
-
     # profile the run or not
     enable_profiling = False
 
