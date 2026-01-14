@@ -88,98 +88,16 @@ for prompt_idx, raw_prompt in enumerate(prompts_to_test):
     print(f"Prompt length: {inputs.input_ids.shape[1]} tokens")
 
     # ============================================================================
-    # PHASE 1: HuggingFace forward pass
+    # PHASE 1: 20-Token Generation (HuggingFace)
     # ============================================================================
-    print("\nPHASE 1: Running HuggingFace model...")
-    hf_model = AutoModelForCausalLM.from_pretrained(
-        model_id, 
-        device_map="cuda", 
-        dtype=torch.bfloat16, 
-        trust_remote_code=True
-    )
-    hf_model.eval()
-
-    with torch.no_grad():
-        hf_inputs = {k: v.to("cuda") for k, v in inputs.items()}
-        # Compare raw embeddings
-        hf_embed_layer = hf_model.model.embed_tokens
-        hf_embeddings_raw = hf_embed_layer(hf_inputs["input_ids"])[0, -1, :].cpu()
-        
-        hf_outputs = hf_model(**hf_inputs)
-        hf_logits = hf_outputs.logits[0, -1, :].cpu().clone()
-        del hf_outputs
-
-    hf_top_tokens = torch.topk(hf_logits, 5)
-    print(f"HF top 5 tokens: {hf_top_tokens.indices.tolist()}")
-    print(f"HF decoded: {[tokenizer.decode([t]) for t in hf_top_tokens.indices.tolist()]}")
-
-    # Cleanup HF
-    del hf_model
-    del hf_inputs
+    print("\nPHASE 1: 20-Token Generation (HuggingFace)")
+    print("-" * 40)
+    
+    # Aggressive cleanup before loading HF
     torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats()
     gc.collect()
-
-    # ============================================================================
-    # PHASE 2: YALIS forward pass
-    # ============================================================================
-    print("\nPHASE 2: Running YALIS model...")
-    # Ensure distributed and Axonn are initialized so ax.comm_handle is set.
-    # init_distributed will call torch.distributed.init_process_group and ax.init().
-    if not dist.is_initialized():
-        init_distributed()
-
-    yalis_model = get_model(
-        model_id,
-        model_dtype=torch.bfloat16,
-        attention_backend=AttentionBackend.SDPA,
-        use_paged_kv_caching=False,
-        prestore_kv_cache=True,
-        disable_tp=True,
-    ).to("cuda")
-    yalis_model.eval()
-
-    # Allocate KV cache for sequence length (ensure allocations are on GPU)
-    yalis_model.set_kv_cache(max_batch_size=1, max_seq_length=inputs.input_ids.shape[1], device=torch.device("cuda"))
-
-    with torch.no_grad():
-        token_ids = inputs.input_ids.to("cuda")
-        yalis_embeddings = yalis_model.transformer.wte(token_ids)[0, -1, :].cpu()
-        # 1) PREFILL to populate KV caches (batched full-forward)
-        _ = yalis_model(token_ids, phase=EnginePhase.PREFILL)
-        torch.cuda.synchronize()
-
-        # 2) DECODE_SINGLE on the last token to exercise the generation path
-        last_token = token_ids[:, -1:].to("cuda")  # shape (B, 1)
-        yalis_out_single = yalis_model(last_token, phase=EnginePhase.DECODE_SINGLE)
-        yalis_logits_full = yalis_out_single["logits"][0, -1, :].cpu().clone()
-
-        # Slice to actual vocab size (Harmony o200k has specific padding)
-        actual_vocab_size = yalis_model.config.vocab_size
-        yalis_logits = yalis_logits_full[:actual_vocab_size]
-        del yalis_out_single
-
-    yalis_top_tokens = torch.topk(yalis_logits, 5)
-    print(f"YALIS top 5 tokens: {yalis_top_tokens.indices.tolist()}")
-    print(f"YALIS decoded: {[tokenizer.decode([t]) for t in yalis_top_tokens.indices.tolist()]}")
-
-    # ============================================================================
-    # PHASE 3: Comparison
-    # ============================================================================
-    print("\nPHASE 3: Comparison Results")
-    print("-" * 40)
     
-    emb_diff = (hf_embeddings_raw - yalis_embeddings).abs().max().item()
-    print(f"Embedding Max Diff: {emb_diff:.6f}")
-    
-    logit_diff = (hf_logits - yalis_logits).abs()
-    max_diff = logit_diff.max().item()
-    print(f"Logit Max Diff:     {max_diff:.4f}")
-
-    # ============================================================================
-    # PHASE 4: 20-Token Generation (HuggingFace)
-    # ============================================================================
-    print("\nPHASE 4: 20-Token Generation (HuggingFace)")
-    print("-" * 40)
     hf_model = AutoModelForCausalLM.from_pretrained(
         model_id, 
         device_map="cuda", 
@@ -187,6 +105,8 @@ for prompt_idx, raw_prompt in enumerate(prompts_to_test):
         trust_remote_code=True
     )
     hf_model.eval()
+    # Use HF model's vocab size when needed
+    hf_vocab_size = getattr(hf_model.config, "vocab_size", None)
     
     hf_generated_ids = inputs.input_ids.clone()
     with torch.no_grad():
@@ -207,10 +127,19 @@ for prompt_idx, raw_prompt in enumerate(prompts_to_test):
     gc.collect()
 
     # ============================================================================
-    # PHASE 5: 20-Token Generation (YALIS)
+    # PHASE 2: 20-Token Generation (YALIS)
     # ============================================================================
-    print("\nPHASE 5: 20-Token Generation (YALIS)")
+    print("\nPHASE 2: 20-Token Generation (YALIS)")
     print("-" * 40)
+    
+    # Ensure distributed and Axonn are initialized so ax.comm_handle is set.
+    if not dist.is_initialized():
+        init_distributed()
+    
+    # Aggressive cleanup before reloading YALIS
+    torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats()
+    gc.collect()
     
     # Reinitialize YALIS model for generation
     yalis_model_gen = get_model(
@@ -222,6 +151,8 @@ for prompt_idx, raw_prompt in enumerate(prompts_to_test):
         disable_tp=True,
     ).to("cuda")
     yalis_model_gen.eval()
+    # Use YALIS model's vocab size for slicing logits
+    actual_vocab_size = getattr(yalis_model_gen.config, "vocab_size", None)
     
     # Allocate KV cache (with buffer for 20 new tokens)
     total_seq_len = inputs.input_ids.shape[1] + 20
@@ -253,5 +184,3 @@ for prompt_idx, raw_prompt in enumerate(prompts_to_test):
 
 if dist.is_initialized():
     dist.destroy_process_group()
-
-print("\nAll Harmony-formatted tests complete.")
