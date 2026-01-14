@@ -68,7 +68,8 @@ def intra_head_sdpa(
     if parallel:
         q = Drop.apply(q, process_group).contiguous()
         # k = Drop.apply(k, process_group).contiguous()
-    scale = 1.0 / math.sqrt(d)
+    # keep scale in the same dtype/device as `q` to avoid dtype promotion
+    scale = torch.tensor(1.0 / math.sqrt(d), dtype=q.dtype, device=q.device)
     if enable_gqa:
         q = q * scale
         S = (
@@ -283,7 +284,8 @@ def rotary_kv_update_sdpa_gen_gptoss(
     # Check if we need to handle grouped-query attention
     enable_gqa = Q.size(1) != K.size(1)
     
-    scale = 1.0 / math.sqrt(hs)
+    # keep scale in the same dtype/device as `Q` to avoid dtype promotion
+    scale = torch.tensor(1.0 / math.sqrt(hs), dtype=Q.dtype, device=Q.device)
     
     # Extract dimensions for later use
     B_q, h, n_q, d = Q.shape
