@@ -352,11 +352,9 @@ def rotary_kv_update_sdpa_gen_gptoss(
     if use_intra_head_parallelism:
         dist.all_reduce(QK, op=dist.ReduceOp.SUM, group=process_group)
     W = torch.nn.functional.softmax(QK, dim=-1, dtype=torch.float).to(dtype=QK.dtype)
-    # drop sinks column and renormalize
+    # drop sinks column
     if sinks is not None:
         W = W[..., :-1]
-        # Renormalize after dropping sinks to ensure weights sum to 1
-        W = W / (W.sum(dim=-1, keepdim=True) + 1e-9)
 
     # weighted sum over KV: W (B, nh, 1, t_max) @ V (B, nh, t_max, hs) -> (B, nh, 1, hs)
     if enable_gqa:
