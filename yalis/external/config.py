@@ -176,7 +176,6 @@ class Config:
             "norm_qk_type",
             "rope_indices",
             "rope_local_base_freq",
-            "sliding_window_indices"
         ]
         for config in configs:
             conf_dict.pop(config, None)
