@@ -408,13 +408,13 @@ def rotary_kv_update_sdpa_prefill(
     if hasattr(ax.config, 'G_intra_c') and ax.config.G_intra_c > 1 and use_intra_head_parallelism:
         k_cache[:B, :, :T, :] = Drop.apply(
             k[:B, :, :T, :], ax.comm_handle.inner_intra_layer_parallel_group
-        )
+        ).to(k_cache.dtype)
         v_cache[:B, :, :T, :] = Drop.apply(
             v[:B, :, :T, :], ax.comm_handle.inner_intra_layer_parallel_group
-        )
+        ).to(v_cache.dtype)
     else:
-        k_cache[:B, :, :T, :] = k[:B, :, :T, :]
-        v_cache[:B, :, :T, :] = v[:B, :, :T, :]
+        k_cache[:B, :, :T, :] = k[:B, :, :T, :].to(k_cache.dtype)
+        v_cache[:B, :, :T, :] = v[:B, :, :T, :].to(v_cache.dtype)
 
     enable_gqa = q.size(1) != k.size(1)
     if False:  # do not use intra head in
