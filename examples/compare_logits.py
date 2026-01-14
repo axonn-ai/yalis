@@ -8,6 +8,7 @@ import torch
 import torch.distributed as dist
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from yalis.model import get_model
+from yalis.initialize import init_distributed
 from yalis.constants import EnginePhase
 from yalis.attention.backends import AttentionBackend
 
@@ -92,8 +93,10 @@ for prompt_idx, raw_prompt in enumerate(prompts_to_test):
     # PHASE 2: YALIS forward pass
     # ============================================================================
     print("\nPHASE 2: Running YALIS model...")
+    # Ensure distributed and Axonn are initialized so ax.comm_handle is set.
+    # init_distributed will call torch.distributed.init_process_group and ax.init().
     if not dist.is_initialized():
-        dist.init_process_group(backend="nccl")
+        init_distributed()
 
     yalis_model = get_model(
         model_id,
