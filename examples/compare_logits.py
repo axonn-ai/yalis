@@ -159,11 +159,13 @@ for prompt_idx, raw_prompt in enumerate(prompts_to_test):
     print(f"[DEBUG] Layer 0 sinks: shape={first_block_sinks.shape}, mean={first_block_sinks.mean().item():.6f}, std={first_block_sinks.std().item():.6f}")
     
     # Check sliding window configuration per layer
+    print(f"[DEBUG] Config sliding_window_indices: {yalis_model_gen.config.sliding_window_indices}")
+    print(f"[DEBUG] Config sliding_window_size: {yalis_model_gen.config.sliding_window_size}")
     print(f"[DEBUG] Sliding window pattern (first 8 layers):")
     for i in range(min(8, len(yalis_model_gen.transformer.h))):
         block = yalis_model_gen.transformer.h[i]
         sw_size = yalis_model_gen.config.sliding_window_size if block.attn.apply_sliding_window_attention else 0
-        print(f"  Layer {i}: sliding_window={sw_size}, sinks_mean={block.sinks.mean().item():.3f}")
+        print(f"  Layer {i}: sliding_window={sw_size}, sinks_mean={block.sinks.mean().item():.3f}, apply_sw={block.attn.apply_sliding_window_attention}")
     
     # Allocate KV cache (with buffer for 20 new tokens)
     total_seq_len = inputs.input_ids.shape[1] + 20
