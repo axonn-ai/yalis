@@ -111,14 +111,19 @@ for prompt_idx, raw_prompt in enumerate(prompts_to_test):
     with torch.no_grad():
         token_ids = inputs.input_ids.to("cuda")
         yalis_embeddings = yalis_model.transformer.wte(token_ids)[0, -1, :].cpu()
-        
-        yalis_outputs = yalis_model(token_ids, phase=EnginePhase.PREFILL)
-        yalis_logits_full = yalis_outputs["logits"][0, -1, :].cpu().clone()
-        
+        # 1) PREFILL to populate KV caches (batched full-forward)
+        _ = yalis_model(token_ids, phase=EnginePhase.PREFILL)
+        torch.cuda.synchronize()
+
+        # 2) DECODE_SINGLE on the last token to exercise the generation path
+        last_token = token_ids[:, -1:].to("cuda")  # shape (B, 1)
+        yalis_out_single = yalis_model(last_token, phase=EnginePhase.DECODE_SINGLE)
+        yalis_logits_full = yalis_out_single["logits"][0, -1, :].cpu().clone()
+
         # Slice to actual vocab size (Harmony o200k has specific padding)
         actual_vocab_size = yalis_model.config.vocab_size
         yalis_logits = yalis_logits_full[:actual_vocab_size]
-        del yalis_outputs
+        del yalis_out_single
 
     yalis_top_tokens = torch.topk(yalis_logits, 5)
     print(f"YALIS top 5 tokens: {yalis_top_tokens.indices.tolist()}")
