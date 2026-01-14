@@ -3,6 +3,7 @@
 Compare HuggingFace vs YALIS logits for GPT-OSS-20B using OpenAI Harmony format.
 Ensures identical tokenization and channel conditioning for both models.
 """
+import argparse
 import gc
 import torch
 import torch.distributed as dist
@@ -47,13 +48,25 @@ prompts_to_test = [
     "Explain quantum entanglement like I'm five.",
 ]
 
+
+def parse_args():
+    p = argparse.ArgumentParser()
+    p.add_argument("--harmony", action="store_true", help="Use Harmony chat-format tokens for prompts")
+    return p.parse_args()
+
+
+args = parse_args()
+
 for prompt_idx, raw_prompt in enumerate(prompts_to_test):
     print(f"\n\n{'='*80}")
     print(f"TESTING HARMONY PROMPT {prompt_idx}: {repr(raw_prompt)}")
     print(f"{'='*80}")
 
-    # Format input using Harmony tokens
-    inputs = format_harmony_prompt(raw_prompt, tokenizer)
+    # Format input using Harmony tokens when requested, otherwise use raw prompt
+    if args.harmony:
+        inputs = format_harmony_prompt(raw_prompt, tokenizer)
+    else:
+        inputs = tokenizer(raw_prompt, return_tensors="pt")
     print(f"Prompt tokens shape: {inputs.input_ids.shape}")
     print(f"Prompt length: {inputs.input_ids.shape[1]} tokens")
 
