@@ -1263,7 +1263,6 @@ def copy_weights_gpt_oss(
                 # Reshape from (n_head,) to (n_head, 1, 1) to match model expectation
                 if param.dim() == 1:
                     param = param.view(-1, 1, 1)
-                print(f"[DEBUG] Loaded sinks for layer {number}: shape={param.shape}, mean={param.mean().item():.6f}, std={param.std().item():.6f}, min={param.min().item():.6f}, max={param.max().item():.6f}")
                 state_dict[to_name] = param
             
             # Handle layer norms
@@ -1332,10 +1331,6 @@ def copy_weights_gpt_oss(
                         param = torch.cat([param, padding], dim=0)
                         if debug_mode:
                             print(f"Padded {to_name} from {vocab_size_checkpoint} to {padded_vocab_size}")
-                    
-                    # Debug output for embedding/lm_head
-                    if debug_mode or ("wte" in to_name or "lm_head" in to_name):
-                        print(f"[DEBUG] {to_name} - shape: {param.shape}, min: {param.min():.6f}, max: {param.max():.6f}, mean: {param.mean():.6f}, std: {param.std():.6f}")
                 
                 state_dict[to_name] = param
         

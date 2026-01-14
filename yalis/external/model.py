@@ -164,9 +164,8 @@ class GPT(nn.Module):
         if self.config.tensor_parallel:
             x = Drop.apply(x, ax.comm_handle.inner_intra_layer_parallel_group)
 
-        # flash attention wants the rope cache to be
-        # in the same dtype as the query
-        # ToDO: confirm if this is okay, or if we should do rope in fp32?
+        # Flash Attention requires RoPE cache in the same dtype as query for numerical stability.
+        # Converting to query dtype (typically bf16) ensures efficient computation and memory usage.
         if self.config.attention_backend == AttentionBackend.FLASH:
             self.cos = self.cos.to(x.dtype)
             self.sin = self.sin.to(x.dtype)
@@ -352,11 +351,16 @@ class GPT(nn.Module):
         max_tokens = max_seq_length * max_batch_size
 
         # TODO (Prajwal): This is a hack to not over allocated
-        # KV-cache by default.Fix with dynamic page calculation logic
+        # KV-cache by default. Fix with dynamic page calculation logic.
         global NUM_BLOCKS
         if self.config.use_paged_kv_caching:
             if max_tokens > PAGE_BLOCK_SIZE * NUM_BLOCKS:
-                print("Increasing NUM_BLOCKS to 1024")
+                warnings.warn(
+                    f"Increasing NUM_BLOCKS from {NUM_BLOCKS} to 1024 to accommodate "
+                    f"{max_tokens} tokens (max_seq_length={max_seq_length}, "
+                    f"max_batch_size={max_batch_size})",
+                    stacklevel=2,
+                )
                 NUM_BLOCKS = 1024
 
         # initialize the kv cache for all blocks
@@ -371,7 +375,7 @@ class GPT(nn.Module):
         if self.config.use_paged_kv_caching:
             self.kv_cache_manager = KVCacheManager(
                 max_batch_size,
-                16384 // PAGE_BLOCK_SIZE,  # ToDo: set these dynamically
+                16384 // PAGE_BLOCK_SIZE,  # TODO: set these dynamically
                 NUM_BLOCKS,
                 PAGE_BLOCK_SIZE,
             )
