@@ -299,12 +299,16 @@ def rotary_kv_update_sdpa_gen_gptoss(
         Q_reshaped = Q.view(B_q, g, hpg, n_q, d)
         B_k, g_k, n_k, d_k = K.shape
         K_reshaped = K.view(B_k, g_k, 1, n_k, d_k)
-        QK = torch.einsum("b g h q d, b g o k d -> b g h q k", Q_reshaped * scale, K_reshaped)
+        # Ensure both operands are in the same dtype before einsum
+        Q_scaled = (Q_reshaped * scale).to(dtype=K_reshaped.dtype)
+        QK = torch.einsum("b g h q d, b g o k d -> b g h q k", Q_scaled, K_reshaped)
         # Flatten back to (B, h, n_q, n_k) for mask application
         QK = QK.view(B, h, n_q, -1)
     else:
         # Standard MHA path
-        QK = torch.einsum("b h q d, b h k d -> b h q k", Q, K) * scale
+        # Ensure both operands are in the same dtype before einsum
+        Q_scaled = (Q * scale).to(dtype=K.dtype)
+        QK = torch.einsum("b h q d, b h k d -> b h q k", Q_scaled, K)
 
     # apply mask (broadcast over batch & heads)
     mask_float = torch.zeros_like(mask, dtype=torch.float32)
