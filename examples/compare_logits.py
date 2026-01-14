@@ -13,6 +13,23 @@ from yalis.initialize import init_distributed
 from yalis.constants import EnginePhase
 from yalis.attention.backends import AttentionBackend
 
+
+def sample_token(logits, temperature=1.0, top_p=0.9):
+    """Sample a token from logits using temperature and top-p."""
+    if temperature != 1.0:
+        logits = logits / temperature
+    
+    # Top-p sampling
+    sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+    cumsum = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
+    sorted_indices_to_remove = cumsum > top_p
+    sorted_indices_to_remove[0] = False  # keep at least one token
+    sorted_logits[sorted_indices_to_remove] = float('-inf')
+    
+    probs = torch.softmax(sorted_logits, dim=-1)
+    next_token = sorted_indices[torch.multinomial(probs, num_samples=1)]
+    return next_token.item()
+
 # Local path to GPT-OSS-20B checkpoint
 model_id = "yalis/external/checkpoints/openai/gpt-oss-20b"
 
@@ -158,9 +175,81 @@ for prompt_idx, raw_prompt in enumerate(prompts_to_test):
     max_diff = logit_diff.max().item()
     print(f"Logit Max Diff:     {max_diff:.4f}")
 
-    # Cleanup YALIS for next prompt
-    del yalis_model
+    # ============================================================================
+    # PHASE 4: 20-Token Generation (HuggingFace)
+    # ============================================================================
+    print("\nPHASE 4: 20-Token Generation (HuggingFace)")
+    print("-" * 40)
+    hf_model = AutoModelForCausalLM.from_pretrained(
+        model_id, 
+        device_map="cuda", 
+        dtype=torch.bfloat16, 
+        trust_remote_code=True
+    )
+    hf_model.eval()
+    
+    hf_generated_ids = inputs.input_ids.clone()
+    with torch.no_grad():
+        for gen_step in range(20):
+            hf_inputs_gen = {"input_ids": hf_generated_ids.to("cuda")}
+            hf_outputs = hf_model(**hf_inputs_gen)
+            hf_logits_gen = hf_outputs.logits[0, -1, :].cpu()
+            next_token = sample_token(hf_logits_gen, temperature=0.7, top_p=0.9)
+            hf_generated_ids = torch.cat([hf_generated_ids, torch.tensor([[next_token]])], dim=1)
+            if gen_step % 5 == 4:
+                torch.cuda.synchronize()
+    
+    hf_generated_text = tokenizer.decode(hf_generated_ids[0], skip_special_tokens=False)
+    print(f"HF Generated (20 tokens): {hf_generated_text}")
+    
+    del hf_model
     torch.cuda.empty_cache()
+    gc.collect()
+
+    # ============================================================================
+    # PHASE 5: 20-Token Generation (YALIS)
+    # ============================================================================
+    print("\nPHASE 5: 20-Token Generation (YALIS)")
+    print("-" * 40)
+    
+    # Reinitialize YALIS model for generation
+    yalis_model_gen = get_model(
+        model_id,
+        model_dtype=torch.bfloat16,
+        attention_backend=AttentionBackend.SDPA,
+        use_paged_kv_caching=False,
+        prestore_kv_cache=True,
+        disable_tp=True,
+    ).to("cuda")
+    yalis_model_gen.eval()
+    
+    # Allocate KV cache (with buffer for 20 new tokens)
+    total_seq_len = inputs.input_ids.shape[1] + 20
+    yalis_model_gen.set_kv_cache(max_batch_size=1, max_seq_length=total_seq_len, device=torch.device("cuda"))
+    
+    yalis_generated_ids = inputs.input_ids.clone()
+    with torch.no_grad():
+        # PREFILL initial prompt
+        token_ids = inputs.input_ids.to("cuda")
+        _ = yalis_model_gen(token_ids, phase=EnginePhase.PREFILL)
+        torch.cuda.synchronize()
+        
+        # DECODE_SINGLE loop for 20 tokens
+        for gen_step in range(20):
+            last_token = yalis_generated_ids[:, -1:].to("cuda")
+            yalis_out_gen = yalis_model_gen(last_token, phase=EnginePhase.DECODE_SINGLE)
+            yalis_logits_gen = yalis_out_gen["logits"][0, -1, :actual_vocab_size].cpu()
+            next_token = sample_token(yalis_logits_gen, temperature=0.7, top_p=0.9)
+            yalis_generated_ids = torch.cat([yalis_generated_ids, torch.tensor([[next_token]])], dim=1)
+            if gen_step % 5 == 4:
+                torch.cuda.synchronize()
+    
+    yalis_generated_text = tokenizer.decode(yalis_generated_ids[0], skip_special_tokens=False)
+    print(f"YALIS Generated (20 tokens): {yalis_generated_text}")
+    
+    del yalis_model_gen
+    torch.cuda.empty_cache()
+    gc.collect()
 
 if dist.is_initialized():
     dist.destroy_process_group()
