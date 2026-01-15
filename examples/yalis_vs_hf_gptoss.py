@@ -153,6 +153,8 @@ for prompt_idx, raw_prompt in enumerate(prompts_to_test):
     print(f"[DEBUG] token_counter after set_kv_cache: {yalis_model_gen.token_counter[:1]}")
     
     yalis_generated_ids = inputs.input_ids.clone()
+    generated_tokens = []  # Accumulate tokens instead of repeated torch.cat
+    
     with torch.no_grad():
         # PREFILL initial prompt
         token_ids = inputs.input_ids.to("cuda")
@@ -162,22 +164,20 @@ for prompt_idx, raw_prompt in enumerate(prompts_to_test):
         
         # Check KV cache after prefill (layer 0)
         layer0_k_cache = yalis_model_gen.transformer.h[0].attn.kv_cache.k
-        layer0_v_cache = yalis_model_gen.transformer.h[0].attn.kv_cache.v
         prompt_len = inputs.input_ids.shape[1]
         print(f"[DEBUG] Layer 0 K cache after PREFILL: shape={layer0_k_cache.shape}, filled[:, :, :{prompt_len}] mean={layer0_k_cache[0, :, :prompt_len, :].abs().mean().item():.4f}")
         
         # Sample first token from PREFILL output
         first_logits = prefill_out["logits"][0, -1, :actual_vocab_size].cpu()
-        #next_token = sample_token(first_logits, temperature=0.7, top_p=0.9)
-        next_token = first_logits.argmax().item()  # GREEDY for debugging
+        next_token = int(first_logits.argmax().item())
         print(f"[DEBUG] First sampled token: {next_token} -> '{tokenizer.decode([next_token])}'")
-        yalis_generated_ids = torch.cat([yalis_generated_ids, torch.tensor([[next_token]])], dim=1)
+        generated_tokens.append(next_token)
         torch.cuda.synchronize()
         
         # DECODE_SINGLE loop for remaining 19 tokens
-        current_token = torch.tensor([[next_token]], dtype=torch.long, device="cuda")
         for gen_step in range(19):
-            print(f"[DEBUG] Step {gen_step}: token_counter={yalis_model_gen.token_counter[:1]}, input_token={current_token[0,0].item()}")
+            current_token = torch.tensor([[next_token]], dtype=torch.long)  # Keep on CPU, model handles movement
+            print(f"[DEBUG] Step {gen_step}: token_counter={yalis_model_gen.token_counter[:1]}, input_token={next_token}")
             yalis_out_gen = yalis_model_gen(current_token, phase=EnginePhase.DECODE_SINGLE)
             yalis_logits_gen = yalis_out_gen["logits"][0, -1, :actual_vocab_size].cpu()
             next_token = sample_token(yalis_logits_gen, temperature=0.0, top_p=0.9)
@@ -189,11 +189,12 @@ for prompt_idx, raw_prompt in enumerate(prompts_to_test):
                 k_at_pos = layer0_k_cache[0, :, current_pos-1, :].abs().mean().item()
                 print(f"[DEBUG] After step 2: K cache at position {current_pos-1} has mean={k_at_pos:.4f}")
             
-            yalis_generated_ids = torch.cat([yalis_generated_ids, torch.tensor([[next_token]])], dim=1)
-            current_token = torch.tensor([[next_token]], dtype=torch.long, device="cuda")
+            generated_tokens.append(next_token)
             if gen_step % 5 == 4:
                 torch.cuda.synchronize()
     
+    # Concatenate all generated tokens once
+    yalis_generated_ids = torch.cat([yalis_generated_ids, torch.tensor([generated_tokens])], dim=1)
     yalis_generated_text = tokenizer.decode(yalis_generated_ids[0], skip_special_tokens=False)
     print(f"YALIS Generated (20 tokens): {yalis_generated_text}")
     
