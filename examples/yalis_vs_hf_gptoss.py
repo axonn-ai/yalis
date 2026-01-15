@@ -14,20 +14,12 @@ from yalis.attention.backends import AttentionBackend
 
 
 def sample_token(logits, temperature=0.0, top_p=0.9):
-    """Sample a token from logits using temperature and top-p.
-
-    Notes:
-    - If `temperature` is <= 0, behave greedily (argmax) to avoid division-by-zero.
-    - Otherwise, apply temperature scaling and nucleus (top-p) sampling.
-    """
-    # If temperature is non-positive, use greedy selection (avoid division by zero).
+    """Sample a token from logits using temperature and top-p. If temperature is 0, uses greedy sampling."""
     if temperature is None or temperature <= 0.0:
         return int(torch.argmax(logits).item())
-
     # Apply temperature scaling
     if temperature != 1.0:
         logits = logits / float(temperature)
-
     # Top-p (nucleus) sampling
     sorted_logits, sorted_indices = torch.sort(logits, descending=True)
     probs_sorted = torch.softmax(sorted_logits, dim=-1)
