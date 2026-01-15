@@ -56,6 +56,8 @@ for prompt_idx, raw_prompt in enumerate(prompts_to_test):
     inputs = tokenizer(raw_prompt, return_tensors="pt")
     print(f"Prompt tokens shape: {inputs.input_ids.shape}")
     print(f"Prompt length: {inputs.input_ids.shape[1]} tokens")
+    # Shared sampling temperature for HF and YALIS
+    sample_temperature = 0.7
 
     # ============================================================================
     # PHASE 1: 20-Token Generation (HuggingFace)
@@ -84,7 +86,7 @@ for prompt_idx, raw_prompt in enumerate(prompts_to_test):
             hf_inputs_gen = {"input_ids": hf_generated_ids.to("cuda")}
             hf_outputs = hf_model(**hf_inputs_gen)
             hf_logits_gen = hf_outputs.logits[0, -1, :].cpu()
-            next_token = sample_token(hf_logits_gen, temperature=0.7, top_p=0.9)
+            next_token = sample_token(hf_logits_gen, temperature=sample_temperature, top_p=0.9)
             hf_generated_ids = torch.cat([hf_generated_ids, torch.tensor([[next_token]])], dim=1)
             if gen_step % 5 == 4:
                 torch.cuda.synchronize()
@@ -172,7 +174,7 @@ for prompt_idx, raw_prompt in enumerate(prompts_to_test):
             print(f"[DEBUG] Step {gen_step}: token_counter={yalis_model_gen.token_counter[:1]}, input_token={next_token}")
             yalis_out_gen = yalis_model_gen(current_token, phase=EnginePhase.DECODE_SINGLE)
             yalis_logits_gen = yalis_out_gen["logits"][0, -1, :actual_vocab_size].cpu()
-            next_token = sample_token(yalis_logits_gen, temperature=0.0, top_p=0.9)
+            next_token = sample_token(yalis_logits_gen, temperature=sample_temperature, top_p=0.9)
             print(f"[DEBUG] Step {gen_step}: sampled token={next_token} -> '{tokenizer.decode([next_token])}'")
             
             # After step 2, check if cache was updated
