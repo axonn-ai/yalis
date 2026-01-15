@@ -57,7 +57,7 @@ for prompt_idx, raw_prompt in enumerate(prompts_to_test):
     print(f"Prompt tokens shape: {inputs.input_ids.shape}")
     print(f"Prompt length: {inputs.input_ids.shape[1]} tokens")
     # Shared sampling temperature for HF and YALIS
-    sample_temperature = 0.7
+    sample_temperature = 0.0
 
     # ============================================================================
     # PHASE 1: 20-Token Generation (HuggingFace)
