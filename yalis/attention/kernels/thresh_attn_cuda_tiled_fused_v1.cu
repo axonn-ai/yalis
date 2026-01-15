@@ -172,7 +172,8 @@ extern "C" void decode_attn_cuda_launcher_gmem(
     const float* Bias, void* Outp,
     const float* Thr, float scale,
     void* logits_gmem,
-    int B, int H, int T, int D
+    int B, int H, int T, int D,
+    cudaStream_t stream
 ) {
   const __half* Qh = reinterpret_cast<const __half*>(Qp);
   const __half* Kh = reinterpret_cast<const __half*>(Kp);
@@ -189,7 +190,7 @@ extern "C" void decode_attn_cuda_launcher_gmem(
   size_t dyn_shm = off + out_bytes;
 
   decode_attn_gmem_logits_cache_v0
-    <<<blocks, threads, dyn_shm>>>(
+    <<<blocks, threads, dyn_shm, stream>>>(
       Qh, Kh, Vh, Bias, Oh, Thr, scale, Lh, B, H, T, D
     );
 

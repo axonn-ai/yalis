@@ -232,7 +232,8 @@ extern "C" void decode_attn_cuda_launcher(
     const void* Qp, const void* Kp, const void* Vp,
     const float* Bias, void* Outp,
     const float* Thr, float scale,
-    int B, int H, int T, int D
+    int B, int H, int T, int D,
+    cudaStream_t stream
 ) {
   const __half* Qh = reinterpret_cast<const __half*>(Qp);
   const __half* Kh = reinterpret_cast<const __half*>(Kp);
@@ -247,7 +248,7 @@ extern "C" void decode_attn_cuda_launcher(
   size_t dyn_shm = off + out_bytes;
 
   decode_attn_two_pass_tile_fused_idxpack_v1
-    <<<blocks, threads, dyn_shm>>>(
+    <<<blocks, threads, dyn_shm, stream>>>(
       Qh, Kh, Vh, Bias, Oh, Thr, scale, B, H, T, D
     );
 

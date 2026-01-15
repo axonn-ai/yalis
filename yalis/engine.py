@@ -58,7 +58,7 @@ def prefill(
 
 
 @torch.no_grad()
-@torch.compile(mode="reduce-overhead")
+@torch.compile(mode="max-autotune-no-cudagraphs")
 def generate(
     model,
     tokens,

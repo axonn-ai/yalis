@@ -1,4 +1,6 @@
 #include <torch/extension.h>
+#include <cuda_runtime.h>
+#include <ATen/cuda/CUDAContext.h>
 using at::Half;
 
 // forward declare your launcher as taking raw pointers
@@ -12,7 +14,8 @@ extern "C" void decode_attn_cuda_launcher(
     const void* Q, const void* K, const void* V,
     const float* Bias, void* Out,
     const float* Threshold, float scale,
-    int B, int H, int T, int D
+    int B, int H, int T, int D,
+    cudaStream_t stream
 ) THRESH_ATTN_WEAK;
 
 extern "C" void decode_attn_cuda_launcher_gmem(
@@ -20,7 +23,8 @@ extern "C" void decode_attn_cuda_launcher_gmem(
     const float* Bias, void* Out,
     const float* Threshold, float scale,
     void* logits_gmem,
-    int B, int H, int T, int D
+    int B, int H, int T, int D,
+    cudaStream_t stream
 ) THRESH_ATTN_WEAK;
 
 static torch::Tensor decode_attn_fwd_impl(
@@ -44,6 +48,7 @@ static torch::Tensor decode_attn_fwd_impl(
   auto Bf = attn_bias.view({B*H, T});
   auto Of = out.view({B*H, D});
 
+  auto stream = at::cuda::getCurrentCUDAStream();
   if (use_gmem) {
     TORCH_CHECK(decode_attn_cuda_launcher_gmem != nullptr,
                 "gmem kernel requested but decode_attn_cuda_launcher_gmem is not linked. "
@@ -58,7 +63,8 @@ static torch::Tensor decode_attn_fwd_impl(
       /*Threshold=*/thresholds.data_ptr<float>(),
       sm_scale,
       reinterpret_cast<void*>(logits_gmem.data_ptr<Half>()),
-      B, H, T, D
+      B, H, T, D,
+      stream.stream()
     );
   } else {
     TORCH_CHECK(decode_attn_cuda_launcher != nullptr,
@@ -71,7 +77,8 @@ static torch::Tensor decode_attn_fwd_impl(
       /*Bias=*/Bf.data_ptr<float>(),
       /*Out=*/ reinterpret_cast<void*>(   Of.data_ptr<Half>()),
       /*Threshold=*/thresholds.data_ptr<float>(),
-      sm_scale, B, H, T, D
+      sm_scale, B, H, T, D,
+      stream.stream()
     );
   }
 

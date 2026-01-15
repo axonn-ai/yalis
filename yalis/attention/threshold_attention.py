@@ -21,6 +21,7 @@ def _resolve_kernel_source() -> str:
     kernel_source = os.getenv(_KERNEL_ENV, _DEFAULT_KERNEL)
     if not os.path.isabs(kernel_source):
         kernel_source = os.path.join(_BASE_DIR, kernel_source)
+    print(f"USING THRESH ATTENTION KERNEL: {kernel_source}")
     return os.path.normpath(kernel_source)
 
 

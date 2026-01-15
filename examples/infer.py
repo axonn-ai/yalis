@@ -17,7 +17,7 @@ except ImportError:
 
 if __name__ == "__main__":
     # Model ID from Hugging Face
-    model_id = "meta-llama/Llama-2-7b-hf"
+    model_id = "meta-llama/Meta-Llama-3.1-8B-Instruct"
     
     user_prompts = [
         "How to bake a cake?",
@@ -66,7 +66,7 @@ if __name__ == "__main__":
         input_prompts.append(formatted_prompt)
 
     # Number of tokens to generate
-    tokens_to_gen = 512
+    tokens_to_gen = 256
 
     # configs
     model_config = ModelConfig(model_name=model_id, precision="fp16")
