@@ -82,12 +82,22 @@ for prompt_idx, raw_prompt in enumerate(prompts_to_test):
     
     hf_generated_ids = inputs.input_ids.clone()
     with torch.no_grad():
-        for gen_step in range(20):
-            hf_inputs_gen = {"input_ids": hf_generated_ids.to("cuda")}
-            hf_outputs = hf_model(**hf_inputs_gen)
-            hf_logits_gen = hf_outputs.logits[0, -1, :].cpu()
-            next_token = sample_token(hf_logits_gen, temperature=sample_temperature, top_p=0.9)
+        # HF PREFILL (compute once, return past_key_values)
+        hf_prefill = hf_model(input_ids=inputs.input_ids.to("cuda"), use_cache=True)
+        hf_prefill_logits = hf_prefill.logits[0, -1, :hf_vocab_size].cpu()
+        next_token = sample_token(hf_prefill_logits, temperature=sample_temperature, top_p=0.9)
+        hf_generated_ids = torch.cat([hf_generated_ids, torch.tensor([[next_token]])], dim=1)
+        past = hf_prefill.past_key_values
+        torch.cuda.synchronize()
+
+        # HF incremental decoding using cached past_key_values to match YALIS DECODE_SINGLE
+        for gen_step in range(19):
+            next_input = torch.tensor([[next_token]], device="cuda")
+            hf_out = hf_model(input_ids=next_input, past_key_values=past, use_cache=True)
+            hf_logits = hf_out.logits[0, -1, :hf_vocab_size].cpu()
+            next_token = sample_token(hf_logits, temperature=sample_temperature, top_p=0.9)
             hf_generated_ids = torch.cat([hf_generated_ids, torch.tensor([[next_token]])], dim=1)
+            past = hf_out.past_key_values
             if gen_step % 5 == 4:
                 torch.cuda.synchronize()
     
