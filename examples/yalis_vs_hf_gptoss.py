@@ -13,21 +13,34 @@ from yalis.constants import EnginePhase
 from yalis.attention.backends import AttentionBackend
 
 
-def sample_token(logits, temperature=1.0, top_p=0.9):
-    """Sample a token from logits using temperature and top-p."""
+def sample_token(logits, temperature=0.0, top_p=0.9):
+    """Sample a token from logits using temperature and top-p.
+
+    Notes:
+    - If `temperature` is <= 0, behave greedily (argmax) to avoid division-by-zero.
+    - Otherwise, apply temperature scaling and nucleus (top-p) sampling.
+    """
+    # If temperature is non-positive, use greedy selection (avoid division by zero).
+    if temperature is None or temperature <= 0.0:
+        return int(torch.argmax(logits).item())
+
+    # Apply temperature scaling
     if temperature != 1.0:
-        logits = logits / temperature
-    
-    # Top-p sampling
+        logits = logits / float(temperature)
+
+    # Top-p (nucleus) sampling
     sorted_logits, sorted_indices = torch.sort(logits, descending=True)
-    cumsum = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
-    sorted_indices_to_remove = cumsum > top_p
-    sorted_indices_to_remove[0] = False  # keep at least one token
-    sorted_logits[sorted_indices_to_remove] = float('-inf')
-    
+    probs_sorted = torch.softmax(sorted_logits, dim=-1)
+    cumsum = torch.cumsum(probs_sorted, dim=-1)
+    sorted_indices_to_remove = cumsum > float(top_p)
+    # Keep at least the top token
+    sorted_indices_to_remove[..., 0] = False
+    sorted_logits[sorted_indices_to_remove] = float("-inf")
+
     probs = torch.softmax(sorted_logits, dim=-1)
-    next_token = sorted_indices[torch.multinomial(probs, num_samples=1)]
-    return next_token.item()
+    choice = torch.multinomial(probs, num_samples=1)
+    next_token = sorted_indices[choice]
+    return int(next_token.item())
 
 # Local path to GPT-OSS-20B checkpoint
 model_id = "yalis/external/checkpoints/openai/gpt-oss-20b"
@@ -167,8 +180,7 @@ for prompt_idx, raw_prompt in enumerate(prompts_to_test):
             print(f"[DEBUG] Step {gen_step}: token_counter={yalis_model_gen.token_counter[:1]}, input_token={current_token[0,0].item()}")
             yalis_out_gen = yalis_model_gen(current_token, phase=EnginePhase.DECODE_SINGLE)
             yalis_logits_gen = yalis_out_gen["logits"][0, -1, :actual_vocab_size].cpu()
-            #next_token = sample_token(yalis_logits_gen, temperature=0.7, top_p=0.9)
-            next_token = yalis_logits_gen.argmax().item()  # GREEDY for debugging
+            next_token = sample_token(yalis_logits_gen, temperature=0.0, top_p=0.9)
             print(f"[DEBUG] Step {gen_step}: sampled token={next_token} -> '{tokenizer.decode([next_token])}'")
             
             # After step 2, check if cache was updated
