@@ -175,6 +175,9 @@ for prompt_idx, raw_prompt in enumerate(prompts_to_test):
         first_logits = prefill_out["logits"][0, -1, :actual_vocab_size].cpu()
         next_token = int(first_logits.argmax().item())
         print(f"[DEBUG] First sampled token: {next_token} -> '{tokenizer.decode([next_token])}'")
+        print(f"[DEBUG] PREFILL logits stats: mean={first_logits.mean().item():.4f}, std={first_logits.std().item():.4f}, max={first_logits.max().item():.4f}")
+        print(f"[DEBUG] PREFILL top-5 tokens: {first_logits.topk(5).indices.tolist()}")
+        print(f"[DEBUG] PREFILL top-5 decoded: {[tokenizer.decode([t]) for t in first_logits.topk(5).indices.tolist()]}")
         generated_tokens.append(next_token)
         torch.cuda.synchronize()
         
@@ -187,6 +190,10 @@ for prompt_idx, raw_prompt in enumerate(prompts_to_test):
             yalis_logits_gen = yalis_out_gen["logits"][0, -1, :actual_vocab_size].cpu()
             next_token = sample_token(yalis_logits_gen, temperature=sample_temperature, top_p=0.9)
             print(f"[DEBUG] Step {gen_step}: sampled token={next_token} -> '{tokenizer.decode([next_token])}'")
+            if gen_step < 3:  # Detailed stats for first few steps
+                print(f"[DEBUG]   Logits stats: mean={yalis_logits_gen.mean().item():.4f}, std={yalis_logits_gen.std().item():.4f}, max={yalis_logits_gen.max().item():.4f}")
+                print(f"[DEBUG]   Top-5 tokens: {yalis_logits_gen.topk(5).indices.tolist()}")
+                print(f"[DEBUG]   Top-5 decoded: {[tokenizer.decode([t]) for t in yalis_logits_gen.topk(5).indices.tolist()]}")
             
             # After step 2, check if cache was updated
             if gen_step == 2:
