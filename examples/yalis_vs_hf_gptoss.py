@@ -180,7 +180,8 @@ for prompt_idx, raw_prompt in enumerate(prompts_to_test):
         
         # DECODE_SINGLE loop for remaining 19 tokens
         for gen_step in range(19):
-            current_token = torch.tensor([[next_token]], dtype=torch.long)  # Keep on CPU, model handles movement
+            # Create input token on same device as prompt to avoid device mismatch
+            current_token = torch.tensor([[next_token]], dtype=torch.long, device=token_ids.device)
             print(f"[DEBUG] Step {gen_step}: token_counter={yalis_model_gen.token_counter[:1]}, input_token={next_token}")
             yalis_out_gen = yalis_model_gen(current_token, phase=EnginePhase.DECODE_SINGLE)
             yalis_logits_gen = yalis_out_gen["logits"][0, -1, :actual_vocab_size].cpu()
