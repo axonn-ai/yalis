@@ -13,21 +13,26 @@ from yalis.constants import EnginePhase
 from yalis.attention.backends import AttentionBackend
 
 
-def sample_token(logits, temperature=1.0, top_p=0.9):
-    """Sample a token from logits using temperature and top-p."""
+def sample_token(logits, temperature=0.0, top_p=0.9):
+    """Sample a token from logits using temperature and top-p. If temperature is 0, uses greedy sampling."""
+    if temperature is None or temperature <= 0.0:
+        return int(torch.argmax(logits).item())
+    # Apply temperature scaling
     if temperature != 1.0:
-        logits = logits / temperature
-    
-    # Top-p sampling
+        logits = logits / float(temperature)
+    # Top-p (nucleus) sampling
     sorted_logits, sorted_indices = torch.sort(logits, descending=True)
-    cumsum = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
-    sorted_indices_to_remove = cumsum > top_p
-    sorted_indices_to_remove[0] = False  # keep at least one token
-    sorted_logits[sorted_indices_to_remove] = float('-inf')
-    
+    probs_sorted = torch.softmax(sorted_logits, dim=-1)
+    cumsum = torch.cumsum(probs_sorted, dim=-1)
+    sorted_indices_to_remove = cumsum > float(top_p)
+    # Keep at least the top token
+    sorted_indices_to_remove[..., 0] = False
+    sorted_logits[sorted_indices_to_remove] = float("-inf")
+
     probs = torch.softmax(sorted_logits, dim=-1)
-    next_token = sorted_indices[torch.multinomial(probs, num_samples=1)]
-    return next_token.item()
+    choice = torch.multinomial(probs, num_samples=1)
+    next_token = sorted_indices[choice]
+    return int(next_token.item())
 
 # Local path to GPT-OSS-20B checkpoint
 model_id = "yalis/external/checkpoints/openai/gpt-oss-20b"
@@ -51,6 +56,8 @@ for prompt_idx, raw_prompt in enumerate(prompts_to_test):
     inputs = tokenizer(raw_prompt, return_tensors="pt")
     print(f"Prompt tokens shape: {inputs.input_ids.shape}")
     print(f"Prompt length: {inputs.input_ids.shape[1]} tokens")
+    # Shared sampling temperature for HF and YALIS
+    sample_temperature = 0.0
 
     # ============================================================================
     # PHASE 1: 20-Token Generation (HuggingFace)
@@ -75,12 +82,22 @@ for prompt_idx, raw_prompt in enumerate(prompts_to_test):
     
     hf_generated_ids = inputs.input_ids.clone()
     with torch.no_grad():
-        for gen_step in range(20):
-            hf_inputs_gen = {"input_ids": hf_generated_ids.to("cuda")}
-            hf_outputs = hf_model(**hf_inputs_gen)
-            hf_logits_gen = hf_outputs.logits[0, -1, :].cpu()
-            next_token = sample_token(hf_logits_gen, temperature=0.7, top_p=0.9)
+        # HF PREFILL (compute once, return past_key_values)
+        hf_prefill = hf_model(input_ids=inputs.input_ids.to("cuda"), use_cache=True)
+        hf_prefill_logits = hf_prefill.logits[0, -1, :hf_vocab_size].cpu()
+        next_token = sample_token(hf_prefill_logits, temperature=sample_temperature, top_p=0.9)
+        hf_generated_ids = torch.cat([hf_generated_ids, torch.tensor([[next_token]])], dim=1)
+        past = hf_prefill.past_key_values
+        torch.cuda.synchronize()
+
+        # HF incremental decoding using cached past_key_values to match YALIS DECODE_SINGLE
+        for gen_step in range(19):
+            next_input = torch.tensor([[next_token]], device="cuda")
+            hf_out = hf_model(input_ids=next_input, past_key_values=past, use_cache=True)
+            hf_logits = hf_out.logits[0, -1, :hf_vocab_size].cpu()
+            next_token = sample_token(hf_logits, temperature=sample_temperature, top_p=0.9)
             hf_generated_ids = torch.cat([hf_generated_ids, torch.tensor([[next_token]])], dim=1)
+            past = hf_out.past_key_values
             if gen_step % 5 == 4:
                 torch.cuda.synchronize()
     
@@ -140,6 +157,8 @@ for prompt_idx, raw_prompt in enumerate(prompts_to_test):
     print(f"[DEBUG] token_counter after set_kv_cache: {yalis_model_gen.token_counter[:1]}")
     
     yalis_generated_ids = inputs.input_ids.clone()
+    generated_tokens = []  # Accumulate tokens instead of repeated torch.cat
+    
     with torch.no_grad():
         # PREFILL initial prompt
         token_ids = inputs.input_ids.to("cuda")
@@ -149,26 +168,23 @@ for prompt_idx, raw_prompt in enumerate(prompts_to_test):
         
         # Check KV cache after prefill (layer 0)
         layer0_k_cache = yalis_model_gen.transformer.h[0].attn.kv_cache.k
-        layer0_v_cache = yalis_model_gen.transformer.h[0].attn.kv_cache.v
         prompt_len = inputs.input_ids.shape[1]
         print(f"[DEBUG] Layer 0 K cache after PREFILL: shape={layer0_k_cache.shape}, filled[:, :, :{prompt_len}] mean={layer0_k_cache[0, :, :prompt_len, :].abs().mean().item():.4f}")
         
         # Sample first token from PREFILL output
         first_logits = prefill_out["logits"][0, -1, :actual_vocab_size].cpu()
-        #next_token = sample_token(first_logits, temperature=0.7, top_p=0.9)
-        next_token = first_logits.argmax().item()  # GREEDY for debugging
+        next_token = int(first_logits.argmax().item())
         print(f"[DEBUG] First sampled token: {next_token} -> '{tokenizer.decode([next_token])}'")
-        yalis_generated_ids = torch.cat([yalis_generated_ids, torch.tensor([[next_token]])], dim=1)
+        generated_tokens.append(next_token)
         torch.cuda.synchronize()
         
         # DECODE_SINGLE loop for remaining 19 tokens
-        current_token = torch.tensor([[next_token]], dtype=torch.long, device="cuda")
         for gen_step in range(19):
-            print(f"[DEBUG] Step {gen_step}: token_counter={yalis_model_gen.token_counter[:1]}, input_token={current_token[0,0].item()}")
+            current_token = torch.tensor([[next_token]], dtype=torch.long)  # Keep on CPU, model handles movement
+            print(f"[DEBUG] Step {gen_step}: token_counter={yalis_model_gen.token_counter[:1]}, input_token={next_token}")
             yalis_out_gen = yalis_model_gen(current_token, phase=EnginePhase.DECODE_SINGLE)
             yalis_logits_gen = yalis_out_gen["logits"][0, -1, :actual_vocab_size].cpu()
-            #next_token = sample_token(yalis_logits_gen, temperature=0.7, top_p=0.9)
-            next_token = yalis_logits_gen.argmax().item()  # GREEDY for debugging
+            next_token = sample_token(yalis_logits_gen, temperature=sample_temperature, top_p=0.9)
             print(f"[DEBUG] Step {gen_step}: sampled token={next_token} -> '{tokenizer.decode([next_token])}'")
             
             # After step 2, check if cache was updated
@@ -177,11 +193,12 @@ for prompt_idx, raw_prompt in enumerate(prompts_to_test):
                 k_at_pos = layer0_k_cache[0, :, current_pos-1, :].abs().mean().item()
                 print(f"[DEBUG] After step 2: K cache at position {current_pos-1} has mean={k_at_pos:.4f}")
             
-            yalis_generated_ids = torch.cat([yalis_generated_ids, torch.tensor([[next_token]])], dim=1)
-            current_token = torch.tensor([[next_token]], dtype=torch.long, device="cuda")
+            generated_tokens.append(next_token)
             if gen_step % 5 == 4:
                 torch.cuda.synchronize()
     
+    # Concatenate all generated tokens once
+    yalis_generated_ids = torch.cat([yalis_generated_ids, torch.tensor([generated_tokens])], dim=1)
     yalis_generated_text = tokenizer.decode(yalis_generated_ids[0], skip_special_tokens=False)
     print(f"YALIS Generated (20 tokens): {yalis_generated_text}")
     
