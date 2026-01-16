@@ -60,13 +60,45 @@ print(f"     sliding_window_indices: {cfg_get(hf_model.config, 'sliding_window_i
 
 # Check if HF model has sinks
 print(f"   Architecture:")
-first_block = hf_model.transformer.h[0]
-print(f"     First block type: {type(first_block)}")
-print(f"     Has sinks: {hasattr(first_block, 'sinks')}")
-if hasattr(first_block, 'sinks'):
-    print(f"     Sinks shape: {first_block.sinks.shape}")
-    print(f"     Sinks mean: {first_block.sinks.mean().item():.6f}")
-print(f"     Attention type: {type(first_block.attn)}")
+def find_transformer_root(model):
+    """Try common attribute paths to find the transformer root with `.h` blocks."""
+    candidates = [
+        "transformer",
+        "model",
+        "base_model",
+        "gpt_oss",
+        "gpt", 
+        "transformer_model",
+    ]
+    for name in candidates:
+        root = getattr(model, name, None)
+        if root is None:
+            continue
+        if hasattr(root, "h"):
+            return root
+        # Some HF wrappers store model under .model
+        inner = getattr(root, "transformer", None)
+        if inner is not None and hasattr(inner, "h"):
+            return inner
+    return None
+
+root = find_transformer_root(hf_model)
+if root is None:
+    print("     Could not locate transformer blocks on HF model (skipping detailed architecture checks).")
+else:
+    first_block = root.h[0]
+    print(f"     First block type: {type(first_block)}")
+    print(f"     Has sinks: {hasattr(first_block, 'sinks')}")
+    if hasattr(first_block, 'sinks'):
+        try:
+            print(f"     Sinks shape: {first_block.sinks.shape}")
+            print(f"     Sinks mean: {first_block.sinks.mean().item():.6f}")
+        except Exception:
+            print("     Failed to read sinks stats from HF block")
+    if hasattr(first_block, 'attn'):
+        print(f"     Attention type: {type(first_block.attn)}")
+    else:
+        print("     No .attn attribute on first block")
 
 # HF PREFILL
 print(f"\n3. HF PREFILL FORWARD PASS")
