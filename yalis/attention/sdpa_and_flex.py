@@ -218,9 +218,9 @@ def rotary_kv_update_sdpa_gen(
 
 
 def rotary_kv_update_sdpa_gen_gptoss(
-    q: torch.Tensor,  # B, nh, 1, hs
-    k: torch.Tensor,  # B, nh, 1, hs
-    v: torch.Tensor,  # B, nh, 1, hs
+    q: torch.Tensor,  # B, nh, T, hs (T can be 1 for decode or >1 for prefill)
+    k: torch.Tensor,  # B, nh, T, hs
+    v: torch.Tensor,  # B, nh, T, hs
     cos: torch.Tensor,
     sin: torch.Tensor,
     token_counter: torch.Tensor,  # B,1
@@ -245,24 +245,35 @@ def rotary_kv_update_sdpa_gen_gptoss(
     resulting weights to V.
 
     Inputs are the per-batch Q and the key/value caches.
+    
+    Now supports both PREFILL (T > 1) and DECODE (T = 1) phases.
     """
     B = q.size(0)
-    _, nh, _, hs = q.shape
+    _, nh, T, hs = q.shape
 
     process_group = ax.comm_handle.inner_intra_layer_parallel_group
     if use_intra_head_parallelism:
         assert not use_flex, "GPT-OSS helper does not support flex attention"
         q = Drop.apply(q, process_group).contiguous()
 
-    # Apply RoPE to the query token if cos/sin are provided.
-    # We do not re-rope the cached keys here because the cache
-    # stores keys that were written already
+    # Apply RoPE to Q and K
+    # For PREFILL (T > 1): use cos/sin[:T] directly (positions 0 to T-1)
+    # For DECODE (T = 1): use token_counter to index into RoPE cache
     if cos is not None and sin is not None:
-        cos = index_into_rope_cache_gen(cos, token_counter[:B])
-        sin = index_into_rope_cache_gen(sin, token_counter[:B])
-        if cos.dim() > 1:
-            cos = cos.unsqueeze(-3)
-            sin = sin.unsqueeze(-3)
+        if T == 1:
+            # DECODE: single token at position token_counter
+            cos = index_into_rope_cache_gen(cos, token_counter[:B])
+            sin = index_into_rope_cache_gen(sin, token_counter[:B])
+            if cos.dim() > 1:
+                cos = cos.unsqueeze(-3)
+                sin = sin.unsqueeze(-3)
+        else:
+            # PREFILL: T tokens starting at position 0
+            cos, sin = cos[:T], sin[:T]
+            # cos and sin are of shape (T, hs)
+            # Add singleton dimensions - (1, 1, T, hs)
+            cos = cos[None, None, :, :]
+            sin = sin[None, None, :, :]
         
         # Apply RoPE to both Q and K
         roped_tensors = []
@@ -277,38 +288,87 @@ def rotary_kv_update_sdpa_gen_gptoss(
         q, k = roped_tensors
 
     # Write the newly generated K and V to the cache at the current position
-    b_indices = torch.arange(B, device=k_cache.device)
-    t_indices = token_counter[:B].view(-1)
+    # For PREFILL (T > 1): write T tokens starting at position 0
+    # For DECODE (T = 1): write 1 token at position token_counter
+    if T == 1:
+        # DECODE: single token
+        b_indices = torch.arange(B, device=k_cache.device)
+        t_indices = token_counter[:B].view(-1)
 
-    if use_intra_head_parallelism:
-        k_cache[b_indices, :, t_indices, :] = Drop.apply(
-            k[:, :, 0, :], process_group
-        ).to(k_cache.dtype)
-        v_cache[b_indices, :, t_indices, :] = Drop.apply(
-            v[:, :, 0, :], process_group
-        ).to(v_cache.dtype)
+        if use_intra_head_parallelism:
+            k_cache[b_indices, :, t_indices, :] = Drop.apply(
+                k[:, :, 0, :], process_group
+            ).to(k_cache.dtype)
+            v_cache[b_indices, :, t_indices, :] = Drop.apply(
+                v[:, :, 0, :], process_group
+            ).to(v_cache.dtype)
+        else:
+            k_cache[b_indices, :, t_indices, :] = k[:, :, 0, :].to(k_cache.dtype)
+            v_cache[b_indices, :, t_indices, :] = v[:, :, 0, :].to(v_cache.dtype)
     else:
-        k_cache[b_indices, :, t_indices, :] = k[:, :, 0, :].to(k_cache.dtype)
-        v_cache[b_indices, :, t_indices, :] = v[:, :, 0, :].to(v_cache.dtype)
+        # PREFILL: T tokens starting at position 0
+        if use_intra_head_parallelism:
+            k_cache[:B, :, :T, :] = Drop.apply(
+                k, process_group
+            ).to(k_cache.dtype)
+            v_cache[:B, :, :T, :] = Drop.apply(
+                v, process_group
+            ).to(v_cache.dtype)
+        else:
+            k_cache[:B, :, :T, :] = k.to(k_cache.dtype)
+            v_cache[:B, :, :T, :] = v.to(v_cache.dtype)
 
-    # build mask up to current token_counter and optional sliding window
-    t_max = k_cache.size(-2)
-    arange_t = torch.arange(t_max, device=k_cache.device).view(1, -1)
-    upper_mask = arange_t <= token_counter[:B].view(-1, 1)
-    if sliding_window and sliding_window > 0:
-        lower_bound = (token_counter[:B].view(-1, 1) - sliding_window).clamp(min=0)
-        lower_mask = arange_t >= lower_bound
-        mask = upper_mask & lower_mask
-    else:
-        mask = upper_mask
-
-    # q: (B, nh, 1, hs), k_cache[:B]: (B, nh_k, t_max, hs)
-    # Handle GQA: q may have more heads than k/v
-    Q = q
-    K = k_cache[:B]
-    V = v_cache[:B]
+    # Build mask for attention
+    # For PREFILL: attend only to the T tokens being prefilled (causal within T)
+    # For DECODE: attend to all cached tokens up to token_counter
     
-    # Check if we need to handle grouped-query attention
+    if T == 1:
+        # DECODE: Q is (B, h, 1, d), attend to cache up to token_counter
+        # K and V are from cache (B, h, t_max, d)
+        Q = q
+        K = k_cache[:B]
+        V = v_cache[:B]
+        
+        # Mask: attend to all positions 0..token_counter
+        t_max = k_cache.size(-2)
+        arange_t = torch.arange(t_max, device=k_cache.device).view(1, -1)
+        upper_mask = arange_t <= token_counter[:B].view(-1, 1)
+        
+        if sliding_window and sliding_window > 0:
+            lower_bound = (token_counter[:B].view(-1, 1) - sliding_window).clamp(min=0)
+            lower_mask = arange_t >= lower_bound
+            mask = upper_mask & lower_mask
+        else:
+            mask = upper_mask
+        # mask shape: (B, t_max)
+        n_k = t_max
+    else:
+        # PREFILL: Q is (B, h, T, d), attend to the T tokens (causal)
+        # K and V are the T tokens we just wrote to cache
+        Q = q
+        K = k_cache[:B, :, :T, :]
+        V = v_cache[:B, :, :T, :]
+        
+        # Causal mask: query i attends to keys 0..i
+        # Create lower-triangular mask (T, T)
+        causal_mask = torch.tril(
+            torch.ones(T, T, dtype=torch.bool, device=q.device)
+        )
+        
+        if sliding_window and sliding_window > 0:
+            # Sliding window: query i attends to keys max(0, i-window)..i
+            # Create band matrix
+            row_indices = torch.arange(T, device=q.device).view(T, 1)
+            col_indices = torch.arange(T, device=q.device).view(1, T)
+            window_mask = (row_indices - col_indices) <= sliding_window
+            mask = causal_mask & window_mask
+        else:
+            mask = causal_mask
+        # mask shape: (T, T) - will broadcast to (B, 1, T, T) later
+        n_k = T
+
+    # Handle GQA: Q may have more heads than K/V
+    # Q, K, V were set above based on PREFILL vs DECODE
     enable_gqa = Q.size(1) != K.size(1)
     
     # keep scale in the same dtype/device as `Q` to avoid dtype promotion
@@ -336,14 +396,22 @@ def rotary_kv_update_sdpa_gen_gptoss(
         Q_scaled = (Q * scale).to(dtype=K.dtype)
         QK = torch.einsum("b h q d, b h k d -> b h q k", Q_scaled, K)
 
-    # apply mask (broadcast over batch & heads)
+    # Apply mask (broadcast over batch & heads)
+    # For DECODE: mask is (B, t_max), QK is (B, h, 1, t_max)
+    # For PREFILL: mask is (T, T), QK is (B, h, T, T)
     mask_float = torch.zeros_like(mask, dtype=torch.float32)
     mask_float = mask_float.masked_fill(~mask, float("-inf"))
-    QK = QK + mask_float.view(B, 1, 1, t_max)
+    
+    if T == 1:
+        # DECODE: mask shape (B, n_k) -> (B, 1, 1, n_k)
+        QK = QK + mask_float.view(B, 1, 1, n_k)
+    else:
+        # PREFILL: mask shape (T, T) -> (1, 1, T, T)
+        QK = QK + mask_float.view(1, 1, T, T)
 
     # append sinks column if provided
     # sinks is (n_head, 1, 1) and matches the query head count
-    # QK is (B, h, n_q, t_max) where h is the number of query heads
+    # QK is (B, h, n_q, n_k) where h is the number of query heads
     if sinks is not None:
         # sinks shape: (n_head, 1, 1) -> reshape to (1, n_head, 1, 1) for broadcasting
         S = sinks.view(1, -1, 1, 1)
@@ -554,16 +622,37 @@ def sdpa_and_flex_attention(
             v_cache,
         )
     else:  # Prefill
-        y = rotary_kv_update_sdpa_prefill(
-            q,
-            k,
-            v,
-            rotary_cos,
-            rotary_sin,
-            k_cache,  # B,nh,t_max,hs
-            v_cache,  # B,nh,t_max,hs
-            use_intra_head_parallelism,
-        )
+        sliding_window = kwargs.get("sliding_window", 0)
+        sliding_window_mode = kwargs.get("sliding_window_mode", None)
+        # opt-in GPT-OSS style SDPA for prefill
+        if sliding_window_mode == "gpt_oss":
+            sinks = kwargs.get("sinks", None)
+            y = rotary_kv_update_sdpa_gen_gptoss(
+                q,
+                k,
+                v,
+                rotary_cos,
+                rotary_sin,
+                cache_seqlens,
+                k_cache,
+                v_cache,
+                sinks=sinks,
+                sliding_window=sliding_window,
+                use_intra_head_parallelism=use_intra_head_parallelism,
+                use_flex=use_flex,
+                flex_attention_block_mask=flex_attention_block_mask,
+            )
+        else:
+            y = rotary_kv_update_sdpa_prefill(
+                q,
+                k,
+                v,
+                rotary_cos,
+                rotary_sin,
+                k_cache,  # B,nh,t_max,hs
+                v_cache,  # B,nh,t_max,hs
+                use_intra_head_parallelism,
+            )
     return y
 
 
