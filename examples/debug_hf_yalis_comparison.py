@@ -41,16 +41,22 @@ hf_model = AutoModelForCausalLM.from_pretrained(
     trust_remote_code=True
 )
 hf_model.eval()
+def cfg_get(cfg, *names):
+    for n in names:
+        v = getattr(cfg, n, None)
+        if v is not None:
+            return v
+    return 'N/A'
 
 print(f"   Config:")
-print(f"     vocab_size: {hf_model.config.vocab_size}")
-print(f"     n_layer: {hf_model.config.n_layer}")
-print(f"     n_embd: {hf_model.config.n_embd}")
-print(f"     n_head: {hf_model.config.n_head}")
-print(f"     n_query_groups: {getattr(hf_model.config, 'n_query_groups', 'N/A')}")
-print(f"     sliding_window_mode: {getattr(hf_model.config, 'sliding_window_mode', 'N/A')}")
-print(f"     sliding_window_size: {getattr(hf_model.config, 'sliding_window_size', 'N/A')}")
-print(f"     sliding_window_indices: {getattr(hf_model.config, 'sliding_window_indices', 'N/A')}")
+print(f"     vocab_size: {cfg_get(hf_model.config, 'vocab_size', 'vocab_size')}")
+print(f"     n_layer: {cfg_get(hf_model.config, 'n_layer', 'num_hidden_layers', 'num_layers')}")
+print(f"     n_embd: {cfg_get(hf_model.config, 'n_embd', 'hidden_size', 'd_model')}")
+print(f"     n_head: {cfg_get(hf_model.config, 'n_head', 'num_attention_heads')}")
+print(f"     n_query_groups: {cfg_get(hf_model.config, 'n_query_groups', 'n_query_groups')}")
+print(f"     sliding_window_mode: {cfg_get(hf_model.config, 'sliding_window_mode', 'sliding_window_mode')}")
+print(f"     sliding_window_size: {cfg_get(hf_model.config, 'sliding_window_size', 'sliding_window_size')}")
+print(f"     sliding_window_indices: {cfg_get(hf_model.config, 'sliding_window_indices', 'sliding_window_indices')}")
 
 # Check if HF model has sinks
 print(f"   Architecture:")
