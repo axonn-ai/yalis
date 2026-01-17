@@ -253,21 +253,30 @@ def create_tp_checkpoint(checkpoint_dir: Path, output_dir: Path):
             saver.store_early(name, param)
     
     SafePrinter.print(f"[Rank {rank}] Saved {len(rank_state_dict)} tensors")
-    
-    # Only rank 0 copies metadata
+
+    # Copy metadata into each rank directory so loaders can find config/tokenizer
+    metadata_files = [
+        "model_config.yaml",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "special_tokens_map.json",
+        "chat_template.jinja",
+    ]
+    for fname in metadata_files:
+        src = checkpoint_dir / fname
+        if src.exists():
+            try:
+                shutil.copy2(src, rank_output_dir / fname)
+            except Exception:
+                SafePrinter.print(f"[Rank {rank}] Warning: failed to copy metadata file {fname} to {rank_output_dir}")
+
+    # Only rank 0 copies metadata to the root and creates tp_index.json
     if rank == 0:
-        metadata_files = [
-            "model_config.yaml",
-            "tokenizer.json",
-            "tokenizer_config.json",
-            "special_tokens_map.json",
-            "chat_template.jinja",
-        ]
         for fname in metadata_files:
             src = checkpoint_dir / fname
             if src.exists():
                 shutil.copy2(src, output_dir / fname)
-        
+
         # Create index file that points to rank subdirs
         index = {
             "world_size": world_size,
