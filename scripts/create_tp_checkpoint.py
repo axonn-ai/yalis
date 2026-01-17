@@ -243,12 +243,18 @@ def create_tp_checkpoint(checkpoint_dir: Path, output_dir: Path):
     
     # Each rank saves its local checkpoint
     SafePrinter.print(f"\n[Rank {rank}] Saving local checkpoint to {output_dir} ...")
-    
+
     output_dir.mkdir(parents=True, exist_ok=True)
     rank_output_dir = output_dir / f"rank_{rank}"
     rank_output_dir.mkdir(parents=True, exist_ok=True)
-    
-    with incremental_save(str(rank_output_dir), max_shard_size_bytes=4*(1024**3)) as saver:
+
+    # Create a nested `yalis_checkpoints` directory inside each rank dir so
+    # the existing loader (which looks for `<rank_dir>/yalis_checkpoints`) can
+    # find a safetensors index and shards without falling back to .pth files.
+    safetensors_dir = rank_output_dir / "yalis_checkpoints"
+    safetensors_dir.mkdir(parents=True, exist_ok=True)
+
+    with incremental_save(str(safetensors_dir), max_shard_size_bytes=4*(1024**3)) as saver:
         for name, param in rank_state_dict.items():
             saver.store_early(name, param)
     
