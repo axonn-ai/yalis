@@ -137,48 +137,46 @@ def extract_shard(
         raise ValueError(f"Unsupported shard dim: {dim}")
 
 
-def send_shard_to_rank(
+def compute_local_shard(
     key: str,
     full_weight: Optional[torch.Tensor],
     weight_shape: torch.Size,
     weight_dtype: torch.dtype,
     weight_ndim: int,
-    target_rank: int,
+    rank: int,
     world_size: int,
 ):
     """
-    Rank 0 extracts shard for target_rank and sends it via P2P broadcast.
-    target_rank receives the shard.
+    All ranks (including rank 0) compute their own shard from the full weight.
+    Rank 0 has full_weight; others get it via broadcast.
+    Each rank then extracts its own shard based on its rank index.
     """
-    rank = dist.get_rank()
     
-    # Determine shard info based on key and shape (all ranks can compute this)
-    shard_info = get_shard_indices(key, weight_shape, weight_ndim, target_rank, world_size)
+    # Determine shard info based on key and shape (all ranks compute this)
+    shard_info = get_shard_indices(key, weight_shape, weight_ndim, rank, world_size)
     
     if shard_info is None:
-        # Replicate: broadcast full weight
-        if rank == 0:
-            shard = full_weight.clone()
+        # Replicate: broadcast full weight from rank 0
+        if rank == 0 and full_weight is not None:
+            weight = full_weight.clone().to("cuda")
         else:
-            shard = torch.zeros(weight_shape, dtype=weight_dtype)
+            weight = torch.zeros(weight_shape, dtype=weight_dtype, device="cuda")
         
-        shard = shard.to("cuda")
-        dist.broadcast(shard, src=0)
-        return shard.cpu()
+        dist.broadcast(weight, src=0)
+        return weight.cpu()
     
-    # Shard: extract and send only this rank's portion
+    # Shard: rank 0 broadcasts full weight, then each rank extracts its shard
     dim, start, end = shard_info
     
-    if rank == 0:
-        shard = extract_shard(full_weight, dim, start, end)
+    if rank == 0 and full_weight is not None:
+        weight = full_weight.clone().to("cuda")
     else:
-        # Create empty tensor of correct shape
-        shape = list(weight_shape)
-        shape[dim] = (end - start)
-        shard = torch.zeros(shape, dtype=weight_dtype)
+        weight = torch.zeros(weight_shape, dtype=weight_dtype, device="cuda")
     
-    shard = shard.to("cuda")
-    dist.broadcast(shard, src=0)
+    dist.broadcast(weight, src=0)
+    
+    # Each rank extracts its own shard
+    shard = extract_shard(weight, dim, start, end)
     return shard.cpu()
 
 
@@ -211,12 +209,31 @@ def create_tp_checkpoint(checkpoint_dir: Path, output_dir: Path):
         if i % max(1, len(all_keys) // 10) == 0 and rank == 0:
             SafePrinter.print(f"[Rank 0] Processing {i+1}/{len(all_keys)} ...")
         
-        # Rank 0 has the full weight; send this rank's shard to all ranks
+        # Rank 0 has the full weight; prepare shape/dtype info for sharding.
+        # For certain 1-D bias tensors we want to compute shard indices
+        # based on the corresponding weight tensor (so biases are sliced
+        # consistently along the same dimension as their weight).
         if rank == 0:
             full_weight = full_state_dict[key]
-            weight_shape = full_weight.shape
-            weight_dtype = full_weight.dtype
-            weight_ndim = full_weight.ndim
+            # By default, use the tensor itself as the reference for sharding
+            ref_shape = full_weight.shape
+            ref_dtype = full_weight.dtype
+            ref_ndim = full_weight.ndim
+
+            # If this is a bias (1-D) try to find a matching weight tensor
+            # and use that tensor's shape for computing shard indices so
+            # the bias is sliced to match the weight shards.
+            if key.endswith(".bias"):
+                weight_key = key[:-5] + ".weight"
+                if weight_key in full_state_dict:
+                    ref = full_state_dict[weight_key]
+                    ref_shape = ref.shape
+                    ref_dtype = ref.dtype
+                    ref_ndim = ref.ndim
+
+            weight_shape = ref_shape
+            weight_dtype = ref_dtype
+            weight_ndim = ref_ndim
         else:
             full_weight = None
             weight_shape = None
@@ -235,8 +252,8 @@ def create_tp_checkpoint(checkpoint_dir: Path, output_dir: Path):
         weight_dtype = dtype_list[0]
         weight_ndim = ndim_list[0]
         
-        # P2P: each rank receives its shard
-        local_shard = send_shard_to_rank(key, full_weight, weight_shape, weight_dtype, weight_ndim, rank, world_size)
+        # All ranks compute and extract their own shard
+        local_shard = compute_local_shard(key, full_weight, weight_shape, weight_dtype, weight_ndim, rank, world_size)
         rank_state_dict[key] = local_shard
     
     dist.barrier()
