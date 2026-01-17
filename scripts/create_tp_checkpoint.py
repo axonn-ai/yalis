@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Creates a properly sharded checkpoint that can be loaded with disable_tp=False.
+Creates a TP-compatible checkpoint with canonically sharded tensors.
 
 How it works:
-1. Rank 0 loads the full unshard checkpoint from yalis_checkpoints
-2. We manually compute shards for each rank based on TP dimensions
-3. Rank 0 broadcasts each rank's shard to that rank via P2P communications
-4. Each rank saves its local shard to disk
-5. The result: a checkpoint where each rank has its subset of weights
+1. Rank 0 loads the full unsharded checkpoint from yalis_checkpoints
+2. Rank 0 broadcasts each tensor to all ranks via collective broadcast
+3. Each rank extracts its local shard (local_out_features, local_in_features) for 2D linear weights
+4. Each rank saves its sharded tensors to its own directory
+5. The loader detects these as sharded and uses them directly
 
 Usage:
     torchrun --nproc_per_node=2 scripts/create_tp_checkpoint.py
@@ -72,9 +72,9 @@ def get_shard_indices(
     weight_ndim: int,
     rank: int,
     world_size: int,
-) -> Optional[Tuple[int, int, int]]:
+) -> Optional[Tuple]:
     """
-    For a given weight, determine if it should be sharded and return (dim, start, end).
+    For a given weight, determine if it should be sharded and return sharding info.
     
     Args:
         key: weight key name
@@ -84,7 +84,9 @@ def get_shard_indices(
         world_size: total number of ranks
     
     Returns:
-        (shard_dim, start_idx, end_idx) if sharded, None if replicated
+        For 3D (MoE): (dim, start, end)
+        For 2D (linear): (dim0, start0, end0, dim1, start1, end1)
+        None if replicated
     """
     
     # Don't shard: embeddings, norms, routers, lm_head
@@ -108,14 +110,22 @@ def get_shard_indices(
             raise ValueError(f"Cannot evenly shard {key} dim {d} (size {size}) across {world_size} ranks")
         return (d, rank * shard_size, (rank + 1) * shard_size)
     
-    # Linear weights [out, in] -> shard out (dim 0)
+    # Linear weights [out, in] -> shard out (dim 0) and in (dim 1)
     if weight_ndim == 2:
-        d = 0  # out_features
-        size = weight_shape[d]
-        shard_size = size // world_size
-        if size % world_size != 0:
-            raise ValueError(f"Cannot evenly shard {key} dim {d} (size {size}) across {world_size} ranks")
-        return (d, rank * shard_size, (rank + 1) * shard_size)
+        out_size = weight_shape[0]
+        in_size = weight_shape[1]
+        
+        out_shard_size = out_size // world_size
+        in_shard_size = in_size // world_size
+        
+        if out_size % world_size != 0:
+            raise ValueError(f"Cannot evenly shard {key} out_features dim 0 (size {out_size}) across {world_size} ranks")
+        if in_size % world_size != 0:
+            raise ValueError(f"Cannot evenly shard {key} in_features dim 1 (size {in_size}) across {world_size} ranks")
+        
+        # Return tuple indicating sharding of both dimensions
+        return (0, rank * out_shard_size, (rank + 1) * out_shard_size, 
+                1, rank * in_shard_size, (rank + 1) * in_shard_size)
     
     return None
 
@@ -126,7 +136,7 @@ def extract_shard(
     start: int,
     end: int,
 ) -> torch.Tensor:
-    """Extract shard from full weight."""
+    """Extract shard from full weight along a single dimension."""
     if dim == 0:
         return weight[start:end, ...].contiguous()
     elif dim == 1:
@@ -135,6 +145,23 @@ def extract_shard(
         return weight[:, :, start:end, ...].contiguous()
     else:
         raise ValueError(f"Unsupported shard dim: {dim}")
+
+
+def extract_shard_2d(
+    weight: torch.Tensor,
+    dim0: int,
+    start0: int,
+    end0: int,
+    dim1: int,
+    start1: int,
+    end1: int,
+) -> torch.Tensor:
+    """Extract shard from full weight along two dimensions (for 2D tensors)."""
+    # For 2D weights [out, in], extract [out_start:out_end, in_start:in_end]
+    if dim0 == 0 and dim1 == 1:
+        return weight[start0:end0, start1:end1].contiguous()
+    else:
+        raise ValueError(f"Unsupported 2D shard dims: {dim0}, {dim1}")
 
 
 def compute_local_shard(
@@ -146,45 +173,41 @@ def compute_local_shard(
     ref_shape,
     ref_dtype,
     ref_ndim,
+    shard_info,
     rank: int,
     world_size: int,
 ):
     """
-    All ranks (including rank 0) compute their own shard from the full weight.
-    Rank 0 has full_weight; others get it via broadcast.
-    Each rank then extracts its own shard based on its rank index.
-    """
+    Compute and extract the per-rank shard for this tensor.
     
-    # Determine shard info based on the reference shape (all ranks compute this).
-    # The reference shape may differ from the original tensor shape (e.g., for
-    # 1-D biases we use the corresponding weight's shape to compute shard indices).
-    shard_info = get_shard_indices(key, ref_shape, ref_ndim, rank, world_size)
-
-    if shard_info is None:
-        # Replicate: broadcast the original tensor buffer (orig_shape) from rank 0
-        if rank == 0 and full_weight is not None:
-            weight = full_weight.clone().to("cuda")
-        else:
-            weight = torch.zeros(orig_shape, dtype=orig_dtype, device="cuda")
-
-        dist.broadcast(weight, src=0)
-        return weight.cpu()
-
-    # Shard: broadcast the original tensor buffer (orig_shape) from rank 0,
-    # then each rank extracts its slice using the shard indices computed from
-    # the reference shape.
-    dim, start, end = shard_info
-
+    Strategy:
+    1. Rank 0 broadcasts the full tensor to all ranks
+    2. All ranks then extract their local shard based on shard_info
+    3. If shard_info is None, tensor is replicated across all ranks
+    
+    Result: produces (local_out_features, local_in_features) for 2D linear weights,
+    which the loader will detect as sharded and use directly.
+    """
+    # Broadcast the full tensor from rank 0 to all ranks
     if rank == 0 and full_weight is not None:
         weight = full_weight.clone().to("cuda")
     else:
         weight = torch.zeros(orig_shape, dtype=orig_dtype, device="cuda")
 
     dist.broadcast(weight, src=0)
-
-    # Each rank extracts its own shard from the received original tensor.
-    shard = extract_shard(weight, dim, start, end)
-    return shard.cpu()
+    
+    # Extract local shard if needed
+    if shard_info is not None:
+        if len(shard_info) == 3:
+            # 3D tensor (MoE): (dim, start, end)
+            dim, start, end = shard_info
+            weight = extract_shard(weight, dim, start, end)
+        elif len(shard_info) == 6:
+            # 2D tensor (linear): (dim0, start0, end0, dim1, start1, end1)
+            dim0, start0, end0, dim1, start1, end1 = shard_info
+            weight = extract_shard_2d(weight, dim0, start0, end0, dim1, start1, end1)
+    
+    return weight.cpu()
 
 
 def create_tp_checkpoint(checkpoint_dir: Path, output_dir: Path):
@@ -241,11 +264,15 @@ def create_tp_checkpoint(checkpoint_dir: Path, output_dir: Path):
             weight_shape = ref_shape
             weight_dtype = ref_dtype
             weight_ndim = ref_ndim
+            
+            # Compute shard info for this tensor
+            shard_info = get_shard_indices(key, ref_shape, ref_ndim, rank, world_size)
         else:
             full_weight = None
             weight_shape = None
             weight_dtype = None
             weight_ndim = None
+            shard_info = None
         
         # Broadcast original tensor shape/dtype info to all ranks
         if rank == 0 and full_weight is not None:
@@ -279,6 +306,11 @@ def create_tp_checkpoint(checkpoint_dir: Path, output_dir: Path):
         ref_shape = shape_list[0]
         ref_dtype = dtype_list[0]
         ref_ndim = ndim_list[0]
+        
+        # Broadcast shard info to all ranks
+        shard_info_list = [shard_info]
+        dist.broadcast_object_list(shard_info_list, src=0)
+        shard_info = shard_info_list[0]
 
         # All ranks compute and extract their own shard
         local_shard = compute_local_shard(
@@ -290,6 +322,7 @@ def create_tp_checkpoint(checkpoint_dir: Path, output_dir: Path):
             ref_shape,
             ref_dtype,
             ref_ndim,
+            shard_info,
             rank,
             world_size,
         )
