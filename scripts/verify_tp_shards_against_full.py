@@ -87,13 +87,44 @@ def main():
             else:
                 tensors.append(t)
                 shapes.append(tuple(t.shape))
-        # determine ndim from any non-None
+        # determine ndim from any non-None (but treat .bias specially)
         ndim = None
         for s in shapes:
             if s is not None:
                 ndim = len(s)
                 break
-        shard_axis = get_shard_axis(key, ndim) if ndim is not None else None
+
+        # Special handling: biases are stored as 1-D tensors but may be
+        # sharded to match their corresponding weight's sharding. Use the
+        # weight tensor's ndim (from full checkpoint if present, else from
+        # per-rank shards) to decide whether the bias should be treated as
+        # sharded along dim 0.
+        shard_axis = None
+        if key.endswith(".bias"):
+            weight_key = key[:-5] + ".weight"
+            ref_ndim = None
+            # try full checkpoint first
+            if args.full_root:
+                try:
+                    full_ref = load_tensor_from_rank(args.full_root, weight_key)
+                    if full_ref is not None:
+                        ref_ndim = len(full_ref.shape)
+                except Exception:
+                    ref_ndim = None
+            # fall back to per-rank shards
+            if ref_ndim is None:
+                for rd in rank_dirs:
+                    try:
+                        rref = load_tensor_from_rank(rd, weight_key)
+                        if rref is not None:
+                            ref_ndim = len(rref.shape)
+                            break
+                    except Exception:
+                        continue
+            # finally, compute shard axis using reference ndim if found
+            shard_axis = get_shard_axis(key, ref_ndim) if ref_ndim is not None else None
+        else:
+            shard_axis = get_shard_axis(key, ndim) if ndim is not None else None
 
         # shape-only checks: missing?
         if any(s is None for s in shapes):
