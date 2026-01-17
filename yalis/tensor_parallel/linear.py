@@ -411,11 +411,20 @@ class TPLinear(torch.nn.Module):
         )
 
     def _is_sharded_weight_matrix(self, weight):
-        return (
+        # Support two common sharding patterns:
+        # 1) Fully sharded: both dims sharded -> (local_out_features, local_in_features)
+        # 2) Row-parallel: only out dim sharded -> (local_out_features, in_features)
+        fully_sharded = (
             weight.ndim == 2
             and weight.size(0) == self.local_out_features
             and weight.size(1) == self.local_in_features
         )
+        row_parallel = (
+            weight.ndim == 2
+            and weight.size(0) == self.local_out_features
+            and weight.size(1) == self.in_features
+        )
+        return fully_sharded or row_parallel
 
     @torch.no_grad()
     def _modified_load_from_state_dict(
