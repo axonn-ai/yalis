@@ -37,8 +37,9 @@ def sample_token(logits, temperature=0.0, top_p=0.9):
     return int(next_token.item())
 
 # Local paths: unsharded checkpoint for HF, TP-sharded checkpoint for YALIS
-unsharded_checkpoint_base = "yalis/external/checkpoints/openai/gpt-oss-20b/yalis_checkpoints"
-tp_checkpoint_base = "yalis/external/checkpoints/openai/gpt-oss-20b/yalis_checkpoints_tp"
+hf_checkpoint = "yalis/external/checkpoints/openai/gpt-oss-20b"
+yalis_checkpoint = "yalis/external/checkpoints/openai/gpt-oss-20b/yalis_checkpoints"
+tp_checkpoint = "yalis/external/checkpoints/openai/gpt-oss-20b/yalis_checkpoints_tp"
 
 # Initialize distributed only when launched with torchrun / world_size > 1
 world_size = int(os.environ.get("WORLD_SIZE", "1"))
@@ -48,20 +49,15 @@ if world_size > 1 and not dist.is_initialized():
     init_distributed(tp_dims=(world_size, 1, 1))
 
 # HF uses the unsharded checkpoint (tokenizer + HF model)
-hf_model_id = unsharded_checkpoint_base
+hf_model_id = hf_checkpoint
 
-# YALIS uses the TP-sharded checkpoint when available. For multi-rank runs we
-# point to the per-rank subdirectory. For single-rank runs prefer the TP
-# checkpoint's rank_0 directory if it exists, otherwise fall back to the
-# unsharded checkpoint.
+# YALIS uses the TP-sharded checkpoint when available
 if world_size > 1:
-    yalis_model_id = f"{tp_checkpoint_base}/rank_{rank}"
+    print(f"Using TP-sharded checkpoint for YALIS: {tp_checkpoint}")
+    yalis_model_id = f"{tp_checkpoint}/rank_{rank}"
 else:
-    fallback_tp_rank0 = Path(tp_checkpoint_base) / "rank_0"
-    if fallback_tp_rank0.exists():
-        yalis_model_id = str(fallback_tp_rank0)
-    else:
-        yalis_model_id = unsharded_checkpoint_base
+    print(f"Using unsharded checkpoint for YALIS: {yalis_checkpoint}")
+    yalis_model_id = yalis_checkpoint
 
 # Initialize Tokenizer (use unsharded HF model path)
 print("Loading tokenizer...")
