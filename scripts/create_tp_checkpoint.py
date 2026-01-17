@@ -68,12 +68,20 @@ def load_full_checkpoint(checkpoint_dir: Path) -> Dict[str, torch.Tensor]:
 
 def get_shard_indices(
     key: str,
-    weight: torch.Tensor,
+    weight_shape: torch.Size,
+    weight_ndim: int,
     rank: int,
     world_size: int,
 ) -> Optional[Tuple[int, int, int]]:
     """
     For a given weight, determine if it should be sharded and return (dim, start, end).
+    
+    Args:
+        key: weight key name
+        weight_shape: shape of the weight tensor
+        weight_ndim: number of dimensions
+        rank: target rank
+        world_size: total number of ranks
     
     Returns:
         (shard_dim, start_idx, end_idx) if sharded, None if replicated
@@ -84,7 +92,7 @@ def get_shard_indices(
         return None
     
     # MoE weights
-    if "mlp" in key and weight.ndim == 3:  # [n_experts, d1, d2]
+    if "mlp" in key and weight_ndim == 3:  # [n_experts, d1, d2]
         if "gate_up_proj" in key:
             # [n_experts, 2*intermediate, hidden] -> shard hidden (dim 2)
             d = 2
@@ -94,16 +102,16 @@ def get_shard_indices(
         else:
             return None
         
-        size = weight.size(d)
+        size = weight_shape[d]
         shard_size = size // world_size
         if size % world_size != 0:
             raise ValueError(f"Cannot evenly shard {key} dim {d} (size {size}) across {world_size} ranks")
         return (d, rank * shard_size, (rank + 1) * shard_size)
     
     # Linear weights [out, in] -> shard out (dim 0)
-    if weight.ndim == 2:
+    if weight_ndim == 2:
         d = 0  # out_features
-        size = weight.size(d)
+        size = weight_shape[d]
         shard_size = size // world_size
         if size % world_size != 0:
             raise ValueError(f"Cannot evenly shard {key} dim {d} (size {size}) across {world_size} ranks")
@@ -131,7 +139,10 @@ def extract_shard(
 
 def send_shard_to_rank(
     key: str,
-    full_weight: torch.Tensor,
+    full_weight: Optional[torch.Tensor],
+    weight_shape: torch.Size,
+    weight_dtype: torch.dtype,
+    weight_ndim: int,
     target_rank: int,
     world_size: int,
 ):
@@ -141,14 +152,15 @@ def send_shard_to_rank(
     """
     rank = dist.get_rank()
     
-    shard_info = get_shard_indices(key, full_weight, target_rank, world_size)
+    # Determine shard info based on key and shape (all ranks can compute this)
+    shard_info = get_shard_indices(key, weight_shape, weight_ndim, target_rank, world_size)
     
     if shard_info is None:
         # Replicate: broadcast full weight
         if rank == 0:
             shard = full_weight.clone()
         else:
-            shard = torch.zeros_like(full_weight)
+            shard = torch.zeros(weight_shape, dtype=weight_dtype)
         
         shard = shard.to("cuda")
         dist.broadcast(shard, src=0)
@@ -161,9 +173,9 @@ def send_shard_to_rank(
         shard = extract_shard(full_weight, dim, start, end)
     else:
         # Create empty tensor of correct shape
-        shape = list(full_weight.shape)
+        shape = list(weight_shape)
         shape[dim] = (end - start)
-        shard = torch.zeros(shape, dtype=full_weight.dtype)
+        shard = torch.zeros(shape, dtype=weight_dtype)
     
     shard = shard.to("cuda")
     dist.broadcast(shard, src=0)
@@ -202,11 +214,29 @@ def create_tp_checkpoint(checkpoint_dir: Path, output_dir: Path):
         # Rank 0 has the full weight; send this rank's shard to all ranks
         if rank == 0:
             full_weight = full_state_dict[key]
+            weight_shape = full_weight.shape
+            weight_dtype = full_weight.dtype
+            weight_ndim = full_weight.ndim
         else:
             full_weight = None
+            weight_shape = None
+            weight_dtype = None
+            weight_ndim = None
+        
+        # Broadcast shape/dtype info to all ranks
+        shape_list = [weight_shape]
+        dtype_list = [weight_dtype]
+        ndim_list = [weight_ndim]
+        dist.broadcast_object_list(shape_list, src=0)
+        dist.broadcast_object_list(dtype_list, src=0)
+        dist.broadcast_object_list(ndim_list, src=0)
+        
+        weight_shape = shape_list[0]
+        weight_dtype = dtype_list[0]
+        weight_ndim = ndim_list[0]
         
         # P2P: each rank receives its shard
-        local_shard = send_shard_to_rank(key, full_weight, rank, world_size)
+        local_shard = send_shard_to_rank(key, full_weight, weight_shape, weight_dtype, weight_ndim, rank, world_size)
         rank_state_dict[key] = local_shard
     
     dist.barrier()
