@@ -86,11 +86,24 @@ def get_shard_indices(
     Returns:
         For 3D (MoE): (dim, start, end)
         For 2D (linear): (dim0, start0, end0, dim1, start1, end1)
+        For 1D (bias): (dim, start, end)
         None if replicated
     """
     
     # Don't shard: embeddings, norms, routers, lm_head
     if any(x in key for x in ["embed", "norm", "router", "lm_head"]):
+        return None
+    
+    # Special handling for biases: use 1-D sharding along dim 0 if weight is sharded
+    if key.endswith(".bias"):
+        # Biases are always 1-D; if weight is 2-D, shard bias along dim 0 (out_features)
+        if weight_ndim == 2:
+            out_size = weight_shape[0]
+            out_shard_size = out_size // world_size
+            if out_size % world_size != 0:
+                raise ValueError(f"Cannot evenly shard {key} dim 0 (size {out_size}) across {world_size} ranks")
+            return (0, rank * out_shard_size, (rank + 1) * out_shard_size)
+        # If weight is not 2-D, bias is replicated
         return None
     
     # MoE weights
@@ -185,8 +198,7 @@ def compute_local_shard(
     2. All ranks then extract their local shard based on shard_info
     3. If shard_info is None, tensor is replicated across all ranks
     
-    Result: produces (local_out_features, local_in_features) for 2D linear weights,
-    which the loader will detect as sharded and use directly.
+    Result: produces canonically sharded tensors matching loader expectations.
     """
     # Broadcast the full tensor from rank 0 to all ranks
     if rank == 0 and full_weight is not None:
@@ -199,7 +211,7 @@ def compute_local_shard(
     # Extract local shard if needed
     if shard_info is not None:
         if len(shard_info) == 3:
-            # 3D tensor (MoE): (dim, start, end)
+            # 3D tensor (MoE) or 1D tensor (bias): (dim, start, end)
             dim, start, end = shard_info
             weight = extract_shard(weight, dim, start, end)
         elif len(shard_info) == 6:
