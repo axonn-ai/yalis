@@ -35,24 +35,31 @@ def sample_token(logits, temperature=0.0, top_p=0.9):
     next_token = sorted_indices[choice]
     return int(next_token.item())
 
-# Local path to GPT-OSS-20B checkpoint
-model_id = "yalis/external/checkpoints/openai/gpt-oss-20b"
+# Local path to GPT-OSS-20B checkpoint (base, without rank)
+checkpoint_base = "yalis/external/checkpoints/openai/gpt-oss-20b/yalis_checkpoints_tp"
 
-# Initialize Tokenizer
+# Initialize distributed only when launched with torchrun / world_size > 1
+world_size = int(os.environ.get("WORLD_SIZE", "1"))
+rank = int(os.environ.get("RANK", "0"))
+if world_size > 1 and not dist.is_initialized():
+    # Use row-parallel split by default (G_r = world_size)
+    init_distributed(tp_dims=(world_size, 1, 1))
+
+# When TP is enabled, load from rank_* subdirectory; otherwise use base path
+if world_size > 1:
+    model_id = f"{checkpoint_base}/rank_{rank}"
+else:
+    model_id = checkpoint_base
+
+# Initialize Tokenizer (use base path for tokenizer)
 print("Loading tokenizer...")
-tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True, local_files_only=True)
+tokenizer = AutoTokenizer.from_pretrained(checkpoint_base, trust_remote_code=True, local_files_only=True)
 
 prompts_to_test = [
     "The capital of France is",
     "How to bake a cake?",
     "Explain quantum entanglement like I'm five.",
 ]
-
-# Initialize distributed only when launched with torchrun / world_size > 1
-world_size = int(os.environ.get("WORLD_SIZE", "1"))
-if world_size > 1 and not dist.is_initialized():
-    # Use row-parallel split by default (G_r = world_size)
-    init_distributed(tp_dims=(world_size, 1, 1))
 
 for prompt_idx, raw_prompt in enumerate(prompts_to_test):
     print(f"\n\n{'='*80}")

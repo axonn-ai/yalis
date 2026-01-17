@@ -312,6 +312,9 @@ def main():
     SafePrinter.print(f"Use: model_id = '{output_dir}'")
     SafePrinter.print(f"Set: disable_tp=False")
     SafePrinter.print(f"{'='*80}\n")
+    
+    if dist.is_initialized():
+        dist.destroy_process_group()
 
 
 if __name__ == "__main__":
