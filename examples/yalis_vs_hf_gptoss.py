@@ -4,6 +4,7 @@ Compare HuggingFace vs YALIS logits for GPT-OSS-20B.
 Tests generation quality and consistency across both implementations.
 """
 import gc
+import os
 import torch
 import torch.distributed as dist
 from transformers import AutoTokenizer, AutoModelForCausalLM
@@ -46,6 +47,12 @@ prompts_to_test = [
     "How to bake a cake?",
     "Explain quantum entanglement like I'm five.",
 ]
+
+# Initialize distributed only when launched with torchrun / world_size > 1
+world_size = int(os.environ.get("WORLD_SIZE", "1"))
+if world_size > 1 and not dist.is_initialized():
+    # Use row-parallel split by default (G_r = world_size)
+    init_distributed(tp_dims=(world_size, 1, 1))
 
 for prompt_idx, raw_prompt in enumerate(prompts_to_test):
     print(f"\n\n{'='*80}")
@@ -115,8 +122,8 @@ for prompt_idx, raw_prompt in enumerate(prompts_to_test):
     print("-" * 40)
     
     # Ensure distributed and Axonn are initialized so ax.comm_handle is set.
-    if not dist.is_initialized():
-        init_distributed()
+    if world_size > 1 and not dist.is_initialized():
+        init_distributed(tp_dims=(world_size, 1, 1))
     
     # Aggressive cleanup before reloading YALIS
     torch.cuda.empty_cache()
@@ -130,7 +137,7 @@ for prompt_idx, raw_prompt in enumerate(prompts_to_test):
         attention_backend=AttentionBackend.SDPA,
         use_paged_kv_caching=False,
         prestore_kv_cache=True,
-        disable_tp=True,
+        disable_tp=False,
     ).to("cuda")
     yalis_model_gen.eval()
     # Use YALIS model's vocab size for slicing logits
