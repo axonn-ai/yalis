@@ -53,7 +53,7 @@ hf_model_id = unsharded_checkpoint_base
 # YALIS uses the TP-sharded checkpoint when available. For multi-rank runs we
 # point to the per-rank subdirectory. For single-rank runs prefer the TP
 # checkpoint's rank_0 directory if it exists, otherwise fall back to the
-# unsharded checkpoint (useful for development).
+# unsharded checkpoint.
 if world_size > 1:
     yalis_model_id = f"{tp_checkpoint_base}/rank_{rank}"
 else:
