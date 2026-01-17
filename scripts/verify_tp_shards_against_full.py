@@ -18,7 +18,8 @@ Notes:
 """
 import argparse
 from pathlib import Path
-from safetensors import safe_open, load_file
+from safetensors import safe_open
+from safetensors.torch import load_file
 import torch
 from collections import defaultdict
 
