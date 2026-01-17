@@ -92,15 +92,6 @@ if __name__ == "__main__":
         model_config=model_config, inference_config=inference_config
     )
 
-    # quick checks to run before calling engine.generate
-    print_rank0(f"Engine attention backend: {getattr(engine.inference_config, 'attention_backend', None)}")
-    print_rank0(
-        f"Engine max_length: {getattr(engine.inference_config, 'max_length', getattr(engine.inference_config, 'max_length_of_generated_sequences', None))}"
-    )
-    print_rank0(f"Model sliding_window_mode: {getattr(engine.model.config, 'sliding_window_mode', None)}")
-    print_rank0(f"Model attention_backend: {getattr(engine.model.config, 'attention_backend', None)}")
-    print_rank0(f"Model sinks: {getattr(engine.model, 'sinks', None)}")
-
     if enable_profiling:
         profiler_context = torch.profiler.profile(
             activities=[torch.profiler.ProfilerActivity.CUDA],
