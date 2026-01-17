@@ -5,6 +5,7 @@ Tests generation quality and consistency across both implementations.
 """
 import gc
 import os
+from pathlib import Path
 import torch
 import torch.distributed as dist
 from transformers import AutoTokenizer, AutoModelForCausalLM
@@ -35,8 +36,9 @@ def sample_token(logits, temperature=0.0, top_p=0.9):
     next_token = sorted_indices[choice]
     return int(next_token.item())
 
-# Local path to GPT-OSS-20B checkpoint (base, without rank)
-checkpoint_base = "yalis/external/checkpoints/openai/gpt-oss-20b/yalis_checkpoints_tp"
+# Local paths: unsharded checkpoint for HF, TP-sharded checkpoint for YALIS
+unsharded_checkpoint_base = "yalis/external/checkpoints/openai/gpt-oss-20b/yalis_checkpoints"
+tp_checkpoint_base = "yalis/external/checkpoints/openai/gpt-oss-20b/yalis_checkpoints_tp"
 
 # Initialize distributed only when launched with torchrun / world_size > 1
 world_size = int(os.environ.get("WORLD_SIZE", "1"))
@@ -45,15 +47,25 @@ if world_size > 1 and not dist.is_initialized():
     # Use row-parallel split by default (G_r = world_size)
     init_distributed(tp_dims=(world_size, 1, 1))
 
-# When TP is enabled, load from rank_* subdirectory; otherwise use base path
-if world_size > 1:
-    model_id = f"{checkpoint_base}/rank_{rank}"
-else:
-    model_id = checkpoint_base
+# HF uses the unsharded checkpoint (tokenizer + HF model)
+hf_model_id = unsharded_checkpoint_base
 
-# Initialize Tokenizer (use base path for tokenizer)
+# YALIS uses the TP-sharded checkpoint when available. For multi-rank runs we
+# point to the per-rank subdirectory. For single-rank runs prefer the TP
+# checkpoint's rank_0 directory if it exists, otherwise fall back to the
+# unsharded checkpoint (useful for development).
+if world_size > 1:
+    yalis_model_id = f"{tp_checkpoint_base}/rank_{rank}"
+else:
+    fallback_tp_rank0 = Path(tp_checkpoint_base) / "rank_0"
+    if fallback_tp_rank0.exists():
+        yalis_model_id = str(fallback_tp_rank0)
+    else:
+        yalis_model_id = unsharded_checkpoint_base
+
+# Initialize Tokenizer (use unsharded HF model path)
 print("Loading tokenizer...")
-tokenizer = AutoTokenizer.from_pretrained(checkpoint_base, trust_remote_code=True, local_files_only=True)
+tokenizer = AutoTokenizer.from_pretrained(hf_model_id, trust_remote_code=True, local_files_only=True)
 
 prompts_to_test = [
     "The capital of France is",
@@ -85,7 +97,7 @@ for prompt_idx, raw_prompt in enumerate(prompts_to_test):
     gc.collect()
     
     hf_model = AutoModelForCausalLM.from_pretrained(
-        model_id, 
+        hf_model_id, 
         device_map="cuda", 
         dtype=torch.bfloat16, 
         trust_remote_code=True
@@ -139,7 +151,7 @@ for prompt_idx, raw_prompt in enumerate(prompts_to_test):
     
     # Reinitialize YALIS model for generation
     yalis_model_gen = get_model(
-        model_id,
+        yalis_model_id,
         model_dtype=torch.bfloat16,
         attention_backend=AttentionBackend.SDPA,
         use_paged_kv_caching=False,
