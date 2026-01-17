@@ -140,9 +140,12 @@ def extract_shard(
 def compute_local_shard(
     key: str,
     full_weight: Optional[torch.Tensor],
-    weight_shape: torch.Size,
-    weight_dtype: torch.dtype,
-    weight_ndim: int,
+    orig_shape,
+    orig_dtype,
+    orig_ndim,
+    ref_shape,
+    ref_dtype,
+    ref_ndim,
     rank: int,
     world_size: int,
 ):
@@ -152,30 +155,34 @@ def compute_local_shard(
     Each rank then extracts its own shard based on its rank index.
     """
     
-    # Determine shard info based on key and shape (all ranks compute this)
-    shard_info = get_shard_indices(key, weight_shape, weight_ndim, rank, world_size)
-    
+    # Determine shard info based on the reference shape (all ranks compute this).
+    # The reference shape may differ from the original tensor shape (e.g., for
+    # 1-D biases we use the corresponding weight's shape to compute shard indices).
+    shard_info = get_shard_indices(key, ref_shape, ref_ndim, rank, world_size)
+
     if shard_info is None:
-        # Replicate: broadcast full weight from rank 0
+        # Replicate: broadcast the original tensor buffer (orig_shape) from rank 0
         if rank == 0 and full_weight is not None:
             weight = full_weight.clone().to("cuda")
         else:
-            weight = torch.zeros(weight_shape, dtype=weight_dtype, device="cuda")
-        
+            weight = torch.zeros(orig_shape, dtype=orig_dtype, device="cuda")
+
         dist.broadcast(weight, src=0)
         return weight.cpu()
-    
-    # Shard: rank 0 broadcasts full weight, then each rank extracts its shard
+
+    # Shard: broadcast the original tensor buffer (orig_shape) from rank 0,
+    # then each rank extracts its slice using the shard indices computed from
+    # the reference shape.
     dim, start, end = shard_info
-    
+
     if rank == 0 and full_weight is not None:
         weight = full_weight.clone().to("cuda")
     else:
-        weight = torch.zeros(weight_shape, dtype=weight_dtype, device="cuda")
-    
+        weight = torch.zeros(orig_shape, dtype=orig_dtype, device="cuda")
+
     dist.broadcast(weight, src=0)
-    
-    # Each rank extracts its own shard
+
+    # Each rank extracts its own shard from the received original tensor.
     shard = extract_shard(weight, dim, start, end)
     return shard.cpu()
 
@@ -252,8 +259,34 @@ def create_tp_checkpoint(checkpoint_dir: Path, output_dir: Path):
         weight_dtype = dtype_list[0]
         weight_ndim = ndim_list[0]
         
+        # Determine original (actual) tensor shape/dtype (orig_*) and the
+        # reference shape/dtype (ref_*) used to compute shard indices.
+        if rank == 0 and full_weight is not None:
+            orig_shape = full_weight.shape
+            orig_dtype = full_weight.dtype
+            orig_ndim = full_weight.ndim
+        else:
+            orig_shape = None
+            orig_dtype = None
+            orig_ndim = None
+
+        ref_shape = weight_shape
+        ref_dtype = weight_dtype
+        ref_ndim = weight_ndim
+
         # All ranks compute and extract their own shard
-        local_shard = compute_local_shard(key, full_weight, weight_shape, weight_dtype, weight_ndim, rank, world_size)
+        local_shard = compute_local_shard(
+            key,
+            full_weight,
+            orig_shape,
+            orig_dtype,
+            orig_ndim,
+            ref_shape,
+            ref_dtype,
+            ref_ndim,
+            rank,
+            world_size,
+        )
         rank_state_dict[key] = local_shard
     
     dist.barrier()
