@@ -446,6 +446,9 @@ class TPLinear(torch.nn.Module):
             is_full_weight_matrix = self._is_full_weight_matrix(weight)
             is_sharded_weight_matrix = self._is_sharded_weight_matrix(weight)
 
+            if not (is_full_weight_matrix or is_sharded_weight_matrix):
+                print(f"DEBUG: {prefix}weight shape={weight.shape}, out_features={self.out_features}, in_features={self.in_features}, local_out={self.local_out_features}, local_in={self.local_in_features}")
+
             assert (
                 is_full_weight_matrix or is_sharded_weight_matrix
             ), "This is neither a full checkpoint nor a sharded checkpoint"
