@@ -247,20 +247,7 @@ def create_tp_checkpoint(checkpoint_dir: Path, output_dir: Path):
             weight_dtype = None
             weight_ndim = None
         
-        # Broadcast shape/dtype info to all ranks
-        shape_list = [weight_shape]
-        dtype_list = [weight_dtype]
-        ndim_list = [weight_ndim]
-        dist.broadcast_object_list(shape_list, src=0)
-        dist.broadcast_object_list(dtype_list, src=0)
-        dist.broadcast_object_list(ndim_list, src=0)
-        
-        weight_shape = shape_list[0]
-        weight_dtype = dtype_list[0]
-        weight_ndim = ndim_list[0]
-        
-        # Determine original (actual) tensor shape/dtype (orig_*) and the
-        # reference shape/dtype (ref_*) used to compute shard indices.
+        # Broadcast original tensor shape/dtype info to all ranks
         if rank == 0 and full_weight is not None:
             orig_shape = full_weight.shape
             orig_dtype = full_weight.dtype
@@ -270,9 +257,28 @@ def create_tp_checkpoint(checkpoint_dir: Path, output_dir: Path):
             orig_dtype = None
             orig_ndim = None
 
-        ref_shape = weight_shape
-        ref_dtype = weight_dtype
-        ref_ndim = weight_ndim
+        orig_shape_list = [orig_shape]
+        orig_dtype_list = [orig_dtype]
+        orig_ndim_list = [orig_ndim]
+        dist.broadcast_object_list(orig_shape_list, src=0)
+        dist.broadcast_object_list(orig_dtype_list, src=0)
+        dist.broadcast_object_list(orig_ndim_list, src=0)
+
+        orig_shape = orig_shape_list[0]
+        orig_dtype = orig_dtype_list[0]
+        orig_ndim = orig_ndim_list[0]
+
+        # Broadcast reference shape/dtype info to all ranks (for shard index computation)
+        shape_list = [weight_shape]
+        dtype_list = [weight_dtype]
+        ndim_list = [weight_ndim]
+        dist.broadcast_object_list(shape_list, src=0)
+        dist.broadcast_object_list(dtype_list, src=0)
+        dist.broadcast_object_list(ndim_list, src=0)
+        
+        ref_shape = shape_list[0]
+        ref_dtype = dtype_list[0]
+        ref_ndim = ndim_list[0]
 
         # All ranks compute and extract their own shard
         local_shard = compute_local_shard(
