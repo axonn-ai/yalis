@@ -49,26 +49,12 @@ def get_model(
         model = GPT(config).to(model_dtype)
 
     if not random_init:
-        # Prefer the standard checkpoint directory
         checkpoint_path = checkpoint_dir / "yalis_checkpoints"
-
-        # If a tensor-parallel converted layout exists, support the
-        # layout: <model_root>/yalis_checkpoints_tp/rank_{rank}/yalis_checkpoints
-        tp_root = checkpoint_dir / "yalis_checkpoints_tp"
-        if tp_root.exists() and tp_root.is_dir():
-            # Per-rank directory is expected to be named `rank_{rank}`
-            rank_dir = tp_root / f"rank_{dist.get_rank()}"
-            candidate = rank_dir / "yalis_checkpoints"
-            if candidate.exists():
-                checkpoint_path = candidate
-
         if os.path.exists(checkpoint_path):
-            print(f"[rank:{dist.get_rank()}] Loading checkpoint from: {checkpoint_path}")
             load_checkpoint_safetensors(model, checkpoint_path)
         else:
             # Deprecated loading path as a fallback
             checkpoint_path = checkpoint_dir / "lit_model.pth"
-            print(f"[rank:{dist.get_rank()}] Falling back to legacy checkpoint: {checkpoint_path}")
             load_litgpt_checkpoint(model, checkpoint_path)
 
     model.eval()
