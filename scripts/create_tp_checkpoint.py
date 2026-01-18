@@ -394,6 +394,9 @@ def create_tp_checkpoint(
         ref_dtype = dtype_list[0]
         ref_ndim = ndim_list[0]
 
+        SafePrinter.print(
+            f"[Debug] key={key} | orig_ndim={orig_ndim} | ref_ndim={ref_ndim} | ref_shape={ref_shape}"
+        )
         shard_info = get_shard_indices(
             key,
             ref_shape,
