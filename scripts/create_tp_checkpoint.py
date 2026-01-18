@@ -269,10 +269,14 @@ def compute_local_shard(
             # 3D tensor (MoE) or 1D tensor (bias): (dim, start, end)
             dim, start, end = shard_info
             weight = extract_shard(weight, dim, start, end)
-        elif len(shard_info) == 6:
+        elif len(shard_info) == 6 and weight.ndim == 2:
             # 2D tensor (linear): (dim0, start0, end0, dim1, start1, end1)
             dim0, start0, end0, dim1, start1, end1 = shard_info
             weight = extract_shard_2d(weight, dim0, start0, end0, dim1, start1, end1)
+        elif len(shard_info) == 6 and weight.ndim == 1:
+            # Fallback: if 6-element shard_info but 1D tensor, just use first 3 elements
+            dim, start, end = shard_info[0], shard_info[1], shard_info[2]
+            weight = extract_shard(weight, dim, start, end)
     
     return weight.cpu()
 
