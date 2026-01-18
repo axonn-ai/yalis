@@ -126,7 +126,15 @@ def get_shard_indices(
     # Special handling for biases: use 1-D sharding along dim 0 if weight is sharded
     if key.endswith(".bias") and weight_ndim == 2:
         out_size = weight_shape[0]
-        start, end = _shard_range(out_size, outer_size, outer_rank)
+        # If this bias corresponds to a transposed proj (e.g. '*.proj.bias') the
+        # runtime expects the sharding to follow the swapped inner/outer groups
+        # (same rule we apply for the corresponding weight). Detect that case
+        # and shard using the inner mesh axis instead of the outer one.
+        transpose_like_bias = ".proj.bias" in key or key.endswith(".proj.bias")
+        if transpose_like_bias:
+            start, end = _shard_range(out_size, inner_size, inner_rank)
+        else:
+            start, end = _shard_range(out_size, outer_size, outer_rank)
         return (0, start, end)
     
     # MoE weights
