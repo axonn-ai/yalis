@@ -560,13 +560,38 @@ class TPLinear(torch.nn.Module):
             )
             if bias is not None:
                 # Skip TP bias checks for MoE parameters (they are 2D and not wrapped in TPLinear)
+                try:
+                    _rank = dist.get_rank()
+                except Exception:
+                    _rank = -1
+                
+                print(
+                    f"[rank {_rank}] Processing bias '{prefix}bias' -> shape={bias.shape}, ndim={bias.ndim}, "
+                    f"out_features={self.out_features}, local_out_features={self.local_out_features}"
+                )
+                
                 if bias.ndim == 1:
                     if bias.size(0) == self.out_features:
+                        print(
+                            f"[rank {_rank}] Bias '{prefix}bias' is FULL ({bias.size(0)}), sharding to local_out_features={self.local_out_features}"
+                        )
                         bias = Drop.apply(bias, self.outer_group)
                         state_dict[prefix + "bias"] = bias
+                    elif bias.size(0) == self.local_out_features:
+                        print(
+                            f"[rank {_rank}] Bias '{prefix}bias' is already SHARDED ({bias.size(0)}), keeping as-is"
+                        )
                     else:
+                        print(
+                            f"[rank {_rank}] ERROR: Bias '{prefix}bias' has unexpected size {bias.size(0)}, "
+                            f"expected either full ({self.out_features}) or sharded ({self.local_out_features})"
+                        )
                         assert (
                             bias.size(0) == self.local_out_features
-                        ), "This is neither a full nor a sharded checkpoint"
+                        ), f"This is neither a full nor a sharded checkpoint (bias size {bias.size(0)}, expected {self.out_features} or {self.local_out_features})"
+                else:
+                    print(
+                        f"[rank {_rank}] Bias '{prefix}bias' is {bias.ndim}D (likely MoE), skipping TP checks"
+                    )
 
         self._old_load_from_state_dict(state_dict, prefix, *args, **kwargs)
