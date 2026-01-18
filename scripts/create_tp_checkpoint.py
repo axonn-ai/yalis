@@ -12,6 +12,7 @@ How it works:
 Usage:
     torchrun --nproc_per_node=2 scripts/create_tp_checkpoint.py
 """
+import argparse
 import os
 import sys
 import json
@@ -20,7 +21,6 @@ import torch.distributed as dist
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 import shutil
-from collections import defaultdict
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -41,6 +41,31 @@ class SafePrinter:
                 print(msg)
         except Exception:
             print(msg)
+
+
+def _shard_range(size: int, groups: int, index: int) -> Tuple[int, int]:
+    if groups <= 0:
+        raise ValueError("Tensor parallel group size must be > 0")
+    if size % groups != 0:
+        raise ValueError(
+            f"Cannot evenly shard dimension of size {size} across {groups} groups"
+        )
+    chunk = size // groups
+    start = index * chunk
+    return start, start + chunk
+
+
+def compute_rank_coords(rank: int, inner_size: int, outer_size: int, depth_size: int):
+    if inner_size <= 0 or outer_size <= 0 or depth_size <= 0:
+        raise ValueError("Tensor parallel mesh sizes must be positive")
+    ranks_per_plane = inner_size * outer_size
+    if rank >= ranks_per_plane * depth_size:
+        raise ValueError("Rank exceeds mesh capacity")
+    depth_rank = rank // ranks_per_plane
+    remainder = rank % ranks_per_plane
+    inner_rank = remainder % inner_size
+    outer_rank = remainder // inner_size
+    return inner_rank, outer_rank, depth_rank
 
 
 def load_full_checkpoint(checkpoint_dir: Path) -> Dict[str, torch.Tensor]:
@@ -71,6 +96,10 @@ def get_shard_indices(
     weight_shape: torch.Size,
     weight_ndim: int,
     rank: int,
+    inner_rank: int,
+    outer_rank: int,
+    inner_size: int,
+    outer_size: int,
     world_size: int,
 ) -> Optional[Tuple]:
     """
@@ -95,16 +124,10 @@ def get_shard_indices(
         return None
     
     # Special handling for biases: use 1-D sharding along dim 0 if weight is sharded
-    if key.endswith(".bias"):
-        # Biases are always 1-D; if weight is 2-D, shard bias along dim 0 (out_features)
-        if weight_ndim == 2:
-            out_size = weight_shape[0]
-            out_shard_size = out_size // world_size
-            if out_size % world_size != 0:
-                raise ValueError(f"Cannot evenly shard {key} dim 0 (size {out_size}) across {world_size} ranks")
-            return (0, rank * out_shard_size, (rank + 1) * out_shard_size)
-        # If weight is not 2-D, bias is replicated
-        return None
+    if key.endswith(".bias") and weight_ndim == 2:
+        out_size = weight_shape[0]
+        start, end = _shard_range(out_size, outer_size, outer_rank)
+        return (0, start, end)
     
     # MoE weights
     if "mlp" in key and weight_ndim == 3:  # [n_experts, d1, d2]
@@ -128,17 +151,9 @@ def get_shard_indices(
         out_size = weight_shape[0]
         in_size = weight_shape[1]
         
-        out_shard_size = out_size // world_size
-        in_shard_size = in_size // world_size
-        
-        if out_size % world_size != 0:
-            raise ValueError(f"Cannot evenly shard {key} out_features dim 0 (size {out_size}) across {world_size} ranks")
-        if in_size % world_size != 0:
-            raise ValueError(f"Cannot evenly shard {key} in_features dim 1 (size {in_size}) across {world_size} ranks")
-        
-        # Return tuple indicating sharding of both dimensions
-        return (0, rank * out_shard_size, (rank + 1) * out_shard_size, 
-                1, rank * in_shard_size, (rank + 1) * in_shard_size)
+        out_start, out_end = _shard_range(out_size, outer_size, outer_rank)
+        in_start, in_end = _shard_range(in_size, inner_size, inner_rank)
+        return (0, out_start, out_end, 1, in_start, in_end)
     
     return None
 
@@ -222,10 +237,19 @@ def compute_local_shard(
     return weight.cpu()
 
 
-def create_tp_checkpoint(checkpoint_dir: Path, output_dir: Path):
+def create_tp_checkpoint(
+    checkpoint_dir: Path,
+    output_dir: Path,
+    inner_size: int,
+    outer_size: int,
+    depth_size: int,
+):
     """Main conversion logic."""
     rank = dist.get_rank()
     world_size = dist.get_world_size()
+    inner_rank, outer_rank, depth_rank = compute_rank_coords(
+        rank, inner_size, outer_size, depth_size
+    )
     
     # Rank 0 loads checkpoint
     full_state_dict = load_full_checkpoint(checkpoint_dir) if rank == 0 else {}
@@ -242,7 +266,12 @@ def create_tp_checkpoint(checkpoint_dir: Path, output_dir: Path):
     all_keys = key_list[0]
     
     SafePrinter.print(f"\n{'='*80}")
-    SafePrinter.print(f"[Rank {rank}] Creating TP shards for {len(all_keys)} tensors")
+    SafePrinter.print(
+        f"[Rank {rank}] Creating TP shards for {len(all_keys)} tensors"
+    )
+    SafePrinter.print(
+        f"[Rank {rank}] Mesh coords (inner={inner_rank}, outer={outer_rank}, depth={depth_rank})"
+    )
     SafePrinter.print(f"{'='*80}\n")
     
     rank_state_dict = {}
@@ -276,15 +305,11 @@ def create_tp_checkpoint(checkpoint_dir: Path, output_dir: Path):
             weight_shape = ref_shape
             weight_dtype = ref_dtype
             weight_ndim = ref_ndim
-            
-            # Compute shard info for this tensor
-            shard_info = get_shard_indices(key, ref_shape, ref_ndim, rank, world_size)
         else:
             full_weight = None
             weight_shape = None
             weight_dtype = None
             weight_ndim = None
-            shard_info = None
         
         # Broadcast original tensor shape/dtype info to all ranks
         if rank == 0 and full_weight is not None:
@@ -318,11 +343,18 @@ def create_tp_checkpoint(checkpoint_dir: Path, output_dir: Path):
         ref_shape = shape_list[0]
         ref_dtype = dtype_list[0]
         ref_ndim = ndim_list[0]
-        
-        # Broadcast shard info to all ranks
-        shard_info_list = [shard_info]
-        dist.broadcast_object_list(shard_info_list, src=0)
-        shard_info = shard_info_list[0]
+
+        shard_info = get_shard_indices(
+            key,
+            ref_shape,
+            ref_ndim,
+            rank,
+            inner_rank,
+            outer_rank,
+            inner_size,
+            outer_size,
+            world_size,
+        )
 
         # All ranks compute and extract their own shard
         local_shard = compute_local_shard(
@@ -398,27 +430,110 @@ def create_tp_checkpoint(checkpoint_dir: Path, output_dir: Path):
     SafePrinter.print(f"{'='*80}\n")
 
 
+def parse_args() -> argparse.Namespace:
+    default_checkpoint_dir = Path(
+        "yalis/external/checkpoints/openai/gpt-oss-20b/yalis_checkpoints"
+    )
+    default_output_dir = Path(
+        "yalis/external/checkpoints/openai/gpt-oss-20b/yalis_checkpoints_tp"
+    )
+    parser = argparse.ArgumentParser(
+        description="Stream and shard a full checkpoint into a TP mesh"
+    )
+    parser.add_argument(
+        "--checkpoint-dir",
+        type=Path,
+        default=default_checkpoint_dir,
+        help="Path to the full (unsharded) checkpoint directory",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=default_output_dir,
+        help="Directory where per-rank TP shards will be written",
+    )
+    parser.add_argument(
+        "--tp-inner-size",
+        type=int,
+        default=1,
+        help="Number of ranks in the inner (in_features) dimension",
+    )
+    parser.add_argument(
+        "--tp-outer-size",
+        type=int,
+        default=None,
+        help="Number of ranks in the outer (out_features) dimension",
+    )
+    parser.add_argument(
+        "--tp-depth-size",
+        type=int,
+        default=1,
+        help="Number of ranks in the depth (depth parallelism) dimension",
+    )
+    return parser.parse_args()
+
+
 def main():
-    checkpoint_dir = Path("yalis/external/checkpoints/openai/gpt-oss-20b/yalis_checkpoints")
-    output_dir = Path("yalis/external/checkpoints/openai/gpt-oss-20b/yalis_checkpoints_tp")
-    
-    world_size = int(os.environ.get("WORLD_SIZE", "1"))
-    rank = int(os.environ.get("RANK", "0"))
-    
-    if world_size > 1 and not dist.is_initialized():
-        init_distributed(tp_dims=(world_size, 1, 1))
-    
+    args = parse_args()
+    checkpoint_dir = args.checkpoint_dir
+    output_dir = args.output_dir
+
+    env_world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    if args.tp_inner_size <= 0:
+        raise ValueError("--tp-inner-size must be > 0")
+    if args.tp_depth_size <= 0:
+        raise ValueError("--tp-depth-size must be > 0")
+
+    inner_size = args.tp_inner_size
+    depth_size = args.tp_depth_size
+    outer_size = args.tp_outer_size
+
+    if outer_size is None:
+        if inner_size * depth_size == 0:
+            raise ValueError("Tensor parallel mesh sizes cannot be zero")
+        if env_world_size % (inner_size * depth_size) != 0:
+            raise ValueError(
+                f"WORLD_SIZE ({env_world_size}) is not divisible by inner*depth ({inner_size * depth_size})"
+            )
+        outer_size = env_world_size // (inner_size * depth_size)
+    if outer_size <= 0:
+        raise ValueError("--tp-outer-size must be > 0")
+
+    if inner_size * outer_size * depth_size != env_world_size:
+        raise ValueError(
+            f"Tensor parallel mesh ({inner_size}x{outer_size}x{depth_size}) "
+            f"must equal WORLD_SIZE ({env_world_size})"
+        )
+
+    if env_world_size > 1 and not dist.is_initialized():
+        init_distributed(tp_dims=(inner_size, outer_size, depth_size))
+
     rank = dist.get_rank() if dist.is_initialized() else 0
     world_size = dist.get_world_size() if dist.is_initialized() else 1
-    
+
+    if world_size != inner_size * outer_size * depth_size:
+        raise RuntimeError(
+            f"Distributed world size ({world_size}) does not match configured mesh "
+            f"({inner_size}x{outer_size}x{depth_size})"
+        )
+
     SafePrinter.print(f"\n{'='*80}")
     SafePrinter.print(f"TP Checkpoint Conversion - Full Solution")
     SafePrinter.print(f"Input:  {checkpoint_dir}")
     SafePrinter.print(f"Output: {output_dir}")
+    SafePrinter.print(
+        f"Mesh dims: inner={inner_size}, outer={outer_size}, depth={depth_size}"
+    )
     SafePrinter.print(f"World size: {world_size}, Rank: {rank}")
     SafePrinter.print(f"{'='*80}\n")
-    
-    create_tp_checkpoint(checkpoint_dir, output_dir)
+
+    create_tp_checkpoint(
+        checkpoint_dir,
+        output_dir,
+        inner_size,
+        outer_size,
+        depth_size,
+    )
     
     if dist.is_initialized():
         dist.barrier()
