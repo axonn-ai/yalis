@@ -149,15 +149,10 @@ def get_shard_indices(
         # (same rule we apply for the corresponding weight). Detect that case
         # and shard using the inner mesh axis instead of the outer one.
         transpose_like_bias = ".proj.bias" in key or key.endswith(".proj.bias")
-        SafePrinter.print(
-            f"[Converter] Processing 1D bias '{key}': size={out_size}, transpose_like={transpose_like_bias}, inner_size={inner_size}, outer_size={outer_size}"
-        )
         if transpose_like_bias:
             start, end = _shard_range(out_size, inner_size, inner_rank)
-            SafePrinter.print(f"  -> Transpose bias: using inner_size={inner_size}, rank={inner_rank} -> [{start}:{end}]")
         else:
             start, end = _shard_range(out_size, outer_size, outer_rank)
-            SafePrinter.print(f"  -> Normal bias: using outer_size={outer_size}, rank={outer_rank} -> [{start}:{end}]")
         return (0, start, end)
     
     # MoE weights (GPT-OSS MoE) - 3D tensors
@@ -397,9 +392,6 @@ def create_tp_checkpoint(
         ref_dtype = dtype_list[0]
         ref_ndim = ndim_list[0]
 
-        SafePrinter.print(
-            f"[Debug] key={key} | orig_ndim={orig_ndim} | ref_ndim={ref_ndim} | ref_shape={ref_shape}"
-        )
         shard_info = get_shard_indices(
             key,
             ref_shape,
