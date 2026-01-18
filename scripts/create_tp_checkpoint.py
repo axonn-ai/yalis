@@ -95,6 +95,7 @@ def get_shard_indices(
     key: str,
     weight_shape: torch.Size,
     weight_ndim: int,
+    orig_ndim: int,
     rank: int,
     inner_rank: int,
     outer_rank: int,
@@ -139,7 +140,9 @@ def get_shard_indices(
             return None
     
     # Special handling for 1D biases (NOT MoE biases which are 2D)
-    if key.endswith(".bias") and weight_ndim == 1:
+    # Use orig_ndim (actual tensor dim) not weight_ndim (reference shape dim),
+    # since biases are often matched to 2D weight references but are themselves 1D.
+    if key.endswith(".bias") and orig_ndim == 1:
         out_size = weight_shape[0]
         # If this bias corresponds to a transposed proj (e.g. '*.proj.bias') the
         # runtime expects the sharding to follow the swapped inner/outer groups
@@ -401,6 +404,7 @@ def create_tp_checkpoint(
             key,
             ref_shape,
             ref_ndim,
+            orig_ndim,
             rank,
             inner_rank,
             outer_rank,
