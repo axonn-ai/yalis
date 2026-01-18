@@ -469,39 +469,9 @@ class TPLinear(torch.nn.Module):
                 and weight.size(1) == self.local_in_features
             )
 
-            # Safe rank inspection for logs
-            try:
-                _rank = dist.get_rank()
-            except Exception:
-                _rank = -1
-
-            if not (is_full_weight_matrix or is_sharded_weight_matrix):
-                print(
-                    f"[rank {_rank}] TPLinear load mismatch for '{prefix}weight' -> provided={provided_shape}, "
-                    f"expected_full=({self.out_features},{self.in_features}), local_expected=({self.local_out_features},{self.local_in_features}), "
-                    f"groups=(inner={self.inner_group_size},outer={self.outer_group_size})"
-                )
-
             assert (
                 is_full_weight_matrix or is_sharded_weight_matrix
             ), "This is neither a full checkpoint nor a sharded checkpoint"
-
-            # Report how we will interpret the provided weight
-            if is_full_weight_matrix:
-                print(
-                    f"[rank {_rank}] Interpreting '{prefix}weight' as FULL weight matrix {provided_shape}; will extract local slice -> groups=(outer={self.outer_group_size},inner={self.inner_group_size})"
-                )
-            else:
-                kind = (
-                    "fully_sharded" if fully_sharded else "row_parallel"
-                    if row_parallel
-                    else "col_parallel" if col_parallel
-                    else "unknown_sharded"
-                )
-                print(
-                    f"[rank {_rank}] Interpreting '{prefix}weight' as SHARDED ({kind}) with provided={provided_shape}; "
-                    f"expected_local=({self.local_out_features},{self.local_in_features}); groups=(inner={self.inner_group_size},outer={self.outer_group_size})"
-                )
 
             # TODO: This can be further optimized potentially
             if is_full_weight_matrix and getattr(
@@ -559,39 +529,18 @@ class TPLinear(torch.nn.Module):
                 else None
             )
             if bias is not None:
-                # Skip TP bias checks for MoE parameters (they are 2D and not wrapped in TPLinear)
-                try:
-                    _rank = dist.get_rank()
-                except Exception:
-                    _rank = -1
-                
-                print(
-                    f"[rank {_rank}] Processing bias '{prefix}bias' -> shape={bias.shape}, ndim={bias.ndim}, "
-                    f"out_features={self.out_features}, local_out_features={self.local_out_features}"
-                )
-                
+                # Skip TP sharding logic for MoE biases (2D), only process 1D biases
                 if bias.ndim == 1:
                     if bias.size(0) == self.out_features:
-                        print(
-                            f"[rank {_rank}] Bias '{prefix}bias' is FULL ({bias.size(0)}), sharding to local_out_features={self.local_out_features}"
-                        )
+                        # Full checkpoint: shard bias to local_out_features
                         bias = Drop.apply(bias, self.outer_group)
                         state_dict[prefix + "bias"] = bias
-                    elif bias.size(0) == self.local_out_features:
-                        print(
-                            f"[rank {_rank}] Bias '{prefix}bias' is already SHARDED ({bias.size(0)}), keeping as-is"
-                        )
                     else:
-                        print(
-                            f"[rank {_rank}] ERROR: Bias '{prefix}bias' has unexpected size {bias.size(0)}, "
-                            f"expected either full ({self.out_features}) or sharded ({self.local_out_features})"
+                        # Already sharded checkpoint
+                        assert bias.size(0) == self.local_out_features, (
+                            f"Bias size {bias.size(0)} is neither full ({self.out_features}) "
+                            f"nor sharded ({self.local_out_features})"
                         )
-                        assert (
-                            bias.size(0) == self.local_out_features
-                        ), f"This is neither a full nor a sharded checkpoint (bias size {bias.size(0)}, expected {self.out_features} or {self.local_out_features})"
-                else:
-                    print(
-                        f"[rank {_rank}] Bias '{prefix}bias' is {bias.ndim}D (likely MoE), skipping TP checks"
-                    )
+                # MoE biases are 2D and not wrapped in TPLinear; skip TP sharding checks
 
         self._old_load_from_state_dict(state_dict, prefix, *args, **kwargs)
