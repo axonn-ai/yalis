@@ -125,7 +125,7 @@ def get_shard_indices(
     
     # MoE biases MUST be checked BEFORE generic 1D bias handling
     # because MoE biases are 2D: (n_experts, intermediate)
-    if "mlp" in key and key.endswith(".bias") and weight_ndim == 2:
+    if "mlp" in key and key.endswith("bias") and weight_ndim == 2:
         # mlp1_bias: (n_experts, 2*intermediate) -> shard dim 1
         # mlp2_bias: (n_experts, hidden) -> replicated (don't shard)
         if "mlp1_bias" in key:
