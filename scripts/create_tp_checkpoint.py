@@ -123,8 +123,8 @@ def get_shard_indices(
     if any(x in key for x in ["embed", "norm", "router", "lm_head"]):
         return None
     
-    # Special handling for biases: use 1-D sharding along dim 0 if weight is sharded
-    if key.endswith(".bias") and weight_ndim == 2:
+    # Special handling for 1D biases (NOT MoE biases which are 2D and handled above)
+    if key.endswith(".bias") and weight_ndim == 1:
         out_size = weight_shape[0]
         # If this bias corresponds to a transposed proj (e.g. '*.proj.bias') the
         # runtime expects the sharding to follow the swapped inner/outer groups
@@ -137,15 +137,17 @@ def get_shard_indices(
             start, end = _shard_range(out_size, outer_size, outer_rank)
         return (0, start, end)
     
-    # MoE weights
+    # MoE weights (GPT-OSS MoE)
     if "mlp" in key and weight_ndim == 3:  # [n_experts, d1, d2]
-        if "gate_up_proj" in key:
-            # [n_experts, 2*intermediate, hidden] -> shard hidden (dim 2)
-            d = 2
-        elif "proj" in key:
-            # [n_experts, hidden, intermediate] -> shard hidden (dim 1)
-            d = 1
+        # GPT-OSS MoE:
+        # mlp1_weight: (n_experts, 2*intermediate, hidden) -> shard intermediate (dim 1)
+        # mlp2_weight: (n_experts, hidden, intermediate) -> shard intermediate (dim 2)
+        if "mlp1_weight" in key:
+            d = 1  # shard the 2*intermediate dimension
+        elif "mlp2_weight" in key:
+            d = 2  # shard the intermediate dimension
         else:
+            # Unknown 3D MoE weight, don't shard
             return None
         
         size = weight_shape[d]
@@ -153,6 +155,21 @@ def get_shard_indices(
         if size % world_size != 0:
             raise ValueError(f"Cannot evenly shard {key} dim {d} (size {size}) across {world_size} ranks")
         return (d, rank * shard_size, (rank + 1) * shard_size)
+    
+    # MoE biases (GPT-OSS MoE)
+    if "mlp" in key and key.endswith(".bias") and weight_ndim == 2:
+        # mlp1_bias: (n_experts, 2*intermediate) -> shard dim 1
+        # mlp2_bias: (n_experts, hidden) -> replicated (don't shard)
+        if "mlp1_bias" in key:
+            size = weight_shape[1]
+            shard_size = size // world_size
+            if size % world_size != 0:
+                raise ValueError(f"Cannot evenly shard {key} dim 1 (size {size}) across {world_size} ranks")
+            return (1, rank * shard_size, (rank + 1) * shard_size)
+        elif "mlp2_bias" in key or "gate" in key:
+            # mlp2_bias and gate.weight are replicated
+            return None
+        # Other 2D bias: fall through to default bias handling below
     
     # Linear weights [out, in] -> shard out (dim 0) and in (dim 1)
     if weight_ndim == 2:
