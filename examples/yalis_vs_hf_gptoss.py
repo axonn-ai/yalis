@@ -4,8 +4,6 @@ Compare HuggingFace vs YALIS logits for GPT-OSS-20B.
 Tests generation quality and consistency across both implementations.
 """
 import gc
-import os
-from pathlib import Path
 import torch
 import torch.distributed as dist
 from transformers import AutoTokenizer, AutoModelForCausalLM
@@ -36,32 +34,12 @@ def sample_token(logits, temperature=0.0, top_p=0.9):
     next_token = sorted_indices[choice]
     return int(next_token.item())
 
-# Local paths: unsharded checkpoint for HF, TP-sharded checkpoint for YALIS
-hf_checkpoint = "yalis/external/checkpoints/openai/gpt-oss-20b"
-yalis_checkpoint = "yalis/external/checkpoints/openai/gpt-oss-20b/yalis_checkpoints"
-tp_checkpoint = "yalis/external/checkpoints/openai/gpt-oss-20b/yalis_checkpoints_tp"
+# Local path to GPT-OSS-20B checkpoint
+model_id = "yalis/external/checkpoints/openai/gpt-oss-20b"
 
-# Initialize distributed only when launched with torchrun / world_size > 1
-world_size = int(os.environ.get("WORLD_SIZE", "1"))
-rank = int(os.environ.get("RANK", "0"))
-if world_size > 1 and not dist.is_initialized():
-    # Use row-parallel split by default (G_r = world_size)
-    init_distributed(tp_dims=(world_size, 1, 1))
-
-# HF uses the unsharded checkpoint (tokenizer + HF model)
-hf_model_id = hf_checkpoint
-
-# YALIS uses the TP-sharded checkpoint when available
-if world_size > 1:
-    print(f"Using TP-sharded checkpoint for YALIS: {tp_checkpoint}")
-    yalis_model_id = f"{tp_checkpoint}/rank_{rank}"
-else:
-    print(f"Using unsharded checkpoint for YALIS: {yalis_checkpoint}")
-    yalis_model_id = yalis_checkpoint
-
-# Initialize Tokenizer (use unsharded HF model path)
+# Initialize Tokenizer
 print("Loading tokenizer...")
-tokenizer = AutoTokenizer.from_pretrained(hf_model_id, trust_remote_code=True, local_files_only=True)
+tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True, local_files_only=True)
 
 prompts_to_test = [
     "The capital of France is",
@@ -93,7 +71,7 @@ for prompt_idx, raw_prompt in enumerate(prompts_to_test):
     gc.collect()
     
     hf_model = AutoModelForCausalLM.from_pretrained(
-        hf_model_id, 
+        model_id, 
         device_map="cuda", 
         dtype=torch.bfloat16, 
         trust_remote_code=True
@@ -137,8 +115,8 @@ for prompt_idx, raw_prompt in enumerate(prompts_to_test):
     print("-" * 40)
     
     # Ensure distributed and Axonn are initialized so ax.comm_handle is set.
-    if world_size > 1 and not dist.is_initialized():
-        init_distributed(tp_dims=(world_size, 1, 1))
+    if not dist.is_initialized():
+        init_distributed()
     
     # Aggressive cleanup before reloading YALIS
     torch.cuda.empty_cache()
@@ -147,12 +125,12 @@ for prompt_idx, raw_prompt in enumerate(prompts_to_test):
     
     # Reinitialize YALIS model for generation
     yalis_model_gen = get_model(
-        yalis_model_id,
+        model_id,
         model_dtype=torch.bfloat16,
         attention_backend=AttentionBackend.SDPA,
         use_paged_kv_caching=False,
         prestore_kv_cache=True,
-        disable_tp=False,
+        disable_tp=True,
     ).to("cuda")
     yalis_model_gen.eval()
     # Use YALIS model's vocab size for slicing logits
