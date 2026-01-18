@@ -29,6 +29,7 @@ from flash_attn.ops.triton.rotary import apply_rotary
 from yalis.attention.backends import AttentionBackend
 from yalis.attention.masking import create_causal_block_mask_for_flex_attention
 from yalis.attention.utils import fit_powerlaw_linreg_torch
+from yalis.attention.threshold_attention_nowmp import init_nowmp_state
 
 
 from yalis import print_rank0
@@ -285,6 +286,8 @@ class GPT(nn.Module):
                 dtype=dtype, 
                 device=device,
             )
+            if self.config.attention_backend == AttentionBackend.THRESH_ATTN_NOWMP:
+                block.attn.nowmp_state = init_nowmp_state(batch_size, heads, device=device)
 
         if self.config.use_paged_kv_caching:
             self.kv_cache_manager = KVCacheManager(batch_size, 
@@ -418,6 +421,7 @@ class CausalSelfAttention(nn.Module):
         self.num_warmup_steps = config.num_warmup_steps
         self.powerlaw_a = None
         self.powerlaw_b = None
+        self.nowmp_state = None
 
         self.config = config
         if config.tensor_parallel:
@@ -525,6 +529,7 @@ class CausalSelfAttention(nn.Module):
             retain_perc=retain_perc,
             powerlaw_a=self.powerlaw_a,
             powerlaw_b=self.powerlaw_b,
+            nowmp_state=self.nowmp_state,
         )
         
         if not self.config.attention_backend == AttentionBackend.FLASH:
