@@ -112,6 +112,7 @@ class InferenceConfig:
         ] = None,
         # CPU Offloading options
         use_cpu_offloading: bool = False,
+        cpu_offload_mode: Optional[Literal["all", "rows", "inline"]] = "all",
         cpu_offload_num_prefetch_layers: int = 1,
         cpu_offload_pin_memory: bool = True,
         cpu_offload_use_preallocated_buffers: bool = False,
@@ -172,6 +173,7 @@ class InferenceConfig:
         self.symmetric_allreduce_strategy = symmetric_allreduce_strategy
         # CPU Offloading
         self.use_cpu_offloading = use_cpu_offloading
+        self.cpu_offload_mode = cpu_offload_mode
         self.cpu_offload_num_prefetch_layers = cpu_offload_num_prefetch_layers
         self.cpu_offload_pin_memory = cpu_offload_pin_memory
         self.cpu_offload_use_preallocated_buffers = cpu_offload_use_preallocated_buffers

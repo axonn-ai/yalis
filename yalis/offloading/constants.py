@@ -23,7 +23,16 @@ class PrefetchMode(Enum):
     MLP_ONLY = auto()
     ATTENTION_ONLY = auto()
     SELECTIVE = auto()
+    INLINE = auto()
 
+def get_mode(mode_str: str) -> PrefetchMode:
+    """Convert string to PrefetchMode enum."""
+    mapping = {
+        "all": PrefetchMode.FULL_LAYER,
+        "rows": PrefetchMode.MLP_ONLY,
+        "inline": PrefetchMode.INLINE,
+    }
+    return mapping.get(mode_str.lower(), PrefetchMode.FULL_LAYER)
 
 def mode_to_components(mode: PrefetchMode) -> List[str]:
     """Convert legacy PrefetchMode to component list."""
@@ -32,6 +41,7 @@ def mode_to_components(mode: PrefetchMode) -> List[str]:
         PrefetchMode.MLP_ONLY: ["mlp"],
         PrefetchMode.ATTENTION_ONLY: ["attn"],
         PrefetchMode.SELECTIVE: ["mlp"],
+        PrefetchMode.INLINE: ["mlp"],
     }
     return mapping.get(mode, FULL_OFFLOAD.copy())
 

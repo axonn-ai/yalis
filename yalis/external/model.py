@@ -32,7 +32,6 @@ from yalis.attention.masking import create_causal_block_mask_for_flex_attention
 # TODO: these should be dynamically set during engine initialization
 NUM_BLOCKS, PAGE_BLOCK_SIZE = 512, 256
 
-
 # switch sequential norm classes to TP norm classes if needed
 def get_norm_class(config):
     if not config.tensor_parallel or ax.config.G_intra_c == 1:
@@ -211,6 +210,7 @@ class GPT(nn.Module):
                     self.token_counter,
                     block_table,
                     flex_attention_block_mask,
+                    self.offload_manager
                 )
         if self.config.tensor_parallel:
             x = Gather.apply(
@@ -439,7 +439,7 @@ class Block(nn.Module):
             else get_norm_class(config)(config.n_embd, eps=config.norm_eps)
         )
         mlp_class = getattr(sys.modules[__name__], config.mlp_class_name)
-        self.mlp = mlp_class(config)
+        self.mlp = mlp_class(config, block_idx)
         self.post_mlp_norm = (
             get_norm_class(config)(config.n_embd, eps=config.norm_eps)
             if config.post_mlp_norm
@@ -457,6 +457,7 @@ class Block(nn.Module):
         token_counter: Optional[torch.Tensor] = None,
         block_table: Optional[torch.Tensor] = None,
         flex_attention_block_mask=None,
+        offload_manager=None,
     ) -> torch.Tensor:
         """
         Non-parallel residual       Parallel residual
@@ -502,7 +503,7 @@ class Block(nn.Module):
             x = self.mlp(x_normed) + attention_output + x
         else:
             x = attention_output + x
-            x = self.post_mlp_norm(self.mlp(self.norm_2(x))) + x
+            x = self.post_mlp_norm(self.mlp(self.norm_2(x), offload_manager)) + x
         return x
 
 
@@ -1055,7 +1056,7 @@ class RMSNorm(torch.nn.Module):
 
 
 class LLaMAMoE(nn.Module):
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: Config, block_idx) -> None:
         super().__init__()
         self.gate = nn.Linear(config.n_embd, config.n_expert, bias=False)
         if config.moe_intermediate_size is None:
@@ -1068,13 +1069,18 @@ class LLaMAMoE(nn.Module):
             init_device=config.init_device,
         )
         self.config = config
+        self.block_idx = block_idx
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, offload_manager) -> torch.Tensor:
         B, T, C = (
             x.size()
         )  # batch size, sequence length, embedding dimensionality (n_embd)
         x = x.view(-1, C)  # (B*T, C)
         router = self.gate(x)  # (B*T, n_expert)
 
+        if offload_manager is not None and offload_manager.is_inline_mode():
+            row_indices = offload_manager.row_indices_callback(self.block_idx)
+            offload_manager.fetch_layer(self.block_idx, row_indices=row_indices, non_blocking=False)
+        
         y = self.experts(x, router)
         return y.view(B, T, C)

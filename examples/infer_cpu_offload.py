@@ -23,20 +23,20 @@ import torch
 import torch.distributed as dist
 
 NUM_ITERATIONS = 5
-PROFILE_START_ITERATION = 2
+PROFILE_START_ITERATION = 3
 
 if __name__ == "__main__":
     # Model ID from Hugging Face
     # CPU offloading is especially useful for larger models like 70B
-    #model_id = "meta-llama/Meta-Llama-3.1-8B-Instruct"
+    #model_id = "meta-llama/Llama-3.2-1B-Instruct"
     model_id = "Qwen/Qwen3-30B-A3B-Instruct-2507"
     #model_id = "mistralai/Mixtral-8x7B-Instruct-v0.1"
 
     user_prompts = [
-        "How to bake a cake?",
-        "Explain quantum mechanics in simple terms.",
-        "What are the best practices for time management?",
-        "How do I write a great resume for a software engineer role?",
+        " ".join(["How to bake a cake?"] * 160)
+        #"Explain quantum mechanics in simple terms.",
+        #"What are the best practices for time management?",
+        #"How do I write a great resume for a software engineer role?",
     ]
 
     system_prompt = (
@@ -58,11 +58,11 @@ if __name__ == "__main__":
         input_prompts.append(formatted_prompt)
 
     # Number of tokens to generate
-    tokens_to_gen = 1
+    tokens_to_gen = 4
 
     # Max batch size (smaller batch sizes work better with CPU offloading
     # due to memory constraints)
-    MAX_BATCH_SIZE = 4
+    MAX_BATCH_SIZE = 1
 
     # Model configuration
     model_config = ModelConfig(model_name=model_id, precision="bf16")
@@ -70,7 +70,7 @@ if __name__ == "__main__":
     # Inference configuration with CPU offloading enabled
     inference_config = InferenceConfig(
         max_batch_size=MAX_BATCH_SIZE,
-        max_length_of_generated_sequences=512,
+        max_length_of_generated_sequences=1024,
         top_p=0.0,
         temperature=0.0,
         tp_dims=None,
@@ -86,6 +86,7 @@ if __name__ == "__main__":
         #   - ["mlp"] = only MLP offloaded, attention+norms stay on GPU
         #   - ["attn"] = only attention offloaded, MLP+norms stay on GPU
         cpu_offload_components=["mlp"],  # Full layer
+        cpu_offload_mode="rows",
         use_paged_kv_caching=False,
         prestore_kv_cache=True,
     )
@@ -114,7 +115,7 @@ if __name__ == "__main__":
         if iteration == PROFILE_START_ITERATION:
             torch.cuda.profiler.start()
 
-        output_tokens, metrics, logits = engine.generate(
+        output_tokens, metrics = engine.generate(
             input_prompts,
             report_throughput=True,
             tokens_to_generate=tokens_to_gen,

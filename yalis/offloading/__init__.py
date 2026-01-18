@@ -34,6 +34,7 @@ from .constants import (
     FULL_OFFLOAD,
     PrefetchMode,
     get_component_for_param,
+    get_mode,
 )
 
 from .buffer_manager import (
@@ -49,6 +50,7 @@ __all__ = [
     "FULL_OFFLOAD",
     "PrefetchMode",
     "get_component_for_param",
+    "get_mode",
     # Buffer management
     "ComponentBuffers",
     "GPUBufferManager",

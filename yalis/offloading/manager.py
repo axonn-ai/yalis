@@ -41,6 +41,7 @@ class CPUOffloadManager:
         self.num_prefetch_layers = num_prefetch_layers
         self.pin_memory = pin_memory
         self.use_preallocated_buffers = use_preallocated_buffers
+        self.prefetch_mode = prefetch_mode
         
         # Handle legacy prefetch_mode
         if prefetch_mode is not None:
@@ -207,7 +208,12 @@ class CPUOffloadManager:
     def _to_cpu_pinned(self, tensor: torch.Tensor) -> torch.Tensor:
         """Move tensor to CPU with optional pinning."""
         cpu_tensor = tensor.to('cpu')
-        return self._pin_if_enabled(cpu_tensor)
+        if self.pin_memory:
+            pinned = cpu_tensor.pin_memory()
+            del cpu_tensor
+            return pinned
+        return cpu_tensor
+        #return self._pin_if_enabled(cpu_tensor)
     
     def _pin_if_enabled(self, tensor: torch.Tensor) -> torch.Tensor:
         """Pin tensor memory if enabled."""
@@ -266,11 +272,15 @@ class CPUOffloadManager:
         layer_idx: int, 
         row_indices: torch.Tensor,
         component: str = "mlp",
-        non_blocking: bool = True
+        non_blocking: bool = True,
+        stream = None,
     ):
         """Move specific rows to GPU (requires preallocated buffers)."""
         if layer_idx < 0 or layer_idx >= self.num_layers:
             return
+
+        if stream == None:
+            stream = self.transfer_stream
         
         if not self.use_preallocated_buffers or not self.gpu_buffer_manager:
             return self._move_components_to_gpu(layer_idx, [component], non_blocking)
@@ -280,13 +290,17 @@ class CPUOffloadManager:
             self.blocks[layer_idx],
             self.cpu_state_dicts[layer_idx],
             row_indices,
-            self.transfer_stream,
+            stream,
             component,
             buffer_idx
         )
         
         if not non_blocking:
-            self.transfer_stream.synchronize()
+          if stream is None:
+              self.transfer_stream.synchronize()
+          else:
+              stream.synchronize()
+
         
         self.components_on_gpu[layer_idx].add(f'{component}')
     
@@ -318,7 +332,30 @@ class CPUOffloadManager:
             self.components_on_gpu[layer_idx].discard(comp)
             self.components_on_gpu[layer_idx].discard(f'{comp}_partial')
         self.layers_on_gpu.discard(layer_idx)
-    
+
+    def fetch_layer(
+        self, 
+        layer_idx: int, 
+        components: List[str] = None,
+        row_indices: torch.Tensor = None,
+        non_blocking: bool = False,
+    ):
+        """Fetch layer synchronously."""
+        if layer_idx < 0 or layer_idx >= self.num_layers:
+            return
+        
+        components = components or self.offload_components
+        current_stream = torch.cuda.current_stream()
+        
+        with torch.cuda.stream(current_stream):
+            if row_indices is not None:
+                for comp in components:
+                    #print_rank0(f"[CPUOffloadManager] Fetching layer {layer_idx} rows {row_indices}")
+                    self._move_rows_to_gpu(layer_idx, row_indices, comp, non_blocking=False, stream=current_stream)
+            else:
+                self._move_components_to_gpu(layer_idx, components, non_blocking=False, stream=current_stream)
+        
+        
     def prefetch_layer(
         self, 
         layer_idx: int, 
@@ -361,6 +398,10 @@ class CPUOffloadManager:
     def set_row_indices_callback(self, callback: Callable[[int], Optional[torch.Tensor]]):
         """Set callback for sparse row prefetch."""
         self.row_indices_callback = callback
+
+    def is_inline_mode(self) -> bool:
+        """Check if in inline mode."""
+        return self.prefetch_mode == PrefetchMode.INLINE
     
     @contextmanager
     def layer_context(self, layer_idx: int):
@@ -371,6 +412,10 @@ class CPUOffloadManager:
             with manager.layer_context(i):
                 output = layer(input)
         """
+        if self.prefetch_mode == PrefetchMode.INLINE:
+            yield
+            return
+
         if layer_idx == 0:
             self.transfer_stream.wait_stream(torch.cuda.current_stream())
 

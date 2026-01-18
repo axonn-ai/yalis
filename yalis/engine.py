@@ -17,7 +17,7 @@ from .constants import EnginePhase
 import time
 import gc
 from .timers import Timers
-from .offloading import CPUOffloadManager
+from .offloading import CPUOffloadManager, get_mode
 
 import os
 
@@ -34,6 +34,8 @@ torch._inductor.config.fx_graph_cache = True
 torch._inductor.config.assert_indirect_indexing = False
 
 torch._inductor.config.combo_kernel_foreach_dynamic_shapes = True
+
+torch._dynamo.config.allow_unspec_int_on_nn_module = True
 
 
 YALIS_DISABLE_COMPILE = os.environ.get("YALIS_DISABLE_COMPILE", "0") == "1"
@@ -265,8 +267,11 @@ class LLMEngine:
                 pin_memory=inference_config.cpu_offload_pin_memory,
                 use_preallocated_buffers=inference_config.cpu_offload_use_preallocated_buffers,
                 offload_components=inference_config.cpu_offload_components,
+                prefetch_mode=get_mode(inference_config.cpu_offload_mode),
             )
-            # offload_manager.set_row_indices_callback(next_row_indices_callback)
+            print_rank0(f"CPU Offloading Mode: {inference_config.cpu_offload_mode}")
+            if inference_config.cpu_offload_mode in ["rows", "inline"]:
+                offload_manager.set_row_indices_callback(next_row_indices_callback)
             offload_manager.prepare_for_offloading(self.dtype)
             model.offload_manager = offload_manager
             print_rank0(
@@ -466,7 +471,6 @@ class LLMEngine:
 
             prompt_sequence_lengths = prompt_sequence_lengths.to(self.device)
             for step in range(tokens_to_generate):
-                print(f"[{dist.get_rank()}] Step {step}")
                 timer_key = None
                 if step == 0:  # Prefill step
                     timer_key = "prefill"
