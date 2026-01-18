@@ -108,7 +108,7 @@ def get_shard_indices(
     Args:
         key: weight key name
         weight_shape: shape of the weight tensor
-        weight_ndim: number of dimensions
+        weight_ndim: number of dimensions (actual tensor ndim, not reference)
         rank: target rank
         world_size: total number of ranks
     
@@ -123,7 +123,22 @@ def get_shard_indices(
     if any(x in key for x in ["embed", "norm", "router", "lm_head"]):
         return None
     
-    # Special handling for 1D biases (NOT MoE biases which are 2D and handled above)
+    # MoE biases MUST be checked BEFORE generic 1D bias handling
+    # because MoE biases are 2D: (n_experts, intermediate)
+    if "mlp" in key and key.endswith(".bias") and weight_ndim == 2:
+        # mlp1_bias: (n_experts, 2*intermediate) -> shard dim 1
+        # mlp2_bias: (n_experts, hidden) -> replicated (don't shard)
+        if "mlp1_bias" in key:
+            size = weight_shape[1]
+            shard_size = size // world_size
+            if size % world_size != 0:
+                raise ValueError(f"Cannot evenly shard {key} dim 1 (size {size}) across {world_size} ranks")
+            return (1, rank * shard_size, (rank + 1) * shard_size)
+        else:
+            # mlp2_bias, gate.weight, or other MoE 2D tensors are replicated
+            return None
+    
+    # Special handling for 1D biases (NOT MoE biases which are 2D)
     if key.endswith(".bias") and weight_ndim == 1:
         out_size = weight_shape[0]
         # If this bias corresponds to a transposed proj (e.g. '*.proj.bias') the
@@ -137,7 +152,7 @@ def get_shard_indices(
             start, end = _shard_range(out_size, outer_size, outer_rank)
         return (0, start, end)
     
-    # MoE weights (GPT-OSS MoE)
+    # MoE weights (GPT-OSS MoE) - 3D tensors
     if "mlp" in key and weight_ndim == 3:  # [n_experts, d1, d2]
         # GPT-OSS MoE:
         # mlp1_weight: (n_experts, 2*intermediate, hidden) -> shard intermediate (dim 1)
@@ -155,21 +170,6 @@ def get_shard_indices(
         if size % world_size != 0:
             raise ValueError(f"Cannot evenly shard {key} dim {d} (size {size}) across {world_size} ranks")
         return (d, rank * shard_size, (rank + 1) * shard_size)
-    
-    # MoE biases (GPT-OSS MoE)
-    if "mlp" in key and key.endswith(".bias") and weight_ndim == 2:
-        # mlp1_bias: (n_experts, 2*intermediate) -> shard dim 1
-        # mlp2_bias: (n_experts, hidden) -> replicated (don't shard)
-        if "mlp1_bias" in key:
-            size = weight_shape[1]
-            shard_size = size // world_size
-            if size % world_size != 0:
-                raise ValueError(f"Cannot evenly shard {key} dim 1 (size {size}) across {world_size} ranks")
-            return (1, rank * shard_size, (rank + 1) * shard_size)
-        elif "mlp2_bias" in key or "gate" in key:
-            # mlp2_bias and gate.weight are replicated
-            return None
-        # Other 2D bias: fall through to default bias handling below
     
     # Linear weights [out, in] -> shard out (dim 0) and in (dim 1)
     if weight_ndim == 2:
@@ -331,10 +331,11 @@ def create_tp_checkpoint(
             ref_dtype = full_weight.dtype
             ref_ndim = full_weight.ndim
 
-            # If this is a bias (1-D) try to find a matching weight tensor
+            # For 1D biases (not MoE), try to find a matching weight tensor
             # and use that tensor's shape for computing shard indices so
             # the bias is sliced to match the weight shards.
-            if key.endswith(".bias"):
+            # Skip this for MoE biases which are 2D and should use their own shape.
+            if key.endswith(".bias") and full_weight.ndim == 1:
                 weight_key = key[:-5] + ".weight"
                 if weight_key in full_state_dict:
                     ref = full_state_dict[weight_key]
