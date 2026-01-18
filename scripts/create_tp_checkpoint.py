@@ -150,9 +150,24 @@ def get_shard_indices(
     if weight_ndim == 2:
         out_size = weight_shape[0]
         in_size = weight_shape[1]
-        
-        out_start, out_end = _shard_range(out_size, outer_size, outer_rank)
-        in_start, in_end = _shard_range(in_size, inner_size, inner_rank)
+        # Some TPLinear instances are created with `transpose=True` in the
+        # model (for example attention/MMLP `*.proj` layers). When
+        # `transpose=True` the runtime swaps inner/outer groups which means
+        # the expected on-disk sharding for that weight is the opposite of
+        # the default assumption. Detect those keys and swap the shard
+        # computation accordingly so the produced shards match the loader
+        # expectation.
+        transpose_like = ".proj.weight" in key or key.endswith(".proj.weight")
+        if transpose_like:
+            # Swap the roles of inner/outer when computing shards:
+            # - out dimension is sharded using `inner_size` / `inner_rank`
+            # - in dimension is sharded using `outer_size` / `outer_rank`
+            out_start, out_end = _shard_range(out_size, inner_size, inner_rank)
+            in_start, in_end = _shard_range(in_size, outer_size, outer_rank)
+        else:
+            out_start, out_end = _shard_range(out_size, outer_size, outer_rank)
+            in_start, in_end = _shard_range(in_size, inner_size, inner_rank)
+
         return (0, out_start, out_end, 1, in_start, in_end)
     
     return None
@@ -518,7 +533,7 @@ def main():
         )
 
     SafePrinter.print(f"\n{'='*80}")
-    SafePrinter.print(f"TP Checkpoint Conversion - Full Solution")
+    SafePrinter.print(f"TP Checkpoint Conversion")
     SafePrinter.print(f"Input:  {checkpoint_dir}")
     SafePrinter.print(f"Output: {output_dir}")
     SafePrinter.print(
