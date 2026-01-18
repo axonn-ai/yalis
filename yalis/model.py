@@ -28,7 +28,10 @@ def get_model(
         tensor_parallel = False
     if tensor_parallel and dist.get_rank() == 0:
         print(f"Using Tensor parallelism on {dist.get_world_size()} GPUs")
+    
+    print(f"Using {litgpt_checkpoint_directory} as checkpoint directory with dtype {model_dtype}")
     checkpoint_dir = Path(litgpt_checkpoint_directory)
+
     config = Config.from_file(checkpoint_dir / "model_config.yaml")
     if max_sequence_length is not None:
         assert (
@@ -60,10 +63,12 @@ def get_model(
                 checkpoint_path = candidate
 
         if os.path.exists(checkpoint_path):
+            print(f"[rank:{dist.get_rank()}] Loading checkpoint from: {checkpoint_path}")
             load_checkpoint_safetensors(model, checkpoint_path)
         else:
             # Deprecated loading path as a fallback
             checkpoint_path = checkpoint_dir / "lit_model.pth"
+            print(f"[rank:{dist.get_rank()}] Falling back to legacy checkpoint: {checkpoint_path}")
             load_litgpt_checkpoint(model, checkpoint_path)
 
     model.eval()
