@@ -450,15 +450,58 @@ class TPLinear(torch.nn.Module):
         )
 
         if weight is not None:
+            # Determine which layout the checkpoint provided
             is_full_weight_matrix = self._is_full_weight_matrix(weight)
             is_sharded_weight_matrix = self._is_sharded_weight_matrix(weight)
 
+            # Compute specific sharding flags for clearer diagnostics
+            provided_shape = tuple(weight.shape)
+            fully_sharded = (
+                weight.size(0) == self.local_out_features
+                and weight.size(1) == self.local_in_features
+            )
+            row_parallel = (
+                weight.size(0) == self.local_out_features
+                and weight.size(1) == self.in_features
+            )
+            col_parallel = (
+                weight.size(0) == self.out_features
+                and weight.size(1) == self.local_in_features
+            )
+
+            # Safe rank inspection for logs
+            try:
+                _rank = dist.get_rank()
+            except Exception:
+                _rank = -1
+
             if not (is_full_weight_matrix or is_sharded_weight_matrix):
-                print(f"DEBUG: {prefix}weight shape={weight.shape}, out_features={self.out_features}, in_features={self.in_features}, local_out={self.local_out_features}, local_in={self.local_in_features}")
+                print(
+                    f"[rank {_rank}] TPLinear load mismatch for '{prefix}weight' -> provided={provided_shape}, "
+                    f"expected_full=({self.out_features},{self.in_features}), local_expected=({self.local_out_features},{self.local_in_features}), "
+                    f"groups=(inner={self.inner_group_size},outer={self.outer_group_size})"
+                )
 
             assert (
                 is_full_weight_matrix or is_sharded_weight_matrix
             ), "This is neither a full checkpoint nor a sharded checkpoint"
+
+            # Report how we will interpret the provided weight
+            if is_full_weight_matrix:
+                print(
+                    f"[rank {_rank}] Interpreting '{prefix}weight' as FULL weight matrix {provided_shape}; will extract local slice -> groups=(outer={self.outer_group_size},inner={self.inner_group_size})"
+                )
+            else:
+                kind = (
+                    "fully_sharded" if fully_sharded else "row_parallel"
+                    if row_parallel
+                    else "col_parallel" if col_parallel
+                    else "unknown_sharded"
+                )
+                print(
+                    f"[rank {_rank}] Interpreting '{prefix}weight' as SHARDED ({kind}) with provided={provided_shape}; "
+                    f"expected_local=({self.local_out_features},{self.local_in_features}); groups=(inner={self.inner_group_size},outer={self.outer_group_size})"
+                )
 
             # TODO: This can be further optimized potentially
             if is_full_weight_matrix and getattr(
