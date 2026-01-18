@@ -559,12 +559,14 @@ class TPLinear(torch.nn.Module):
                 else None
             )
             if bias is not None:
-                if bias.size(0) == self.out_features:
-                    bias = Drop.apply(bias, self.outer_group)
-                    state_dict[prefix + "bias"] = bias
-                else:
-                    assert (
-                        bias.size(0) == self.local_out_features
-                    ), "This is neither a full nor a sharded checkpoint"
+                # Skip TP bias checks for MoE parameters (they are 2D and not wrapped in TPLinear)
+                if bias.ndim == 1:
+                    if bias.size(0) == self.out_features:
+                        bias = Drop.apply(bias, self.outer_group)
+                        state_dict[prefix + "bias"] = bias
+                    else:
+                        assert (
+                            bias.size(0) == self.local_out_features
+                        ), "This is neither a full nor a sharded checkpoint"
 
         self._old_load_from_state_dict(state_dict, prefix, *args, **kwargs)
