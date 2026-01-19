@@ -461,6 +461,59 @@ def create_tp_checkpoint(
             except Exception:
                 SafePrinter.print(f"[Rank {rank}] Warning: failed to copy metadata file {fname} to {rank_output_dir}")
 
+    # Post-process model_config.yaml inside each rank so that padded_vocab_size
+    # reflects the per-rank padded vocab (not the combined padded vocab).
+    cfg_path = rank_output_dir / "model_config.yaml"
+    if cfg_path.exists():
+        try:
+            # Read file and replace padded_vocab_size line with per-rank value
+            text = cfg_path.read_text()
+            # Find existing padded_vocab_size value in the root checkpoint (if present)
+            # and compute per-rank padded vocab. Fall back to dividing vocab_size
+            # if padded_vocab_size is missing.
+            combined_padded = None
+            for line in text.splitlines():
+                if line.strip().startswith("padded_vocab_size:"):
+                    try:
+                        combined_padded = int(line.split(":", 1)[1].strip())
+                    except Exception:
+                        combined_padded = None
+                    break
+
+            if combined_padded is None:
+                # Try to infer from vocab_size
+                for line in text.splitlines():
+                    if line.strip().startswith("vocab_size:"):
+                        try:
+                            vocab_sz = int(line.split(":", 1)[1].strip())
+                            # pad up to nearest padding_multiple if present
+                            combined_padded = vocab_sz
+                        except Exception:
+                            combined_padded = None
+                        break
+
+            if combined_padded is not None:
+                if combined_padded % world_size != 0:
+                    SafePrinter.print(f"[Rank {rank}] Warning: combined padded_vocab_size {combined_padded} not divisible by world_size {world_size}; computed per-rank will be floor division")
+                per_rank = combined_padded // world_size
+                # Replace the line (simple text replace to avoid extra deps)
+                new_lines = []
+                replaced = False
+                for line in text.splitlines():
+                    if line.strip().startswith("padded_vocab_size:"):
+                        indent = line[: line.index("p")]
+                        new_lines.append(f"{indent}padded_vocab_size: {per_rank}")
+                        replaced = True
+                    else:
+                        new_lines.append(line)
+                if not replaced:
+                    # append at end
+                    new_lines.append(f"padded_vocab_size: {per_rank}")
+                cfg_path.write_text("\n".join(new_lines) + "\n")
+                SafePrinter.print(f"[Rank {rank}] Wrote per-rank padded_vocab_size={per_rank} into {cfg_path}")
+        except Exception as e:
+            SafePrinter.print(f"[Rank {rank}] Warning: failed to update model_config.yaml: {e}")
+
     # Only rank 0 copies metadata to the root and creates tp_index.json
     if rank == 0:
         for fname in metadata_files:
