@@ -121,18 +121,15 @@ def get_shard_indices(
     """
     
     # Don't shard: embeddings, norms, routers, gate
-    # Note: `lm_head` must be sharded across the vocab (out) dimension to
-    # produce TP-consistent checkpoints. Previously lm_head was excluded here
-    # which led to full, unsharded lm_head tensors ending up in shards.
-    # Conversely, the gating linear (`*.mlp.gate.weight`) should be replicated
-    # across ranks because the model constructs a full gate linear layer
-    # (`nn.Linear(..., n_expert)`) on each rank. Replicating gate ensures the
-    # model and checkpoint shapes match.
+    # Note: lm_head must be sharded across the vocab (out) dimension to produce
+    # TP-consistent checkpoints. The gating linear (*.mlp.gate.weight) should be
+    # replicated across ranks because the model constructs a full gate linear layer
+    # on each rank. Replicating gate ensures the model and checkpoint shapes match.
     if any(x in key for x in ["embed", "norm", "router", "gate"]):
         return None
     
-    # MoE biases MUST be checked BEFORE generic 1D bias handling
-    # because MoE biases are 2D: (n_experts, intermediate)
+    # MoE biases are 2D (n_experts, intermediate), unlike standard 1D biases.
+    # Process them before generic bias handling.
     if "mlp" in key and key.endswith("bias") and weight_ndim == 2:
         # mlp1_bias: (n_experts, 2*intermediate) -> shard dim 1
         # mlp2_bias: (n_experts, hidden) -> replicated (don't shard)
@@ -146,15 +143,13 @@ def get_shard_indices(
             # mlp2_bias, gate.weight, or other MoE 2D tensors are replicated
             return None
     
-    # Special handling for 1D biases (NOT MoE biases which are 2D)
-    # Use orig_ndim (actual tensor dim) not weight_ndim (reference shape dim),
-    # since biases are often matched to 2D weight references but are themselves 1D.
+    # Special handling for 1D biases (not MoE biases which are 2D).
+    # For 1D biases, compute shard indices based on the corresponding weight tensor
+    # to ensure bias slicing is consistent with weight sharding.
     if key.endswith(".bias") and orig_ndim == 1:
         out_size = weight_shape[0]
-        # If this bias corresponds to a transposed proj (e.g. '*.proj.bias') the
-        # runtime expects the sharding to follow the swapped inner/outer groups
-        # (same rule we apply for the corresponding weight). Detect that case
-        # and shard using the inner mesh axis instead of the outer one.
+    # Transposed projections (e.g., attention output layers) use swapped inner/outer groups
+    # for sharding. Detect and handle these cases accordingly.
         transpose_like_bias = ".proj.bias" in key or key.endswith(".proj.bias")
         if transpose_like_bias:
             start, end = _shard_range(out_size, inner_size, inner_rank)
@@ -162,20 +157,20 @@ def get_shard_indices(
             start, end = _shard_range(out_size, outer_size, outer_rank)
         return (0, start, end)
     
-    # Sinks tensor: (n_head, 1, 1) -> shard along head dimension (dim 0)
-    # Used by GPT-OSS attention for sliding-window sink tokens
+    # Sinks tensor (n_query_groups, 1, 1): shard along query groups dimension (dim 0).
+    # Used by GPT-OSS attention for sliding-window mechanisms. Sinks stores per-query-group
+    # values, so sharding must be based on n_query_groups, not n_head.
     if key.endswith(".sinks") and weight_ndim == 3:
-        n_head = weight_shape[0]
-        shard_size = n_head // world_size
-        if n_head % world_size != 0:
-            raise ValueError(f"Cannot evenly shard {key} dim 0 (n_head={n_head}) across {world_size} ranks")
+        n_query_groups = weight_shape[0]
+        shard_size = n_query_groups // world_size
+        if n_query_groups % world_size != 0:
+            raise ValueError(f"Cannot evenly shard {key} dim 0 (n_query_groups={n_query_groups}) across {world_size} ranks")
         return (0, rank * shard_size, (rank + 1) * shard_size)
     
-    # MoE weights (GPT-OSS MoE) - 3D tensors
-    if "mlp" in key and weight_ndim == 3:  # [n_experts, d1, d2]
-        # GPT-OSS MoE:
-        # mlp1_weight: (n_experts, 2*intermediate, hidden) -> shard intermediate (dim 1)
-        # mlp2_weight: (n_experts, hidden, intermediate) -> shard intermediate (dim 2)
+    # MoE weights (3D tensors): shard along model-parallel dimension
+    # mlp1_weight: (n_experts, 2*intermediate, hidden) -> shard dim 1 (intermediate)
+    # mlp2_weight: (n_experts, hidden, intermediate) -> shard dim 2 (intermediate)
+    if "mlp" in key and weight_ndim == 3:
         if "mlp1_weight" in key:
             d = 1  # shard the 2*intermediate dimension
         elif "mlp2_weight" in key:
@@ -190,22 +185,8 @@ def get_shard_indices(
             raise ValueError(f"Cannot evenly shard {key} dim {d} (size {size}) across {world_size} ranks")
         return (d, rank * shard_size, (rank + 1) * shard_size)
     
-    # Linear weights [out, in] -> shard out (dim 0) and in (dim 1)
-    if weight_ndim == 2:
-        out_size = weight_shape[0]
-        in_size = weight_shape[1]
-        # Some TPLinear instances are created with `transpose=True` in the
-        # model (for example attention/MMLP `*.proj` layers). When
-        # `transpose=True` the runtime swaps inner/outer groups which means
-        # the expected on-disk sharding for that weight is the opposite of
-        # the default assumption. Detect those keys and swap the shard
-        # computation accordingly so the produced shards match the loader
-        # expectation.
-        transpose_like = ".proj.weight" in key or key.endswith(".proj.weight")
-        if transpose_like:
-            # Swap the roles of inner/outer when computing shards:
-            # - out dimension is sharded using `inner_size` / `inner_rank`
-            # - in dimension is sharded using `outer_size` / `outer_rank`
+    # Linear weights: shard both output (dim 0) and input (dim 1) dimensions.
+    # Handle transposed projections which use swapped inner/outer mesh dimensions.
             out_start, out_end = _shard_range(out_size, inner_size, inner_rank)
             in_start, in_end = _shard_range(in_size, outer_size, outer_rank)
         else:
@@ -499,9 +480,9 @@ def create_tp_checkpoint(
                 config['n_head'] = config['n_head'] // world_size
             if 'n_query_groups' in config and config['n_query_groups'] % world_size == 0:
                 config['n_query_groups'] = config['n_query_groups'] // world_size
-            if 'head_size' in config and 'n_embd' in config:
-                # Recompute head_size based on new n_head
-                config['head_size'] = config['n_embd'] // config['n_head']
+            # NOTE: head_size should NOT be recomputed. It remains the same after TP.
+            # The formula head_size = n_embd / n_head is only for initialization, 
+            # not for TP sharding. After dividing n_head, we still use the same head_size.
             
             # Write back
             with open(cfg_path, 'w') as f:
