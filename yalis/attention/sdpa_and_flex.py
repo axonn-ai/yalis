@@ -255,9 +255,16 @@ def rotary_kv_update_sdpa_gen_gptoss(
     if use_intra_head_parallelism:
         assert not use_flex, "GPT-OSS helper does not support flex attention"
         q = Drop.apply(q, process_group).contiguous()
-        # Also apply Drop to sinks if provided, since sinks is per-head
+        # Also apply Drop to sinks if provided, since sinks is per-head.
+        # Drop semantics vary by tensor rank; explicitly expand sinks to
+        # (1, n_head, 1, 1) and drop along dim=1 (head dim) so the
+        # resulting sinks matches the reduced per-inner-rank head count.
         if sinks is not None:
-            sinks = Drop.apply(sinks, process_group).contiguous()
+            S = sinks.view(1, -1, 1, 1)
+            S = Drop.apply(S, process_group, 1).contiguous()
+            # keep sinks in the expanded 4D form so downstream code can
+            # use it directly when concatenating with QK
+            sinks = S
 
     # Apply RoPE to Q and K
     # For PREFILL (T > 1): use cos/sin[:T] directly (positions 0 to T-1)
@@ -418,6 +425,9 @@ def rotary_kv_update_sdpa_gen_gptoss(
     if sinks is not None:
         # sinks shape: (n_head, 1, 1) -> reshape to (1, n_head, 1, 1) for broadcasting
         S = sinks.view(1, -1, 1, 1)
+        # Diagnostic sanity check: if shapes are incompatible, log sizes
+        if S.size(1) != h:
+            print(f"[sinks-debug] S.shape={tuple(S.shape)}, h={h}, n_q={n_q}")
         QK = torch.cat([QK, S.expand(B, h, n_q, 1)], dim=-1)
 
     if use_intra_head_parallelism:
