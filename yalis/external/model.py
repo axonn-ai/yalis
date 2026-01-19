@@ -180,13 +180,12 @@ class GPT(nn.Module):
 
         # Debug: print input token stats right before embedding lookup
         try:
-            print(
-                f"[model-debug-input] input_ids_shape={tuple(idx.shape)}, min={int(idx.min().item())}, max={int(idx.max().item())}, sample={idx[:, :8].cpu().numpy()}",
-                flush=True,
-            )
+            # Avoid .item()/.numpy() to prevent torchdynamo graph breaks inside
+            # compiled frames. Print tensor objects and shapes instead.
+            print("[model-debug-input] input_ids_shape=", tuple(idx.shape), ", min=", idx.min(), ", max=", idx.max(), ", sample=", idx[:, :8], flush=True)
         except Exception:
             try:
-                print(f"[model-debug-input] input_ids_shape={tuple(idx.shape)} (unable to read min/max/sample)", flush=True)
+                print("[model-debug-input] input_ids_shape=", tuple(idx.shape), "(unable to read min/max/sample)", flush=True)
             except Exception:
                 print("[model-debug-input] unable to introspect input ids", flush=True)
 
