@@ -27,20 +27,6 @@ def index_into_rope_cache_gen(
 ) -> torch.Tensor:
     # index - [B, T]
     assert index.dim() == 1, "this method is only for the generation phase"
-    # Debug: print index range before performing index_select to help
-    # diagnose out-of-bounds errors that result in CUDA asserts.
-    try:
-        # Avoid extracting Python scalars (.item()) inside compiled code to
-        # prevent torchdynamo graph breaks. Print tensor objects instead.
-        idx_min_t = index.min()
-        idx_max_t = index.max()
-        cache_len = cache.size(0)
-        print("[sdpa-debug-rope-index] index_min=", idx_min_t, "index_max=", idx_max_t, "cache_len=", cache_len, flush=True, file=sys.stderr)
-        # Note: we still can't reliably compare to Python ints here without
-        # causing graph breaks, but this print will show if values look wrong.
-    except Exception:
-        print("[sdpa-debug-rope-index] unable to read index min/max (index shape=", tuple(index.shape), ")", flush=True, file=sys.stderr)
-
     return torch.index_select(
         cache,
         0,
@@ -277,12 +263,7 @@ def rotary_kv_update_sdpa_gen_gptoss(
         # resulting sinks matches the reduced per-inner-rank head count.
         if sinks is not None:
             S = sinks.view(1, -1, 1, 1)
-            print(f"[sinks-debug] before Drop: S.shape={tuple(S.shape)}, process_group={process_group}", flush=True)
             S_dropped = Drop.apply(S, process_group, 1)
-            try:
-                print(f"[sinks-debug] after Drop: S.shape={tuple(S_dropped.shape)}", flush=True)
-            except Exception:
-                print(f"[sinks-debug] after Drop: S has no .shape attribute", flush=True)
             S = S_dropped.contiguous()
             # keep sinks in the expanded 4D form so downstream code can
             # use it directly when concatenating with QK
@@ -321,7 +302,6 @@ def rotary_kv_update_sdpa_gen_gptoss(
             start_idx = tp_rank * n_head_per_rank
             end_idx = start_idx + n_head_per_rank
             sinks = sinks[start_idx:end_idx]
-            print(f"[sinks-debug] TP slice: rank={tp_rank}, size={tp_size}, full_shape=({n_head_global}, 1, 1) -> local shape={tuple(sinks.shape)}", flush=True)
 
     # Apply RoPE to Q and K
     # For PREFILL (T > 1): use cos/sin[:T] directly (positions 0 to T-1)
@@ -361,14 +341,7 @@ def rotary_kv_update_sdpa_gen_gptoss(
         # DECODE: single token
         b_indices = torch.arange(B, device=k_cache.device)
         t_indices = token_counter[:B].view(-1)
-        # Extra diagnostics: print token indices and cache shape before writing
-        try:
-            t_min = t_indices.min()
-            t_max = t_indices.max()
-            print("[sdpa-debug-write-cache] B=", B, ", t_indices_min=", t_min, ", t_indices_max=", t_max, ", k_cache_tmax=", k_cache.size(-2), ", k_cache_shape=", tuple(k_cache.shape), flush=True, file=sys.stderr)
-            torch.cuda.synchronize()
-        except Exception as e:
-            print("[sdpa-debug-write-cache] sync/error:", e, flush=True, file=sys.stderr)
+        
 
         if use_intra_head_parallelism:
             k_cache[b_indices, :, t_indices, :] = Drop.apply(
@@ -490,10 +463,12 @@ def rotary_kv_update_sdpa_gen_gptoss(
     if sinks is not None:
         # sinks shape: (n_head_local, 1, 1) -> reshape to (1, n_head_local, 1, 1) for broadcasting
         S = sinks.view(1, -1, 1, 1)
-        print(f"[sinks-debug] concat: S.shape={tuple(S.shape)}, h={h}, n_q={n_q}, use_intra={use_intra_head_parallelism}", flush=True)
+        # Concatenate per-head sink logits without emitting runtime logs
+        # to avoid incurring overhead in performance-critical code paths.
         # Diagnostic sanity check: if shapes are incompatible, log sizes
         if S.size(1) != h:
-            print(f"[sinks-debug] MISMATCH S.shape={tuple(S.shape)}, h={h}, n_q={n_q}", flush=True)
+            # silently allow mismatch in production; retain behavior without logging
+            pass
         # expand sinks to (B, h, n_q, 1) for concatenation with QK
         S_expanded = S.expand((B, h, n_q, 1))
         QK = torch.cat([QK, S_expanded], dim=-1)
@@ -594,16 +569,7 @@ def rotary_kv_update_sdpa_multi(
         index_rotary = index_pos.view(B, 1, T, 1).expand(B, 1, T, hs)
         cos = cos[None, None, :, :].expand(B, 1, t_max, hs)
         sin = sin[None, None, :, :].expand(B, 1, t_max, hs)
-        # Debug: check indices before gather to avoid device-side assert
-        idx_min_t = index_pos.min()
-        idx_max_t = index_pos.max()
-        print("[sdpa-debug-multi] B=", B, ", nh=", nh, ", T=", T, ", t_max=", t_max, ", index_pos_min=", idx_min_t, ", index_pos_max=", idx_max_t, flush=True, file=sys.stderr)
-        # print a small sample of index_pos as a tensor (avoids .cpu().numpy())
-        print("[sdpa-debug-multi] index_pos sample=", index_pos.view(-1)[:8], flush=True, file=sys.stderr)
-        try:
-            torch.cuda.synchronize()
-        except Exception as e:
-            print("[sdpa-debug-multi] pre-gather sync/error:", e, flush=True, file=sys.stderr)
+        
         cos = torch.gather(cos, dim=2, index=index_rotary)
         sin = torch.gather(sin, dim=2, index=index_rotary)
 
@@ -620,14 +586,7 @@ def rotary_kv_update_sdpa_multi(
         q, k = roped_tensors
 
     index_kv = index_pos.view(B, 1, T, 1).expand(B, nh, T, hs)
-    # Debug: check scatter indices
-    idx_min_t = index_pos.min()
-    idx_max_t = index_pos.max()
-    print("[sdpa-debug-scatter] index_pos_min=", idx_min_t, ", index_pos_max=", idx_max_t, ", k_cache_tmax=", k_cache.size(-2), flush=True, file=sys.stderr)
-    try:
-        torch.cuda.synchronize()
-    except Exception as e:
-        print(f"[sdpa-debug-scatter] pre-scatter sync/error: {e}", flush=True, file=sys.stderr)
+    
     k_cache[:B].scatter_(dim=2, index=index_kv, src=k.to(k_cache.dtype))
     v_cache[:B].scatter_(dim=2, index=index_kv, src=v.to(v_cache.dtype))
 
