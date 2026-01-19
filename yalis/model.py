@@ -49,7 +49,17 @@ def get_model(
         model = GPT(config).to(model_dtype)
 
     if not random_init:
-        checkpoint_path = checkpoint_dir / "yalis_checkpoints"
+        # For TP inference, load from rank-specific directory if available
+        if tensor_parallel:
+            tp_checkpoint_path = checkpoint_dir / "yalis_checkpoints_tp" / f"rank_{dist.get_rank()}" / "yalis_checkpoints"
+            if os.path.exists(tp_checkpoint_path):
+                checkpoint_path = tp_checkpoint_path
+            else:
+                # Fall back to standard unsharded checkpoint
+                checkpoint_path = checkpoint_dir / "yalis_checkpoints"
+        else:
+            checkpoint_path = checkpoint_dir / "yalis_checkpoints"
+        
         if os.path.exists(checkpoint_path):
             load_checkpoint_safetensors(model, checkpoint_path)
         else:
