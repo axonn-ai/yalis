@@ -120,12 +120,12 @@ def get_shard_indices(
         None if replicated
     """
     
-    # Don't shard: embeddings, norms, routers, gate
-    # Note: lm_head must be sharded across the vocab (out) dimension to produce
-    # TP-consistent checkpoints. The gating linear (*.mlp.gate.weight) should be
-    # replicated across ranks because the model constructs a full gate linear layer
-    # on each rank. Replicating gate ensures the model and checkpoint shapes match.
-    if any(x in key for x in ["embed", "norm", "router", "gate"]):
+    # Don't shard: embeddings, norms, routers, gate, lm_head
+    # Embeddings (vocab → hidden): all ranks need full vocab for all token IDs
+    # LM head (hidden → vocab): all ranks compute full logits, then sync if needed
+    # Gate: replicated because model constructs full gate on each rank
+    # These are replicated (identical) across all ranks in the checkpoint.
+    if any(x in key for x in ["embed", "norm", "router", "gate", "lm_head"]):
         return None
     
     # MoE biases are 2D (n_experts, intermediate), unlike standard 1D biases.
