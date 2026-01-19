@@ -157,14 +157,13 @@ def get_shard_indices(
             start, end = _shard_range(out_size, outer_size, outer_rank)
         return (0, start, end)
     
-    # Sinks tensor (n_query_groups, 1, 1): shard along query groups dimension (dim 0).
-    # Used by GPT-OSS attention for sliding-window mechanisms. Sinks stores per-query-group
-    # values, so sharding must be based on n_query_groups, not n_head.
+    # Sinks tensor (n_head, 1, 1): shard along head dimension (dim 0).
+    # Used by GPT-OSS attention for sliding-window mechanisms.
     if key.endswith(".sinks") and weight_ndim == 3:
-        n_query_groups = weight_shape[0]
-        shard_size = n_query_groups // world_size
-        if n_query_groups % world_size != 0:
-            raise ValueError(f"Cannot evenly shard {key} dim 0 (n_query_groups={n_query_groups}) across {world_size} ranks")
+        n_head = weight_shape[0]
+        shard_size = n_head // world_size
+        if n_head % world_size != 0:
+            raise ValueError(f"Cannot evenly shard {key} dim 0 (n_head={n_head}) across {world_size} ranks")
         return (0, rank * shard_size, (rank + 1) * shard_size)
     
     # MoE weights (3D tensors): shard along model-parallel dimension

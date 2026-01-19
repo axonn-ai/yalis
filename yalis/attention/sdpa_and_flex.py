@@ -255,6 +255,9 @@ def rotary_kv_update_sdpa_gen_gptoss(
     if use_intra_head_parallelism:
         assert not use_flex, "GPT-OSS helper does not support flex attention"
         q = Drop.apply(q, process_group).contiguous()
+        # Also apply Drop to sinks if provided, since sinks is per-head
+        if sinks is not None:
+            sinks = Drop.apply(sinks, process_group).contiguous()
 
     # Apply RoPE to Q and K
     # For PREFILL (T > 1): use cos/sin[:T] directly (positions 0 to T-1)
