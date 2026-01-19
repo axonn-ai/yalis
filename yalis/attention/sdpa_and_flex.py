@@ -535,11 +535,10 @@ def rotary_kv_update_sdpa_multi(
         cos = cos[None, None, :, :].expand(B, 1, t_max, hs)
         sin = sin[None, None, :, :].expand(B, 1, t_max, hs)
         # Debug: check indices before gather to avoid device-side assert
-        if os.environ.get("YALIS_SDPA_DEBUG", "0") == "1":
-            idx_min = int(index_pos.min().item())
-            idx_max = int(index_pos.max().item())
-            print(f"[sdpa-debug-multi] B={B}, nh={nh}, T={T}, t_max={t_max}, index_pos_min={idx_min}, index_pos_max={idx_max}")
-            print(f"[sdpa-debug-multi] index_pos sample={index_pos.view(-1)[:8].cpu().numpy()}")
+        idx_min = int(index_pos.min().item())
+        idx_max = int(index_pos.max().item())
+        print(f"[sdpa-debug-multi] B={B}, nh={nh}, T={T}, t_max={t_max}, index_pos_min={idx_min}, index_pos_max={idx_max}")
+        print(f"[sdpa-debug-multi] index_pos sample={index_pos.view(-1)[:8].cpu().numpy()}")
         cos = torch.gather(cos, dim=2, index=index_rotary)
         sin = torch.gather(sin, dim=2, index=index_rotary)
 
@@ -557,10 +556,9 @@ def rotary_kv_update_sdpa_multi(
 
     index_kv = index_pos.view(B, 1, T, 1).expand(B, nh, T, hs)
     # Debug: check scatter indices
-    if os.environ.get("YALIS_SDPA_DEBUG", "0") == "1":
-        idx_min = int(index_pos.min().item())
-        idx_max = int(index_pos.max().item())
-        print(f"[sdpa-debug-scatter] index_pos_min={idx_min}, index_pos_max={idx_max}, k_cache_tmax={k_cache.size(-2)}")
+    idx_min = int(index_pos.min().item())
+    idx_max = int(index_pos.max().item())
+    print(f"[sdpa-debug-scatter] index_pos_min={idx_min}, index_pos_max={idx_max}, k_cache_tmax={k_cache.size(-2)}")
     k_cache[:B].scatter_(dim=2, index=index_kv, src=k.to(k_cache.dtype))
     v_cache[:B].scatter_(dim=2, index=index_kv, src=v.to(v_cache.dtype))
 
