@@ -260,7 +260,7 @@ def rotary_kv_update_sdpa_gen_gptoss(
         # Drop semantics vary by tensor rank; explicitly expand sinks to
         # (1, n_head, 1, 1) and drop along dim=1 (head dim) so the
         # resulting sinks matches the reduced per-inner-rank head count.
-            if sinks is not None:
+        if sinks is not None:
             S = sinks.view(1, -1, 1, 1)
             print(f"[sinks-debug] before Drop: S.shape={tuple(S.shape)}, process_group={process_group}", flush=True)
             S_dropped = Drop.apply(S, process_group, 1)
