@@ -1,5 +1,6 @@
 import math
 from typing import Optional
+import os
 
 import torch
 import torch.distributed as dist
@@ -261,7 +262,15 @@ def rotary_kv_update_sdpa_gen_gptoss(
         # resulting sinks matches the reduced per-inner-rank head count.
         if sinks is not None:
             S = sinks.view(1, -1, 1, 1)
-            S = Drop.apply(S, process_group, 1).contiguous()
+            if os.environ.get("YALIS_SINKS_DEBUG", "0") == "1":
+                print(f"[sinks-debug] before Drop: S.shape={tuple(S.shape)}, process_group={process_group}")
+            S_dropped = Drop.apply(S, process_group, 1)
+            if os.environ.get("YALIS_SINKS_DEBUG", "0") == "1":
+                try:
+                    print(f"[sinks-debug] after Drop: S.shape={tuple(S_dropped.shape)}")
+                except Exception:
+                    print(f"[sinks-debug] after Drop: S has no .shape attribute")
+            S = S_dropped.contiguous()
             # keep sinks in the expanded 4D form so downstream code can
             # use it directly when concatenating with QK
             sinks = S
@@ -425,9 +434,12 @@ def rotary_kv_update_sdpa_gen_gptoss(
     if sinks is not None:
         # sinks shape: (n_head, 1, 1) -> reshape to (1, n_head, 1, 1) for broadcasting
         S = sinks.view(1, -1, 1, 1)
+        # Optional diagnostic logging for sinks behavior
+        if os.environ.get("YALIS_SINKS_DEBUG", "0") == "1":
+            print(f"[sinks-debug] concat: S.shape={tuple(S.shape)}, h={h}, n_q={n_q}, use_intra={use_intra_head_parallelism}")
         # Diagnostic sanity check: if shapes are incompatible, log sizes
         if S.size(1) != h:
-            print(f"[sinks-debug] S.shape={tuple(S.shape)}, h={h}, n_q={n_q}")
+            print(f"[sinks-debug] MISMATCH S.shape={tuple(S.shape)}, h={h}, n_q={n_q}")
         QK = torch.cat([QK, S.expand(B, h, n_q, 1)], dim=-1)
 
     if use_intra_head_parallelism:
@@ -526,6 +538,12 @@ def rotary_kv_update_sdpa_multi(
         index_rotary = index_pos.view(B, 1, T, 1).expand(B, 1, T, hs)
         cos = cos[None, None, :, :].expand(B, 1, t_max, hs)
         sin = sin[None, None, :, :].expand(B, 1, t_max, hs)
+        # Debug: check indices before gather to avoid device-side assert
+        if os.environ.get("YALIS_SDPA_DEBUG", "0") == "1":
+            idx_min = int(index_pos.min().item())
+            idx_max = int(index_pos.max().item())
+            print(f"[sdpa-debug-multi] B={B}, nh={nh}, T={T}, t_max={t_max}, index_pos_min={idx_min}, index_pos_max={idx_max}")
+            print(f"[sdpa-debug-multi] index_pos sample={index_pos.view(-1)[:8].cpu().numpy()}")
         cos = torch.gather(cos, dim=2, index=index_rotary)
         sin = torch.gather(sin, dim=2, index=index_rotary)
 
@@ -542,6 +560,11 @@ def rotary_kv_update_sdpa_multi(
         q, k = roped_tensors
 
     index_kv = index_pos.view(B, 1, T, 1).expand(B, nh, T, hs)
+    # Debug: check scatter indices
+    if os.environ.get("YALIS_SDPA_DEBUG", "0") == "1":
+        idx_min = int(index_pos.min().item())
+        idx_max = int(index_pos.max().item())
+        print(f"[sdpa-debug-scatter] index_pos_min={idx_min}, index_pos_max={idx_max}, k_cache_tmax={k_cache.size(-2)}")
     k_cache[:B].scatter_(dim=2, index=index_kv, src=k.to(k_cache.dtype))
     v_cache[:B].scatter_(dim=2, index=index_kv, src=v.to(v_cache.dtype))
 
