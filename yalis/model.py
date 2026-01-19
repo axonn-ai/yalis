@@ -32,7 +32,18 @@ def get_model(
     print(f"Using {litgpt_checkpoint_directory} as checkpoint directory with dtype {model_dtype}")
     checkpoint_dir = Path(litgpt_checkpoint_directory)
 
-    config = Config.from_file(checkpoint_dir / "model_config.yaml")
+    # For TP inference, load config from rank-specific directory if available
+    config_path = checkpoint_dir / "model_config.yaml"
+    checkpoint_path = checkpoint_dir / "yalis_checkpoints"
+    
+    if tensor_parallel:
+        tp_checkpoint_path = checkpoint_dir / "yalis_checkpoints_tp" / f"rank_{dist.get_rank()}" / "yalis_checkpoints"
+        tp_config_path = checkpoint_dir / "yalis_checkpoints_tp" / "model_config.yaml"
+        if os.path.exists(tp_checkpoint_path) and os.path.exists(tp_config_path):
+            config_path = tp_config_path
+            checkpoint_path = tp_checkpoint_path
+
+    config = Config.from_file(config_path)
     if max_sequence_length is not None:
         assert (
             max_sequence_length <= config.block_size
@@ -49,17 +60,6 @@ def get_model(
         model = GPT(config).to(model_dtype)
 
     if not random_init:
-        # For TP inference, load from rank-specific directory if available
-        if tensor_parallel:
-            tp_checkpoint_path = checkpoint_dir / "yalis_checkpoints_tp" / f"rank_{dist.get_rank()}" / "yalis_checkpoints"
-            if os.path.exists(tp_checkpoint_path):
-                checkpoint_path = tp_checkpoint_path
-            else:
-                # Fall back to standard unsharded checkpoint
-                checkpoint_path = checkpoint_dir / "yalis_checkpoints"
-        else:
-            checkpoint_path = checkpoint_dir / "yalis_checkpoints"
-        
         if os.path.exists(checkpoint_path):
             load_checkpoint_safetensors(model, checkpoint_path)
         else:
