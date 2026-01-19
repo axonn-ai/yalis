@@ -40,9 +40,16 @@ def get_model(
     if tensor_parallel:
         tp_checkpoint_path = checkpoint_dir / "yalis_checkpoints_tp" / f"rank_{dist.get_rank()}" / "yalis_checkpoints"
         tp_config_path = checkpoint_dir / "yalis_checkpoints_tp" / "model_config.yaml"
-        if os.path.exists(tp_checkpoint_path) and os.path.exists(tp_config_path):
+        tp_cp_exists = os.path.exists(tp_checkpoint_path)
+        tp_cfg_exists = os.path.exists(tp_config_path)
+        if dist.get_rank() == 0:
+            print(f"[TP DEBUG] tp_checkpoint_path={tp_checkpoint_path} exists={tp_cp_exists}")
+            print(f"[TP DEBUG] tp_config_path={tp_config_path} exists={tp_cfg_exists}")
+        if tp_cp_exists and tp_cfg_exists:
             config_path = tp_config_path
             checkpoint_path = tp_checkpoint_path
+            if dist.get_rank() == 0:
+                print(f"[TP DEBUG] Using TP config and checkpoint")
 
     config = Config.from_file(config_path)
     if max_sequence_length is not None:
