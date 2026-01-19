@@ -260,14 +260,14 @@ def rotary_kv_update_sdpa_gen_gptoss(
         # Drop semantics vary by tensor rank; explicitly expand sinks to
         # (1, n_head, 1, 1) and drop along dim=1 (head dim) so the
         # resulting sinks matches the reduced per-inner-rank head count.
-        if sinks is not None:
+            if sinks is not None:
             S = sinks.view(1, -1, 1, 1)
-            print(f"[sinks-debug] before Drop: S.shape={tuple(S.shape)}, process_group={process_group}")
+            print(f"[sinks-debug] before Drop: S.shape={tuple(S.shape)}, process_group={process_group}", flush=True)
             S_dropped = Drop.apply(S, process_group, 1)
             try:
-                print(f"[sinks-debug] after Drop: S.shape={tuple(S_dropped.shape)}")
+                print(f"[sinks-debug] after Drop: S.shape={tuple(S_dropped.shape)}", flush=True)
             except Exception:
-                print(f"[sinks-debug] after Drop: S has no .shape attribute")
+                print(f"[sinks-debug] after Drop: S has no .shape attribute", flush=True)
             S = S_dropped.contiguous()
             # keep sinks in the expanded 4D form so downstream code can
             # use it directly when concatenating with QK
@@ -432,10 +432,10 @@ def rotary_kv_update_sdpa_gen_gptoss(
     if sinks is not None:
         # sinks shape: (n_head, 1, 1) -> reshape to (1, n_head, 1, 1) for broadcasting
         S = sinks.view(1, -1, 1, 1)
-        print(f"[sinks-debug] concat: S.shape={tuple(S.shape)}, h={h}, n_q={n_q}, use_intra={use_intra_head_parallelism}")
+        print(f"[sinks-debug] concat: S.shape={tuple(S.shape)}, h={h}, n_q={n_q}, use_intra={use_intra_head_parallelism}", flush=True)
         # Diagnostic sanity check: if shapes are incompatible, log sizes
         if S.size(1) != h:
-            print(f"[sinks-debug] MISMATCH S.shape={tuple(S.shape)}, h={h}, n_q={n_q}")
+            print(f"[sinks-debug] MISMATCH S.shape={tuple(S.shape)}, h={h}, n_q={n_q}", flush=True)
         QK = torch.cat([QK, S.expand(B, h, n_q, 1)], dim=-1)
 
     if use_intra_head_parallelism:
@@ -537,8 +537,8 @@ def rotary_kv_update_sdpa_multi(
         # Debug: check indices before gather to avoid device-side assert
         idx_min = int(index_pos.min().item())
         idx_max = int(index_pos.max().item())
-        print(f"[sdpa-debug-multi] B={B}, nh={nh}, T={T}, t_max={t_max}, index_pos_min={idx_min}, index_pos_max={idx_max}")
-        print(f"[sdpa-debug-multi] index_pos sample={index_pos.view(-1)[:8].cpu().numpy()}")
+        print(f"[sdpa-debug-multi] B={B}, nh={nh}, T={T}, t_max={t_max}, index_pos_min={idx_min}, index_pos_max={idx_max}", flush=True)
+        print(f"[sdpa-debug-multi] index_pos sample={index_pos.view(-1)[:8].cpu().numpy()}", flush=True)
         cos = torch.gather(cos, dim=2, index=index_rotary)
         sin = torch.gather(sin, dim=2, index=index_rotary)
 
@@ -558,7 +558,7 @@ def rotary_kv_update_sdpa_multi(
     # Debug: check scatter indices
     idx_min = int(index_pos.min().item())
     idx_max = int(index_pos.max().item())
-    print(f"[sdpa-debug-scatter] index_pos_min={idx_min}, index_pos_max={idx_max}, k_cache_tmax={k_cache.size(-2)}")
+    print(f"[sdpa-debug-scatter] index_pos_min={idx_min}, index_pos_max={idx_max}, k_cache_tmax={k_cache.size(-2)}", flush=True)
     k_cache[:B].scatter_(dim=2, index=index_kv, src=k.to(k_cache.dtype))
     v_cache[:B].scatter_(dim=2, index=index_kv, src=v.to(v_cache.dtype))
 
