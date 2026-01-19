@@ -287,6 +287,22 @@ def rotary_kv_update_sdpa_gen_gptoss(
             # keep sinks in the expanded 4D form so downstream code can
             # use it directly when concatenating with QK
             sinks = S
+    else:
+        # When not using intra-head parallelism but tensor parallelism is active,
+        # sinks is still full-model-size (n_head_global, 1, 1) from Block initialization.
+        # We need to slice it to match the per-rank head count (nh).
+        # Determine per-rank head count from q shape
+        if sinks is not None and ax.is_initialized():
+            tp_rank = ax.config.G_intra_r_rank
+            tp_size = ax.config.G_intra_r
+            n_head_global = sinks.size(0)
+            n_head_per_rank = n_head_global // tp_size
+            
+            # Slice sinks to get only the heads for this rank
+            start_idx = tp_rank * n_head_per_rank
+            end_idx = start_idx + n_head_per_rank
+            sinks = sinks[start_idx:end_idx]
+            print(f"[sinks-debug] TP slice: rank={tp_rank}, size={tp_size}, full_shape=({n_head_global}, 1, 1) -> local shape={tuple(sinks.shape)}", flush=True)
 
     # Apply RoPE to Q and K
     # For PREFILL (T > 1): use cos/sin[:T] directly (positions 0 to T-1)
@@ -453,13 +469,15 @@ def rotary_kv_update_sdpa_gen_gptoss(
     # sinks is (n_head, 1, 1) and matches the query head count
     # QK is (B, h, n_q, n_k) where h is the number of query heads
     if sinks is not None:
-        # sinks shape: (n_head, 1, 1) -> reshape to (1, n_head, 1, 1) for broadcasting
+        # sinks shape: (n_head_local, 1, 1) -> reshape to (1, n_head_local, 1, 1) for broadcasting
         S = sinks.view(1, -1, 1, 1)
         print(f"[sinks-debug] concat: S.shape={tuple(S.shape)}, h={h}, n_q={n_q}, use_intra={use_intra_head_parallelism}", flush=True)
         # Diagnostic sanity check: if shapes are incompatible, log sizes
         if S.size(1) != h:
             print(f"[sinks-debug] MISMATCH S.shape={tuple(S.shape)}, h={h}, n_q={n_q}", flush=True)
-        QK = torch.cat([QK, S.expand(B, h, n_q, 1)], dim=-1)
+        # expand sinks to (B, h, n_q, 1) for concatenation with QK
+        S_expanded = S.expand((B, h, n_q, 1))
+        QK = torch.cat([QK, S_expanded], dim=-1)
 
     if use_intra_head_parallelism:
         dist.all_reduce(QK, op=dist.ReduceOp.SUM, group=process_group)

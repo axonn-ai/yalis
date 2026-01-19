@@ -470,10 +470,13 @@ def create_tp_checkpoint(
                 SafePrinter.print(f"[Rank {rank}] Warning: failed to copy metadata file {fname} to {rank_output_dir}")
 
     # Post-process model_config.yaml inside each rank so that:
-    # 1. padded_vocab_size reflects the per-rank padded vocab (not combined)
-    # 2. n_head, head_size, and n_query_groups are divided by world_size for TP
-    # IMPORTANT: vocab_size must remain the FULL unpadded vocabulary size;
-    # only padded_vocab_size should be divided by world_size.
+    # 1. n_head and n_query_groups are divided by world_size for TP
+    # 2. vocab_size and padded_vocab_size MUST remain unchanged (token space is not sharded)
+    # 3. head_size should NOT be recomputed (remains the same after TP)
+    # 
+    # CRITICAL: vocab_size and padded_vocab_size define the token vocabulary space.
+    # In TP, we shard model parameters (heads, experts) but not the vocabulary.
+    # All ranks must handle the same token IDs [0, vocab_size).
     cfg_path = rank_output_dir / "model_config.yaml"
     if cfg_path.exists():
         try:
@@ -482,14 +485,10 @@ def create_tp_checkpoint(
             with open(cfg_path, 'r') as f:
                 config = yaml.safe_load(f)
             
-            # Update padded_vocab_size
-            if 'padded_vocab_size' in config:
-                combined_padded = config['padded_vocab_size']
-                if combined_padded % world_size != 0:
-                    SafePrinter.print(f"[Rank {rank}] Warning: combined padded_vocab_size {combined_padded} not divisible by world_size {world_size}")
-                config['padded_vocab_size'] = combined_padded // world_size
+            # IMPORTANT: Do NOT shard vocab_size or padded_vocab_size
+            # These define the token space and must be identical across all ranks
             
-            # Update TP-specific fields
+            # Update TP-specific fields (only heads and query groups)
             if 'n_head' in config and config['n_head'] % world_size == 0:
                 config['n_head'] = config['n_head'] // world_size
             if 'n_query_groups' in config and config['n_query_groups'] % world_size == 0:
@@ -497,11 +496,10 @@ def create_tp_checkpoint(
             # NOTE: head_size should NOT be recomputed. It remains the same after TP.
             # The formula head_size = n_embd / n_head is only for initialization, 
             # not for TP sharding. After dividing n_head, we still use the same head_size.
-            
             # Write back
             with open(cfg_path, 'w') as f:
                 yaml.dump(config, f, default_flow_style=False, sort_keys=False)
-            SafePrinter.print(f"[Rank {rank}] Updated model_config.yaml: n_head={config.get('n_head')}, head_size={config.get('head_size')}, n_query_groups={config.get('n_query_groups')}, padded_vocab_size={config.get('padded_vocab_size')}")
+            SafePrinter.print(f"[Rank {rank}] Updated model_config.yaml: n_head={config.get('n_head')}, head_size={config.get('head_size')}, n_query_groups={config.get('n_query_groups')}, padded_vocab_size={config.get('padded_vocab_size')} (unchanged for TP)")
         except Exception as e:
             SafePrinter.print(f"[Rank {rank}] Warning: failed to update model_config.yaml: {e}")
 
