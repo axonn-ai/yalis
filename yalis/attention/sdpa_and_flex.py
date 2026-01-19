@@ -262,14 +262,12 @@ def rotary_kv_update_sdpa_gen_gptoss(
         # resulting sinks matches the reduced per-inner-rank head count.
         if sinks is not None:
             S = sinks.view(1, -1, 1, 1)
-            if os.environ.get("YALIS_SINKS_DEBUG", "0") == "1":
-                print(f"[sinks-debug] before Drop: S.shape={tuple(S.shape)}, process_group={process_group}")
+            print(f"[sinks-debug] before Drop: S.shape={tuple(S.shape)}, process_group={process_group}")
             S_dropped = Drop.apply(S, process_group, 1)
-            if os.environ.get("YALIS_SINKS_DEBUG", "0") == "1":
-                try:
-                    print(f"[sinks-debug] after Drop: S.shape={tuple(S_dropped.shape)}")
-                except Exception:
-                    print(f"[sinks-debug] after Drop: S has no .shape attribute")
+            try:
+                print(f"[sinks-debug] after Drop: S.shape={tuple(S_dropped.shape)}")
+            except Exception:
+                print(f"[sinks-debug] after Drop: S has no .shape attribute")
             S = S_dropped.contiguous()
             # keep sinks in the expanded 4D form so downstream code can
             # use it directly when concatenating with QK
@@ -434,9 +432,7 @@ def rotary_kv_update_sdpa_gen_gptoss(
     if sinks is not None:
         # sinks shape: (n_head, 1, 1) -> reshape to (1, n_head, 1, 1) for broadcasting
         S = sinks.view(1, -1, 1, 1)
-        # Optional diagnostic logging for sinks behavior
-        if os.environ.get("YALIS_SINKS_DEBUG", "0") == "1":
-            print(f"[sinks-debug] concat: S.shape={tuple(S.shape)}, h={h}, n_q={n_q}, use_intra={use_intra_head_parallelism}")
+        print(f"[sinks-debug] concat: S.shape={tuple(S.shape)}, h={h}, n_q={n_q}, use_intra={use_intra_head_parallelism}")
         # Diagnostic sanity check: if shapes are incompatible, log sizes
         if S.size(1) != h:
             print(f"[sinks-debug] MISMATCH S.shape={tuple(S.shape)}, h={h}, n_q={n_q}")
