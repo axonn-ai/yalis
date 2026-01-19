@@ -281,7 +281,9 @@ def rotary_kv_update_sdpa_gen_gptoss(
                 ax_initialized = is_ax_init()
             else:
                 ax_initialized = bool(is_ax_init)
-
+            # Initialize defaults
+            tp_rank = 0
+            tp_size = 1
             if ax_initialized:
                 # `ax.comm_handle` exposes the intra-layer row rank as
                 # `intra_layer_row_parallel_rank`. Use it when available.
