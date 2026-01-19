@@ -65,7 +65,21 @@ def get_model(
         print(f"[CONFIG DEBUG] Loading config from: {config_path}")
     config = Config.from_file(config_path)
     if dist.get_rank() == 0:
-        print(f"[CONFIG DEBUG] Loaded config: n_expert={config.n_expert}, padded_vocab_size={config.padded_vocab_size}, vocab_size={config.vocab_size}")
+        print(f"[CONFIG DEBUG] Loaded config: n_expert={config.n_expert}, padded_vocab_size={config.padded_vocab_size}, vocab_size={config.vocab_size}, n_head={config.n_head}")
+    
+    # For TP: divide n_head and recompute derived fields
+    if tensor_parallel:
+        world_size = dist.get_world_size()
+        if config.n_head % world_size != 0:
+            raise ValueError(f"n_head={config.n_head} must be divisible by world_size={world_size}")
+        config.n_head = config.n_head // world_size
+        # Recompute derived fields that depend on n_head
+        config.head_size = config.n_embd // config.n_head
+        if config.n_query_groups % world_size == 0:
+            config.n_query_groups = config.n_query_groups // world_size
+        if dist.get_rank() == 0:
+            print(f"[TP DEBUG] After TP division: n_head={config.n_head}, head_size={config.head_size}, n_query_groups={config.n_query_groups}")
+    
     if max_sequence_length is not None:
         assert (
             max_sequence_length <= config.block_size

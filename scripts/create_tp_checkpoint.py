@@ -162,6 +162,15 @@ def get_shard_indices(
             start, end = _shard_range(out_size, outer_size, outer_rank)
         return (0, start, end)
     
+    # Sinks tensor: (n_head, 1, 1) -> shard along head dimension (dim 0)
+    # Used by GPT-OSS attention for sliding-window sink tokens
+    if key.endswith(".sinks") and weight_ndim == 3:
+        n_head = weight_shape[0]
+        shard_size = n_head // world_size
+        if n_head % world_size != 0:
+            raise ValueError(f"Cannot evenly shard {key} dim 0 (n_head={n_head}) across {world_size} ranks")
+        return (0, rank * shard_size, (rank + 1) * shard_size)
+    
     # MoE weights (GPT-OSS MoE) - 3D tensors
     if "mlp" in key and weight_ndim == 3:  # [n_experts, d1, d2]
         # GPT-OSS MoE:
