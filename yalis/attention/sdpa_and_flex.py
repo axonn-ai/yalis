@@ -292,9 +292,18 @@ def rotary_kv_update_sdpa_gen_gptoss(
         # sinks is still full-model-size (n_head_global, 1, 1) from Block initialization.
         # We need to slice it to match the per-rank head count (nh).
         # Determine per-rank head count from q shape
-        if sinks is not None and ax.is_initialized():
-            tp_rank = ax.config.G_intra_r_rank
-            tp_size = ax.config.G_intra_r
+        if sinks is not None:
+            # `ax.is_initialized` may be a boolean attribute in some axonn
+            # versions or a callable in others. Handle both cases safely.
+            is_ax_init = getattr(ax, "is_initialized", False)
+            if callable(is_ax_init):
+                ax_initialized = is_ax_init()
+            else:
+                ax_initialized = bool(is_ax_init)
+
+            if ax_initialized:
+                tp_rank = ax.config.G_intra_r_rank
+                tp_size = ax.config.G_intra_r
             n_head_global = sinks.size(0)
             n_head_per_rank = n_head_global // tp_size
             
