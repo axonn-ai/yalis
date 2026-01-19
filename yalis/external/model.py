@@ -156,6 +156,17 @@ class GPT(nn.Module):
                 16384 // PAGE_BLOCK_SIZE,
             )
 
+        # Debug: clamp and validate token IDs before embedding lookup
+        vocab_size = self.config.padded_vocab_size
+        idx_min = idx.min().item()
+        idx_max = idx.max().item()
+        if idx_min < 0 or idx_max >= vocab_size:
+            print(f"[WARN] Token IDs out of bounds: min={idx_min}, max={idx_max}, vocab_size={vocab_size}", flush=True)
+            print(f"[WARN] input_ids shape: {tuple(idx.shape)}, sample: {idx[0, :min(8, idx.size(1))]}", flush=True)
+            # Clamp to valid range so inference doesn't crash; this helps identify if the bug is in token prep
+            idx = idx.clamp(0, vocab_size - 1)
+            print(f"[WARN] Clamped token IDs. After clamp: min={idx.min().item()}, max={idx.max().item()}", flush=True)
+        
         x = self.transformer.wte(
             idx
         )  # token embeddings of shape (b, t, n_embd)
