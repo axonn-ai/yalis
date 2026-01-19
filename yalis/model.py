@@ -51,7 +51,11 @@ def get_model(
             if dist.get_rank() == 0:
                 print(f"[TP DEBUG] Using TP config and checkpoint")
 
+    if dist.get_rank() == 0:
+        print(f"[CONFIG DEBUG] Loading config from: {config_path}")
     config = Config.from_file(config_path)
+    if dist.get_rank() == 0:
+        print(f"[CONFIG DEBUG] Loaded config: n_expert={config.n_expert}, padded_vocab_size={config.padded_vocab_size}, vocab_size={config.vocab_size}")
     if max_sequence_length is not None:
         assert (
             max_sequence_length <= config.block_size
@@ -64,6 +68,8 @@ def get_model(
     config.prestore_kv_cache = prestore_kv_cache
     config.init_device = device if random_init else "meta"
 
+    if dist.get_rank() == 0:
+        print(f"[CONFIG DEBUG] Model will be initialized with: n_expert={config.n_expert}, padded_vocab_size={config.padded_vocab_size}")
     with _EmptyInit(enabled=(not random_init)):
         model = GPT(config).to(model_dtype)
 
