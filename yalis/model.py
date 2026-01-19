@@ -29,6 +29,10 @@ def get_model(
     if tensor_parallel and dist.get_rank() == 0:
         print(f"Using Tensor parallelism on {dist.get_world_size()} GPUs")
 
+    # Point to the checkpoint directory and log what we're using
+    print(f"Using {litgpt_checkpoint_directory} as litgpt checkpoint directory with dtype {model_dtype}")
+    checkpoint_dir = Path(litgpt_checkpoint_directory)
+
     # For TP inference, load config from rank-specific directory if available
     config_path = checkpoint_dir / "model_config.yaml"
     checkpoint_path = checkpoint_dir / "yalis_checkpoints"
