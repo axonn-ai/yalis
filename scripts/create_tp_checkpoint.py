@@ -474,45 +474,39 @@ def create_tp_checkpoint(
             except Exception:
                 SafePrinter.print(f"[Rank {rank}] Warning: failed to copy metadata file {fname} to {rank_output_dir}")
 
-    # Post-process model_config.yaml inside each rank so that padded_vocab_size
-    # reflects the per-rank padded vocab (not the combined padded vocab).
+    # Post-process model_config.yaml inside each rank so that:
+    # 1. padded_vocab_size reflects the per-rank padded vocab (not combined)
+    # 2. n_head, head_size, and n_query_groups are divided by world_size for TP
     # IMPORTANT: vocab_size must remain the FULL unpadded vocabulary size;
     # only padded_vocab_size should be divided by world_size.
     cfg_path = rank_output_dir / "model_config.yaml"
     if cfg_path.exists():
         try:
-            # Read file and replace padded_vocab_size line with per-rank value
-            text = cfg_path.read_text()
-            # Find existing padded_vocab_size value in the root checkpoint (if present)
-            # and compute per-rank padded vocab.
-            combined_padded = None
-            for line in text.splitlines():
-                if line.strip().startswith("padded_vocab_size:"):
-                    try:
-                        combined_padded = int(line.split(":", 1)[1].strip())
-                    except Exception:
-                        combined_padded = None
-                    break
-
-            if combined_padded is not None:
+            # Read and parse YAML
+            import yaml
+            with open(cfg_path, 'r') as f:
+                config = yaml.safe_load(f)
+            
+            # Update padded_vocab_size
+            if 'padded_vocab_size' in config:
+                combined_padded = config['padded_vocab_size']
                 if combined_padded % world_size != 0:
-                    SafePrinter.print(f"[Rank {rank}] Warning: combined padded_vocab_size {combined_padded} not divisible by world_size {world_size}; computed per-rank will be floor division")
-                per_rank = combined_padded // world_size
-                # Replace only the padded_vocab_size line (preserve vocab_size unchanged)
-                new_lines = []
-                replaced = False
-                for line in text.splitlines():
-                    if line.strip().startswith("padded_vocab_size:"):
-                        indent = line[: line.index("p")]
-                        new_lines.append(f"{indent}padded_vocab_size: {per_rank}")
-                        replaced = True
-                    else:
-                        new_lines.append(line)
-                if not replaced:
-                    # append at end
-                    new_lines.append(f"padded_vocab_size: {per_rank}")
-                cfg_path.write_text("\n".join(new_lines) + "\n")
-                SafePrinter.print(f"[Rank {rank}] Wrote per-rank padded_vocab_size={per_rank} into {cfg_path} (vocab_size unchanged)")
+                    SafePrinter.print(f"[Rank {rank}] Warning: combined padded_vocab_size {combined_padded} not divisible by world_size {world_size}")
+                config['padded_vocab_size'] = combined_padded // world_size
+            
+            # Update TP-specific fields
+            if 'n_head' in config and config['n_head'] % world_size == 0:
+                config['n_head'] = config['n_head'] // world_size
+            if 'n_query_groups' in config and config['n_query_groups'] % world_size == 0:
+                config['n_query_groups'] = config['n_query_groups'] // world_size
+            if 'head_size' in config and 'n_embd' in config:
+                # Recompute head_size based on new n_head
+                config['head_size'] = config['n_embd'] // config['n_head']
+            
+            # Write back
+            with open(cfg_path, 'w') as f:
+                yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+            SafePrinter.print(f"[Rank {rank}] Updated model_config.yaml: n_head={config.get('n_head')}, head_size={config.get('head_size')}, n_query_groups={config.get('n_query_groups')}, padded_vocab_size={config.get('padded_vocab_size')}")
         except Exception as e:
             SafePrinter.print(f"[Rank {rank}] Warning: failed to update model_config.yaml: {e}")
 
