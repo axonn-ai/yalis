@@ -120,8 +120,11 @@ def get_shard_indices(
         None if replicated
     """
     
-    # Don't shard: embeddings, norms, routers, lm_head
-    if any(x in key for x in ["embed", "norm", "router", "lm_head"]):
+    # Don't shard: embeddings, norms, routers
+    # Note: `lm_head` must be sharded across the vocab (out) dimension to
+    # produce TP-consistent checkpoints. Previously lm_head was excluded here
+    # which led to full, unsharded lm_head tensors ending up in shards.
+    if any(x in key for x in ["embed", "norm", "router"]):
         return None
     
     # MoE biases MUST be checked BEFORE generic 1D bias handling
