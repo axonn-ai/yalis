@@ -302,8 +302,18 @@ def rotary_kv_update_sdpa_gen_gptoss(
                 ax_initialized = bool(is_ax_init)
 
             if ax_initialized:
-                tp_rank = ax.config.G_intra_r_rank
-                tp_size = ax.config.G_intra_r
+                # `ax.comm_handle` exposes the intra-layer row rank as
+                # `intra_layer_row_parallel_rank`. Use it when available.
+                tp_rank = getattr(
+                    ax.comm_handle, "intra_layer_row_parallel_rank", None
+                )
+                if tp_rank is None:
+                    # Fallback: try intra_layer_parallel_rank divided by G_intra_c
+                    tp_rank = getattr(ax.comm_handle, "intra_layer_parallel_rank", 0)
+                    g_intra_c = getattr(ax.config, "G_intra_c", 1)
+                    tp_rank = (tp_rank // g_intra_c) % getattr(ax.config, "G_intra_r", 1)
+
+                tp_size = getattr(ax.config, "G_intra_r", 1)
             n_head_global = sinks.size(0)
             n_head_per_rank = n_head_global // tp_size
             
