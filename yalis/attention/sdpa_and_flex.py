@@ -26,6 +26,18 @@ def index_into_rope_cache_gen(
 ) -> torch.Tensor:
     # index - [B, T]
     assert index.dim() == 1, "this method is only for the generation phase"
+    # Debug: print index range before performing index_select to help
+    # diagnose out-of-bounds errors that result in CUDA asserts.
+    try:
+        idx_min = int(index.min().item())
+        idx_max = int(index.max().item())
+        cache_len = int(cache.size(0))
+        print(f"[sdpa-debug-rope-index] index_min={idx_min}, index_max={idx_max}, cache_len={cache_len}", flush=True)
+        if idx_min < 0 or idx_max >= cache_len:
+            print(f"[sdpa-debug-rope-index] WARNING: RoPE index out of bounds (will proceed to index_select and may raise).", flush=True)
+    except Exception:
+        print(f"[sdpa-debug-rope-index] unable to read index min/max (index shape: {tuple(index.shape)})", flush=True)
+
     return torch.index_select(
         cache,
         0,
