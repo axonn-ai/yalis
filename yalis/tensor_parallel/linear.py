@@ -469,6 +469,18 @@ class TPLinear(torch.nn.Module):
                 and weight.size(1) == self.local_in_features
             )
 
+            if not (is_full_weight_matrix or is_sharded_weight_matrix):
+                import sys
+                print(f"[LINEAR LOADER ERROR] {prefix}weight", file=sys.stderr)
+                print(f"  Provided shape: {provided_shape}", file=sys.stderr)
+                print(f"  self.out_features={self.out_features}, self.in_features={self.in_features}", file=sys.stderr)
+                print(f"  self.local_out_features={self.local_out_features}, self.local_in_features={self.local_in_features}", file=sys.stderr)
+                print(f"  is_full_weight_matrix={is_full_weight_matrix} (expects {self.out_features} x {self.in_features})", file=sys.stderr)
+                print(f"  is_sharded_weight_matrix={is_sharded_weight_matrix}", file=sys.stderr)
+                print(f"    fully_sharded={fully_sharded} ({self.local_out_features} x {self.local_in_features})", file=sys.stderr)
+                print(f"    row_parallel={row_parallel} ({self.local_out_features} x {self.in_features})", file=sys.stderr)
+                print(f"    col_parallel={col_parallel} ({self.out_features} x {self.local_in_features})", file=sys.stderr)
+            
             assert (
                 is_full_weight_matrix or is_sharded_weight_matrix
             ), "This is neither a full checkpoint nor a sharded checkpoint"
