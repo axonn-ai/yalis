@@ -1,6 +1,7 @@
 import math
 from typing import Optional
 import os
+import sys
 
 import torch
 import torch.distributed as dist
@@ -32,11 +33,11 @@ def index_into_rope_cache_gen(
         idx_min = int(index.min().item())
         idx_max = int(index.max().item())
         cache_len = int(cache.size(0))
-        print(f"[sdpa-debug-rope-index] index_min={idx_min}, index_max={idx_max}, cache_len={cache_len}", flush=True)
+        print(f"[sdpa-debug-rope-index] index_min={idx_min}, index_max={idx_max}, cache_len={cache_len}", flush=True, file=sys.stderr)
         if idx_min < 0 or idx_max >= cache_len:
-            print(f"[sdpa-debug-rope-index] WARNING: RoPE index out of bounds (will proceed to index_select and may raise).", flush=True)
+            print(f"[sdpa-debug-rope-index] WARNING: RoPE index out of bounds (will proceed to index_select and may raise).", flush=True, file=sys.stderr)
     except Exception:
-        print(f"[sdpa-debug-rope-index] unable to read index min/max (index shape: {tuple(index.shape)})", flush=True)
+        print(f"[sdpa-debug-rope-index] unable to read index min/max (index shape: {tuple(index.shape)})", flush=True, file=sys.stderr)
 
     return torch.index_select(
         cache,
@@ -323,6 +324,12 @@ def rotary_kv_update_sdpa_gen_gptoss(
         # DECODE: single token
         b_indices = torch.arange(B, device=k_cache.device)
         t_indices = token_counter[:B].view(-1)
+        # Extra diagnostics: print token indices and cache shape before writing
+        try:
+            print(f"[sdpa-debug-write-cache] B={B}, t_indices_min={int(t_indices.min().item())}, t_indices_max={int(t_indices.max().item())}, k_cache_tmax={k_cache.size(-2)}, k_cache_shape={tuple(k_cache.shape)}", flush=True, file=sys.stderr)
+            torch.cuda.synchronize()
+        except Exception as e:
+            print(f"[sdpa-debug-write-cache] sync/error: {e}", flush=True, file=sys.stderr)
 
         if use_intra_head_parallelism:
             k_cache[b_indices, :, t_indices, :] = Drop.apply(
@@ -549,8 +556,12 @@ def rotary_kv_update_sdpa_multi(
         # Debug: check indices before gather to avoid device-side assert
         idx_min = int(index_pos.min().item())
         idx_max = int(index_pos.max().item())
-        print(f"[sdpa-debug-multi] B={B}, nh={nh}, T={T}, t_max={t_max}, index_pos_min={idx_min}, index_pos_max={idx_max}", flush=True)
-        print(f"[sdpa-debug-multi] index_pos sample={index_pos.view(-1)[:8].cpu().numpy()}", flush=True)
+        print(f"[sdpa-debug-multi] B={B}, nh={nh}, T={T}, t_max={t_max}, index_pos_min={idx_min}, index_pos_max={idx_max}", flush=True, file=sys.stderr)
+        print(f"[sdpa-debug-multi] index_pos sample={index_pos.view(-1)[:8].cpu().numpy()}", flush=True, file=sys.stderr)
+        try:
+            torch.cuda.synchronize()
+        except Exception as e:
+            print(f"[sdpa-debug-multi] pre-gather sync/error: {e}", flush=True, file=sys.stderr)
         cos = torch.gather(cos, dim=2, index=index_rotary)
         sin = torch.gather(sin, dim=2, index=index_rotary)
 
@@ -570,7 +581,11 @@ def rotary_kv_update_sdpa_multi(
     # Debug: check scatter indices
     idx_min = int(index_pos.min().item())
     idx_max = int(index_pos.max().item())
-    print(f"[sdpa-debug-scatter] index_pos_min={idx_min}, index_pos_max={idx_max}, k_cache_tmax={k_cache.size(-2)}", flush=True)
+    print(f"[sdpa-debug-scatter] index_pos_min={idx_min}, index_pos_max={idx_max}, k_cache_tmax={k_cache.size(-2)}", flush=True, file=sys.stderr)
+    try:
+        torch.cuda.synchronize()
+    except Exception as e:
+        print(f"[sdpa-debug-scatter] pre-scatter sync/error: {e}", flush=True, file=sys.stderr)
     k_cache[:B].scatter_(dim=2, index=index_kv, src=k.to(k_cache.dtype))
     v_cache[:B].scatter_(dim=2, index=index_kv, src=v.to(v_cache.dtype))
 
