@@ -38,18 +38,28 @@ def get_model(
     checkpoint_path = checkpoint_dir / "yalis_checkpoints"
     
     if tensor_parallel:
-        tp_checkpoint_path = checkpoint_dir / "yalis_checkpoints_tp" / f"rank_{dist.get_rank()}" / "yalis_checkpoints"
-        tp_config_path = checkpoint_dir / "yalis_checkpoints_tp" / "model_config.yaml"
+        tp_rank_dir = checkpoint_dir / "yalis_checkpoints_tp" / f"rank_{dist.get_rank()}"
+        tp_checkpoint_path = tp_rank_dir / "yalis_checkpoints"
+        tp_rank_config = tp_rank_dir / "model_config.yaml"
+        tp_root_config = checkpoint_dir / "yalis_checkpoints_tp" / "model_config.yaml"
         tp_cp_exists = os.path.exists(tp_checkpoint_path)
-        tp_cfg_exists = os.path.exists(tp_config_path)
+        tp_rank_cfg_exists = os.path.exists(tp_rank_config)
+        tp_root_cfg_exists = os.path.exists(tp_root_config)
         if dist.get_rank() == 0:
             print(f"[TP DEBUG] tp_checkpoint_path={tp_checkpoint_path} exists={tp_cp_exists}")
-            print(f"[TP DEBUG] tp_config_path={tp_config_path} exists={tp_cfg_exists}")
-        if tp_cp_exists and tp_cfg_exists:
-            config_path = tp_config_path
+            print(f"[TP DEBUG] tp_rank_config={tp_rank_config} exists={tp_rank_cfg_exists}")
+            print(f"[TP DEBUG] tp_root_config={tp_root_config} exists={tp_root_cfg_exists}")
+        # Prefer rank-local config when available, otherwise fall back to root TP config.
+        if tp_cp_exists and tp_rank_cfg_exists:
+            config_path = tp_rank_config
             checkpoint_path = tp_checkpoint_path
             if dist.get_rank() == 0:
-                print(f"[TP DEBUG] Using TP config and checkpoint")
+                print(f"[TP DEBUG] Using rank-local TP config and checkpoint")
+        elif tp_cp_exists and tp_root_cfg_exists:
+            config_path = tp_root_config
+            checkpoint_path = tp_checkpoint_path
+            if dist.get_rank() == 0:
+                print(f"[TP DEBUG] Using root TP config and per-rank checkpoint")
 
     if dist.get_rank() == 0:
         print(f"[CONFIG DEBUG] Loading config from: {config_path}")
