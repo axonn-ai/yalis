@@ -120,12 +120,12 @@ def get_shard_indices(
         None if replicated
     """
     
-    # Don't shard: embeddings, norms, routers, gate, lm_head
-    # Embeddings (vocab → hidden): all ranks need full vocab for all token IDs
-    # LM head (hidden → vocab): all ranks compute full logits, then sync if needed
-    # Gate: replicated because model constructs full gate on each rank
-    # These are replicated (identical) across all ranks in the checkpoint.
-    if any(x in key for x in ["embed", "norm", "router", "gate", "lm_head"]):
+    # Don't shard: embeddings, norms, routers, gate, lm_head, wte
+    # Embeddings (vocab → hidden): all ranks need the full vocab (wte) for token IDs
+    # LM head (hidden → vocab): all ranks compute full logits; don't shard lm_head
+    # Gate: replicated because the model constructs a full gate linear per-rank
+    # These parameters should be copied identically to every rank's checkpoint.
+    if any(x in key for x in ["embed", "wte", "norm", "router", "gate", "lm_head"]):
         return None
     
     # MoE biases are 2D (n_experts, intermediate), unlike standard 1D biases.
