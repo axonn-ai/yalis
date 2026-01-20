@@ -4,11 +4,14 @@ import argparse
 import torch
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(ROOT))
 
-from yalis.attention.nowmp_reference import nowmp_reference_attention
-from yalis.attention.threshold_attention_nowmp import init_nowmp_state, nowmp_attention_forward
+from yalis.attention.nowmp_thresh.nowmp_reference import nowmp_reference_attention
+from yalis.attention.nowmp_thresh.threshold_attention_nowmp import (
+    init_nowmp_state,
+    nowmp_attention_forward,
+)
 
 try:
     import triton

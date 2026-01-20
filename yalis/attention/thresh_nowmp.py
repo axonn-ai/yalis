@@ -1,7 +1,9 @@
 from .registry import register_attention
 import torch
 from typing import Optional
-from yalis.attention.threshold_attention_nowmp import nowmp_attention_forward
+from yalis.attention.nowmp_thresh.threshold_attention_nowmp import (
+    nowmp_attention_forward,
+)
 
 
 def build_mask_from_index(index, t_max):

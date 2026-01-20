@@ -4,7 +4,10 @@ from axonn import axonn as ax
 import math 
 import torch.distributed as dist
 from typing import Optional
-from yalis.attention.threshold_attention import thresh_attention_forward, thresh_attention_warmup_forward
+from yalis.attention.warmup_thresh.threshold_attention import (
+    thresh_attention_forward,
+    thresh_attention_warmup_forward,
+)
 
 def build_mask_from_index(index, t_max):
     B = index.size(0)

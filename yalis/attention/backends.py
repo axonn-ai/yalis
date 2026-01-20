@@ -4,6 +4,7 @@ from . import flash
 from . import thresh
 from . import thresh_nowmp
 from . import topk
+from . import sparge
 
 from enum import Enum
 
@@ -14,3 +15,4 @@ class AttentionBackend(str, Enum):
     THRESH = "thresh"
     THRESH_ATTN_NOWMP = "thresh_attn_nowmp"
     TOPK = "topk"
+    SPARGE = "sparge"

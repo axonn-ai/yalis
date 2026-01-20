@@ -29,7 +29,7 @@ from flash_attn.ops.triton.rotary import apply_rotary
 from yalis.attention.backends import AttentionBackend
 from yalis.attention.masking import create_causal_block_mask_for_flex_attention
 from yalis.attention.utils import fit_powerlaw_linreg_torch
-from yalis.attention.threshold_attention_nowmp import init_nowmp_state
+from yalis.attention.nowmp_thresh.threshold_attention_nowmp import init_nowmp_state
 
 
 from yalis import print_rank0

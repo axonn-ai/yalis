@@ -4,7 +4,7 @@ import os
 import re
 import torch
 from torch.utils.cpp_extension import load
-from .utils import fit_powerlaw_linreg_torch
+from ..utils import fit_powerlaw_linreg_torch
 from .threshold_attention_triton import thresh_attn_reference
 
 _BASE_DIR = os.path.dirname(__file__)

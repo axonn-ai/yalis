@@ -150,11 +150,11 @@ class InferenceConfig:
         self.use_intra_head_parallelism = use_intra_head_parallelism
         self.use_paged_kv_caching = use_paged_kv_caching
         self.prestore_kv_cache = prestore_kv_cache
-        if attention_backend not in ["flash", "sdpa", "flex", "thresh", "thresh_attn_nowmp", "topk"]:
+        if attention_backend not in ["flash", "sdpa", "flex", "thresh", "thresh_attn_nowmp", "topk", "sparge"]:
             raise ValueError(
                 "Invalid attention backend: "
                 f"{attention_backend}. Supported values are 'flash', 'sdpa', 'flex', "
-                "'thresh', 'thresh_attn_nowmp', 'topk'."
+                "'thresh', 'thresh_attn_nowmp', 'topk', 'sparge'."
             )
         self.attention_backend = AttentionBackend(attention_backend)
         self.threshold_percentile = threshold_percentile
