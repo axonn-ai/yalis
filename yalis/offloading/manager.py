@@ -353,7 +353,7 @@ class CPUOffloadManager:
                     #print_rank0(f"[CPUOffloadManager] Fetching layer {layer_idx} rows {row_indices}")
                     self._move_rows_to_gpu(layer_idx, row_indices, comp, non_blocking=False, stream=current_stream)
             else:
-                self._move_components_to_gpu(layer_idx, components, non_blocking=False, stream=current_stream)
+                self._move_components_to_gpu(layer_idx, components, non_blocking=False)
         
         
     def prefetch_layer(
@@ -423,7 +423,10 @@ class CPUOffloadManager:
         self.wait_for_layer(layer_idx)
         
         if layer_idx not in self.layers_on_gpu:
-            self._move_components_to_gpu(layer_idx, non_blocking=False)
+            row_indices = None
+            if self.row_indices_callback:
+                row_indices = self.row_indices_callback(layer_idx)
+            self.fetch_layer(layer_idx, row_indices=row_indices, non_blocking=False)
         
         # Start prefetching next layers
         for offset in range(1, self.num_prefetch_layers + 1):

@@ -28,7 +28,7 @@ class PrefetchMode(Enum):
 def get_mode(mode_str: str) -> PrefetchMode:
     """Convert string to PrefetchMode enum."""
     mapping = {
-        "all": PrefetchMode.FULL_LAYER,
+        "all": None,
         "rows": PrefetchMode.MLP_ONLY,
         "inline": PrefetchMode.INLINE,
     }
