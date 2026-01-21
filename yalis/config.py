@@ -5,8 +5,13 @@ from importlib.metadata import version, PackageNotFoundError
 from yalis.attention.backends import AttentionBackend
 
 
-# Valid component names for CPU offloading
-VALID_OFFLOAD_COMPONENTS = ["mlp", "attn", "norm"]
+# Valid component names for CPU offloading (including MoE sub-components)
+# - "mlp": Full MLP (or expands to mlp.gate + mlp.experts for MoE)
+# - "mlp.experts": Only MoE expert weights (keeps gate/router on GPU)
+# - "mlp.gate": Only MoE router (rarely useful alone)
+# - "attn": Attention layers
+# - "norm": Normalization layers
+VALID_OFFLOAD_COMPONENTS = ["mlp", "attn", "norm", "mlp.experts", "mlp.gate"]
 
 
 class ModelConfig:
@@ -153,10 +158,14 @@ class InferenceConfig:
                             buffers with .copy_() instead of .to() for
                             zero-allocation transfers.
             cpu_offload_components (List[str]): Components to offload/prefetch.
-                            Options: "mlp", "attn", "norm"
+                            Options: "mlp", "attn", "norm", "mlp.experts", "mlp.gate"
                             Default: ["mlp", "attn", "norm"] (full layer)
-                            Example: ["mlp"] = only MLP offloaded, attention 
-                            stays on GPU permanently.
+                            Examples:
+                              - ["mlp"] = full MLP offloaded (for MoE: gate + experts)
+                              - ["mlp.experts"] = only MoE expert weights offloaded,
+                                router (gate) stays on GPU permanently
+                              - ["mlp.experts", "attn", "norm"] = typical MoE setup
+                                where only the large expert weights are offloaded
         """
         self.max_batch_size = max_batch_size
         # TODO - default max_length should be none.

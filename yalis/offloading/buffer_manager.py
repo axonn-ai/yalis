@@ -11,7 +11,10 @@ from typing import Optional, Dict, List
 from dataclasses import dataclass, field
 
 from yalis.utils import print_rank0
-from .constants import compiler_disable, get_component_for_param, FULL_OFFLOAD
+from .constants import (
+    compiler_disable, get_component_for_param, component_matches,
+    expand_components, get_unique_components_for_offload, FULL_OFFLOAD
+)
 
 
 @dataclass
@@ -46,9 +49,13 @@ class GPUBufferManager:
         self.offload_components = offload_components or FULL_OFFLOAD
         self.num_buffer_sets = num_buffer_sets
         
+        # Get unique fine-grained components for buffer allocation
+        # This expands "mlp" to ["mlp.gate", "mlp.experts"] etc.
+        self.buffer_components = get_unique_components_for_offload(self.offload_components)
+        
         # Allocate multiple buffer sets
         self.buffer_sets: List[Dict[str, ComponentBuffers]] = [
-            {comp: ComponentBuffers() for comp in self.offload_components}
+            {comp: ComponentBuffers() for comp in self.buffer_components}
             for _ in range(num_buffer_sets)
         ]
         self._allocate_buffers(layer_template)
@@ -59,9 +66,12 @@ class GPUBufferManager:
         # Allocate buffers for parameters
         for name, param in layer.named_parameters():
             component = get_component_for_param(name)
+            # Check if this component should be offloaded
+            if not component_matches(component, self.offload_components):
+                continue
             for buffer_set in self.buffer_sets:
                 if component in buffer_set:
-                    print_rank0(f"Allocating buffer for parameter: {name} -  {param.dtype} - {param.shape}")
+                    print_rank0(f"Allocating buffer for parameter: {name} ({component}) - {param.dtype} - {param.shape}")
                     buffer_set[component].tensors[name] = torch.empty(
                         param.shape, dtype=param.dtype, device=self.device
                     ).contiguous()
@@ -69,6 +79,8 @@ class GPUBufferManager:
         # Allocate buffers for buffers (like KV cache)
         for name, buf in layer.named_buffers():
             component = get_component_for_param(name)
+            if not component_matches(component, self.offload_components):
+                continue
             for buffer_set in self.buffer_sets:
                 if component in buffer_set:
                     buffer_set[component].tensors[name] = torch.empty(
@@ -78,7 +90,7 @@ class GPUBufferManager:
     def _log_allocation(self):
         """Log buffer allocation info."""
         print_rank0(f"[GPUBufferManager] Allocated {self.num_buffer_sets} buffer sets")
-        for comp in self.offload_components:
+        for comp in self.buffer_components:
             buf = self.buffer_sets[0].get(comp)
             if buf and buf.tensors:
                 size_mb = buf.total_size_bytes() / 1e6
@@ -107,9 +119,10 @@ class GPUBufferManager:
         buffer_set = self.get_buffer_set(buffer_idx)
         
         with torch.cuda.stream(stream):
-            for comp in components:
-                if comp in buffer_set:
-                    self._copy_to_buffer(block, cpu_state, buffer_set[comp])
+            # Iterate over buffer components and check if they match requested components
+            for buffer_comp in self.buffer_components:
+                if buffer_comp in buffer_set and component_matches(buffer_comp, components):
+                    self._copy_to_buffer(block, cpu_state, buffer_set[buffer_comp])
     
     @compiler_disable()
     def copy_rows(
@@ -124,25 +137,29 @@ class GPUBufferManager:
         """Copy specific rows of a component (for sparse computation)."""
         buffer_set = self.get_buffer_set(buffer_idx)
         
-        if component not in buffer_set:
-            return
-        
         with torch.cuda.stream(stream):
-            for name, gpu_buffer in buffer_set[component].tensors.items():
-                if name not in cpu_state:
+            # Find buffer components that match the requested component
+            for buffer_comp in self.buffer_components:
+                if buffer_comp not in buffer_set:
+                    continue
+                if not component_matches(buffer_comp, [component]):
                     continue
                     
-                cpu_tensor = cpu_state[name]
-                
-                # Copy rows for 2D, full copy for 1D
-                if cpu_tensor.dim() >= 2 and row_indices is not None:
-                    for r in row_indices.tolist():
-                        gpu_buffer[r].copy_(cpu_tensor[r], non_blocking=True)
-                else:
-                    gpu_buffer.copy_(cpu_tensor, non_blocking=True)
-                
-                # Point param to buffer if needed
-                self._maybe_set_param(block, name, gpu_buffer)
+                for name, gpu_buffer in buffer_set[buffer_comp].tensors.items():
+                    if name not in cpu_state:
+                        continue
+                        
+                    cpu_tensor = cpu_state[name]
+                    
+                    # Copy rows for 2D, full copy for 1D
+                    if cpu_tensor.dim() >= 2 and row_indices is not None:
+                        for r in row_indices.tolist():
+                            gpu_buffer[r].copy_(cpu_tensor[r], non_blocking=True)
+                    else:
+                        gpu_buffer.copy_(cpu_tensor, non_blocking=True)
+                    
+                    # Point param to buffer if needed
+                    self._maybe_set_param(block, name, gpu_buffer)
     
     @compiler_disable()
     def _copy_to_buffer(

@@ -9,7 +9,7 @@ from contextlib import contextmanager
 
 from yalis.utils import print_rank0
 from .constants import (
-    compiler_disable, get_component_for_param,
+    compiler_disable, get_component_for_param, component_matches, expand_components,
     VALID_COMPONENTS, FULL_OFFLOAD, PrefetchMode, mode_to_components
 )
 from .buffer_manager import GPUBufferManager
@@ -142,7 +142,7 @@ class CPUOffloadManager:
         for name, param in block.named_parameters():
             component = get_component_for_param(name)
             
-            if component in self.offload_components:
+            if component_matches(component, self.offload_components):
                 self._offload_param(idx, name, param, component)
             else:
                 self._keep_param_on_gpu(idx, param, component)
@@ -155,7 +155,7 @@ class CPUOffloadManager:
                 continue
             
             component = get_component_for_param(name)
-            if component in self.offload_components:
+            if component_matches(component, self.offload_components):
                 self._offload_buffer(idx, name, buf, component)
             elif buf.device.type != 'cuda':
                 buf.data = buf.data.to(self.device)
@@ -251,12 +251,12 @@ class CPUOffloadManager:
             # Direct .to() transfer
             for name, param in block.named_parameters():
                 comp = get_component_for_param(name)
-                if comp in components and name in cpu_state:
+                if component_matches(comp, components) and name in cpu_state:
                     param.data = cpu_state[name].to(self.device, non_blocking=non_blocking)
             
             for name, buf in block.named_buffers():
                 comp = get_component_for_param(name)
-                if comp in components and name in cpu_state:
+                if component_matches(comp, components) and name in cpu_state:
                     buf.data = cpu_state[name].to(self.device, non_blocking=non_blocking)
         
         # Update tracking
