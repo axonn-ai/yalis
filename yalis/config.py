@@ -121,6 +121,8 @@ class InferenceConfig:
         cpu_offload_pin_memory: bool = True,
         cpu_offload_use_preallocated_buffers: bool = False,
         cpu_offload_components: Optional[List[str]] = None,
+        use_prefetched: bool = False,
+        prefetch_default_vect_path: Optional[str] = None,
     ):
         """
         Initialize the inference configuration.
@@ -161,6 +163,8 @@ class InferenceConfig:
                             Default: ["mlp", "attn", "norm"] (full layer)
                             Note: For MoE models, "mlp" means experts only
                                   (router stays on GPU permanently)
+            use_prefetched: bool = False,
+            prefetch_default_vect_path: Optional[str] = None,
         """
         self.max_batch_size = max_batch_size
         # TODO - default max_length should be none.
@@ -193,6 +197,8 @@ class InferenceConfig:
                         f"Valid options: {VALID_OFFLOAD_COMPONENTS}"
                     )
             self.cpu_offload_components = cpu_offload_components
+        self.use_prefetched = use_prefetched
+        self.prefetch_default_vect_path = prefetch_default_vect_path
 
         if attention_backend not in ["flash", "sdpa", "flex"]:
             raise ValueError(

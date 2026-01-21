@@ -11,7 +11,7 @@ import math
 from axonn import axonn as ax
 from axonn.intra_layer.communication import Drop
 from yalis.external.nccl_comm import CommHandler
-from yalis.external.fused_moe import fused_moe
+from yalis.external.fused_moe import fused_moe, fused_experts
 
 
 from typing import Optional, Sequence
@@ -257,17 +257,34 @@ class TPMoE(torch.nn.Module):
         self,
         x,
         router,
+        # prefetched expert weights and ids
+        prefetch_weights: Optional[torch.Tensor] = None,
+        prefetch_expert_ids: Optional[torch.Tensor] = None,
     ):
-
-        y = fused_moe(
-            x,
-            self.gate_up_proj,
-            self.proj,
-            router,
-            self.n_expert_per_token,
-            True,
-            inplace=False,
-        ).to(x.dtype)
+        if prefetch_weights is not None and prefetch_expert_ids is not None:
+            y = fused_experts(x,
+                              self.gate_up_proj,
+                              self.proj,
+                              prefetch_weights,
+                              prefetch_expert_ids,
+                              inplace = False,
+                              override_config = None,
+                              use_fp8_w8a8 = False,
+                              use_int8_w8a16 = False,
+                              w1_scale = None,
+                              w2_scale = None,
+                              a1_scale = None,
+                              a2_scale = None)
+        else:
+            y = fused_moe(
+                x,
+                self.gate_up_proj,
+                self.proj,
+                router,
+                self.n_expert_per_token,
+                True,
+                inplace=False,
+            ).to(x.dtype)
         y = self.all_reduce(y)
         return y
 

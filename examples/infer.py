@@ -12,8 +12,8 @@ _KinetoProfile._get_distributed_info = lambda self: None
 
 if __name__ == "__main__":
     # Model ID from Hugging Face
-    model_id = "meta-llama/Llama-3.1-8B-Instruct"
-    # model_id = "Qwen/Qwen3-30B-A3B-Instruct-2507"
+    #model_id = "meta-llama/Llama-3.1-8B-Instruct"
+    model_id = "Qwen/Qwen3-30B-A3B-Instruct-2507"
 
     user_prompts = [
         "How to bake a cake?",
@@ -85,6 +85,8 @@ if __name__ == "__main__":
         attention_backend="flash",
         use_paged_kv_caching=False,
         prestore_kv_cache=True,
+        use_prefetched=True,
+        prefetch_default_vect_path="./defaultvect/dv_buff_qwen_instruct/",
     )
 
     engine = LLMEngine(

@@ -23,10 +23,12 @@ from yalis.attention import attention_wrapper
 from yalis.external.config import Config
 from yalis.tensor_parallel import TPLinear, TPMoE
 from yalis.constants import EnginePhase
-from kvcache_manager import KVCacheManager
+# from kvcache_manager import KVCacheManager
 from yalis.attention.flash import flash_apply_rotary as apply_rotary
 from yalis.attention.backends import AttentionBackend
 from yalis.attention.masking import create_causal_block_mask_for_flex_attention
+from yalis.external.fused_moe import fused_topk
+
 from yalis.external.fused_moe import fused_topk
 
 
@@ -52,7 +54,6 @@ def get_norm_class(config):
 
 class GPT(nn.Module):
     def __init__(self, config: Config) -> None:
-
         super().__init__()
         assert config.padded_vocab_size is not None
         self.config = config
@@ -70,6 +71,13 @@ class GPT(nn.Module):
                 ln_f=config.norm_class(config.n_embd, eps=config.norm_eps),
             )
         )
+
+        if config.prefetch_experts:
+            for i in range(0, config.n_layer - 1):
+                next_layer_post_norm, next_layer_router = self.transformer.h[i + 1].get_pf_refs()
+                self.transformer.h[i].set_pf_refs(next_layer_post_norm, next_layer_router)
+                self.transformer.h[i].mlp.populate_dv(i, config.prefetch_default_vect_path)
+
         self.max_seq_length = (
             self.config.block_size
         )  # rope cache is built here
@@ -201,18 +209,21 @@ class GPT(nn.Module):
             else None
         )
 
-        for layer_idx, block in enumerate(self.transformer.h):
+        prefetch_weights, prefetch_expert_ids = None, None
+        for block in self.transformer.h:
             with self.layer_context(layer_idx):
-                x = block(
+                x, prefetch_weights, prefetch_expert_ids = block(
                     x,
                     self.cos,
                     self.sin,
                     phase,
+                    prefetch_weights,
+                    prefetch_expert_ids,
                     self.token_counter,
                     block_table,
                     flex_attention_block_mask,
-                    self.offload_manager
                 )
+
         if self.config.tensor_parallel:
             x = Gather.apply(
                 x, ax.comm_handle.inner_intra_layer_parallel_group
@@ -417,7 +428,11 @@ class GPT(nn.Module):
 
 
 class Block(nn.Module):
-    def __init__(self, config: Config, block_idx: int) -> None:
+    def __init__(self, 
+                 config: Config, 
+                 block_idx: int,
+                 next_layer_post_norm: Optional[nn.Module] = None,
+                 next_layer_router: Optional[nn.Module] = None,) -> None:
         super().__init__()
         if not config.parallel_residual and config.shared_attention_norm:
             raise NotImplementedError(
@@ -441,6 +456,10 @@ class Block(nn.Module):
         )
         mlp_class = getattr(sys.modules[__name__], config.mlp_class_name)
         self.mlp = mlp_class(config, block_idx)
+        if isinstance(self.mlp, LLaMAMoE):
+            self.mlp.next_layer_post_norm = next_layer_post_norm 
+            self.mlp.next_layer_router = next_layer_router 
+
         self.post_mlp_norm = (
             get_norm_class(config)(config.n_embd, eps=config.norm_eps)
             if config.post_mlp_norm
@@ -449,17 +468,31 @@ class Block(nn.Module):
 
         self.config = config
 
+    def set_pf_refs(self, next_layer_post_norm: nn.Module, next_layer_router: nn.Module) -> None:
+        if isinstance(self.mlp, LLaMAMoE):
+            self.mlp.next_layer_post_norm = next_layer_post_norm 
+            self.mlp.next_layer_router = next_layer_router
+        else:
+            raise NotImplementedError("Prefetching only implemented for `LLaMAMoE`")
+
+    def get_pf_refs(self) -> Tuple[nn.Module, nn.Module]:
+        if isinstance(self.mlp, LLaMAMoE):
+            return self.norm_2, self.mlp.gate
+        return None, None
+        
     def forward(
         self,
         x: torch.Tensor,
         cos: torch.Tensor,
         sin: torch.Tensor,
         phase: EnginePhase,
+        prefetch_weights: Optional[torch.Tensor] = None,
+        prefetch_expert_ids: Optional[torch.Tensor] = None,
         token_counter: Optional[torch.Tensor] = None,
         block_table: Optional[torch.Tensor] = None,
         flex_attention_block_mask=None,
         offload_manager=None,
-    ) -> torch.Tensor:
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
         """
         Non-parallel residual       Parallel residual
            ┌─ x                     ┌─ x ──────────────────┐             Note: if `shared_attention_norm` is True,  # noqa: E501
@@ -495,6 +528,7 @@ class Block(nn.Module):
 
         # Currently, MLP does not need to be phase-aware
         # but we might add it in the future
+        next_prefetch_weights, next_prefetch_expert_ids = None, None
         if self.config.parallel_residual:
             x_normed = (
                 x_normed
@@ -503,9 +537,13 @@ class Block(nn.Module):
             )
             x = self.mlp(x_normed) + attention_output + x
         else:
-            x = attention_output + x
-            x = self.post_mlp_norm(self.mlp(self.norm_2(x), offload_manager)) + x
-        return x
+            x = attention_output + x  # sattn
+            if isinstance(self.mlp, LLaMAMoE):
+                x, next_prefetch_weights, next_prefetch_expert_ids = self.mlp(self.norm_2(x), x, prefetch_weights, prefetch_expert_ids, offload_manager)
+                x = self.post_mlp_norm(x) + x
+            else:
+                x = self.post_mlp_norm(self.mlp(self.norm_2(x))) + x
+        return x, next_prefetch_weights, next_prefetch_expert_ids
 
 
 class CausalSelfAttention(nn.Module):
@@ -1057,11 +1095,18 @@ class RMSNorm(torch.nn.Module):
 
 
 class LLaMAMoE(nn.Module):
-    def __init__(self, config: Config, block_idx) -> None:
+    def __init__(self, 
+                 config: Config,
+                 block_idx: Int,
+                 next_layer_post_norm: Optional[nn.Module] = None,
+                 next_layer_router: Optional[nn.Module] = None,) -> None:
         super().__init__()
         self.gate = nn.Linear(config.n_embd, config.n_expert, bias=False)
         if config.moe_intermediate_size is None:
             config.moe_intermediate_size = config.intermediate_size
+        
+        self.register_buffer("default_vect", torch.zeros(config.n_expert, config.n_embd, dtype = torch.float32), persistent = True)
+
         self.experts = TPMoE(
             config.n_embd,
             config.moe_intermediate_size,
@@ -1069,19 +1114,27 @@ class LLaMAMoE(nn.Module):
             config.n_expert_per_token,
             init_device=config.init_device,
         )
+
+        self.next_layer_post_norm = next_layer_post_norm  # attention post-norm @ layer N + 1
+        self.next_layer_router = next_layer_router  # router gate @ layer N + 1
         self.config = config
         self.block_idx = block_idx
 
-    def forward(self, x: torch.Tensor, offload_manager) -> torch.Tensor:
+    def populate_dv(self, idx, path: str) -> None:
+        dv_path = os.join(path, f"buff_{idx}.pt")
+        state = torch.load(dv_path, map_location = "cpu")
+        self.default_vect.copy_(state["default_vect"].to(self.default_vect.device))
+
+    def forward(self, 
+                x: torch.Tensor,
+                sattn: Optional[torch.Tensor] = None,
+                prefetch_weights: Optional[torch.Tensor] = None,
+                prefetch_expert_ids: Optional[torch.Tensor] = None, 
+                offload_manager = None) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
         B, T, C = (
             x.size()
         )  # batch size, sequence length, embedding dimensionality (n_embd)
         x = x.view(-1, C)  # (B*T, C)
-        router = self.gate(x)  # (B*T, n_expert)
-
-        topk_weights, topk_ids = fused_topk(
-            x, router, self.config.n_expert_per_token, True
-        )
 
         if offload_manager is not None and offload_manager.is_inline_mode():
             if topk_ids.shape[0] == 1:
@@ -1092,3 +1145,44 @@ class LLaMAMoE(nn.Module):
         
         y = self.experts(x, router)
         return y.view(B, T, C)
+        router = None
+        if (prefetch_weights is None and prefetch_expert_ids is None) or (not self.config.use_prefetched): 
+            router = self.gate(x)  # (B*T, n_expert)
+        
+        next_prefetch_weights, next_prefetch_expert_ids = None, None  # prefetched expert weights and ids for next layer
+        if sattn is not None and self.next_layer_router is not None and self.next_layer_post_norm is not None:
+            
+            if (prefetch_weights is None and prefetch_expert_ids is None) or (not self.config.use_prefetched):
+                w, ids = fused_topk(x, router, self.config.n_expert_per_token, True)
+            else:
+                w = prefetch_weights
+                ids = prefetch_expert_ids
+
+            dv = (w.unsqueeze(-1) * self.default_vect[ids]).sum(dim=1).to(sattn.dtype)  # may want to verify the shape/broadcast logic here
+            quasi = self.next_layer_post_norm(sattn.view(-1, C) + dv)
+            router_n = self.next_layer_router(quasi)
+            next_prefetch_weights, next_prefetch_expert_ids = fused_topk(quasi, router_n, self.config.n_expert_per_token, True) 
+            # ^ TODO may need to change the `fused_moe` op since you're calling the fused_topk here (i changed it)
+            
+            if prefetch_weights is None and prefetch_expert_ids is None:
+                # we're the first MoE block
+                prefetch_weights = w
+                prefetch_expert_ids = ids
+
+            # TODO is there any loading logic we need to impl here; it was briefly mentioned
+
+      if offload_manager is not None and offload_manager.is_inline_mode():
+            topk_weights, topk_ids = fused_topk(
+                x, router, self.config.n_expert_per_token, True
+            )
+
+            if prefetch_expert_ids.shape[0] == 1:
+                row_indices = prefetch_expert_ids.squeeze(0).cpu()
+            else:
+                row_indices = None
+            offload_manager.fetch_layer(self.block_idx, row_indices=row_indices, non_blocking=False) 
+            y = self.experts(x, router, topk_weights, topk_ids) # overlap load with expert computation
+            return y.view(B, T, C), next_prefetch_weights, next_prefetch_expert_ids
+
+        y = self.experts(x, router, prefetch_weights, prefetch_expert_ids) # overlap load with expert computation
+        return y.view(B, T, C), next_prefetch_weights, next_prefetch_expert_ids
