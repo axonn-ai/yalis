@@ -27,6 +27,7 @@ from kvcache_manager import KVCacheManager
 from yalis.attention.flash import flash_apply_rotary as apply_rotary
 from yalis.attention.backends import AttentionBackend
 from yalis.attention.masking import create_causal_block_mask_for_flex_attention
+from yalis.external.fused_moe import fused_topk
 
 
 # TODO: these should be dynamically set during engine initialization
@@ -1078,8 +1079,15 @@ class LLaMAMoE(nn.Module):
         x = x.view(-1, C)  # (B*T, C)
         router = self.gate(x)  # (B*T, n_expert)
 
+        topk_weights, topk_ids = fused_topk(
+            x, router, self.config.n_expert_per_token, True
+        )
+
         if offload_manager is not None and offload_manager.is_inline_mode():
-            row_indices = offload_manager.row_indices_callback(self.block_idx)
+            if topk_ids.shape[0] == 1:
+                row_indices = topk_ids.squeeze(0).cpu()
+            else:
+                row_indices = None
             offload_manager.fetch_layer(self.block_idx, row_indices=row_indices, non_blocking=False)
         
         y = self.experts(x, router)

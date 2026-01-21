@@ -10,16 +10,14 @@ from typing import List, Set
 # Critical for CPU offloading to work with torch.compile
 compiler_disable = getattr(torch.compiler, 'disable', lambda: lambda f: f)
 
-# Valid component names for offloading (including MoE sub-components)
-VALID_COMPONENTS = {"mlp", "attn", "norm", "mlp.experts", "mlp.gate"}
+# Valid component names for offloading
+VALID_COMPONENTS = {"mlp", "attn", "norm"}
 
 # Full offload = all components
 FULL_OFFLOAD = ["mlp", "attn", "norm"]
 
-# Component hierarchy: parent -> children
-COMPONENT_HIERARCHY = {
-    "mlp": ["mlp.gate", "mlp.experts"],
-}
+# No component hierarchy - "mlp" means experts-only for MoE, full MLP for dense
+COMPONENT_HIERARCHY = {}
 
 
 class PrefetchMode(Enum):
@@ -35,7 +33,7 @@ def get_mode(mode_str: str) -> PrefetchMode:
     """Convert string to PrefetchMode enum."""
     mapping = {
         "all": None,
-        "rows": PrefetchMode.EXPERT_ONLY,
+        "rows": None,
         "inline": PrefetchMode.INLINE,
     }
     return mapping.get(mode_str.lower(), PrefetchMode.FULL_LAYER)
@@ -57,22 +55,28 @@ def get_component_for_param(name: str) -> str:
     """
     Determine which component a parameter belongs to based on name.
     
-    Returns the most specific component for MoE models:
-    - 'mlp.experts' for expert weights (gate_up_proj, proj in TPMoE)
-    - 'mlp.gate' for the router (gate linear layer in LLaMAMoE)
-    - 'mlp' for regular dense MLP layers
+    For MoE models:
+    - 'mlp' for expert weights (gate_up_proj, proj in experts)
+    - Router (gate) is NOT considered part of 'mlp' component (always GPU-resident)
+    
+    For regular MLP:
+    - 'mlp' for all MLP layers
+    
+    Returns:
+    - 'mlp' for MLP/expert layers
     - 'attn' for attention layers
     - 'norm' for normalization layers
     """
     if 'attn' in name:
         return 'attn'
     elif 'mlp' in name:
-        # Check for MoE sub-components (more specific patterns first)
-        if 'experts' in name:
-            return 'mlp.experts'
-        # 'gate' alone is the router, but 'gate_up_proj' is part of experts
-        elif 'gate' in name and 'gate_up_proj' not in name:
-            return 'mlp.gate'
+        # For MoE: check if this is the router (gate) - should NOT be offloaded
+        # Router path: mlp.gate.weight (the linear layer for routing)
+        # Expert path: mlp.experts.gate_up_proj, mlp.experts.proj
+        if 'mlp.gate.weight' in name or 'mlp.gate.bias' in name:
+            # This is the router - mark it as 'norm' so it won't match 'mlp' component
+            # (router stays on GPU, not offloaded as part of 'mlp')
+            return 'router'  # Special component that won't match any offload component
         return 'mlp'
     return 'norm'
 
@@ -81,65 +85,39 @@ def expand_components(components: List[str]) -> List[str]:
     """
     Expand parent components to include sub-components for matching.
     
-    When "mlp" is specified, parameters with 'mlp.gate' or 'mlp.experts' 
-    should also be matched. This maintains backward compatibility.
+    No expansion needed anymore - 'mlp' directly means:
+    - Experts only for MoE models
+    - Full MLP for dense models
     
-    Example:
-        ["mlp", "attn"] -> ["mlp", "mlp.gate", "mlp.experts", "attn"]
+    This is a no-op but kept for backward compatibility.
     """
-    expanded = set(components)
-    for comp in components:
-        if comp in COMPONENT_HIERARCHY:
-            expanded.update(COMPONENT_HIERARCHY[comp])
-    return list(expanded)
+    return components
 
 
 def component_matches(param_component: str, offload_components: List[str]) -> bool:
     """
     Check if a parameter's component matches any of the offload components.
     
-    Handles hierarchical matching:
-    - Direct match: 'mlp.experts' matches ['mlp.experts']
-    - Parent match: 'mlp.experts' matches ['mlp'] (parent includes children)
+    Direct matching only - no hierarchy.
     
     Args:
-        param_component: The component name for a parameter (e.g., 'mlp.experts')
+        param_component: The component name for a parameter (e.g., 'mlp', 'attn')
         offload_components: List of components to offload (e.g., ['mlp', 'attn'])
     
     Returns:
         True if param should be offloaded based on component matching
     """
-    # Direct match
-    if param_component in offload_components:
-        return True
-    
-    # Check if parent is in offload_components
-    # e.g., 'mlp.experts' -> parent is 'mlp'
-    if '.' in param_component:
-        parent = param_component.rsplit('.', 1)[0]
-        if parent in offload_components:
-            return True
-    
-    return False
+    return param_component in offload_components
 
 
 def get_unique_components_for_offload(offload_components: List[str]) -> Set[str]:
     """
     Get the set of unique fine-grained components to offload.
     
-    This expands parent components and returns only leaf components
-    to avoid double-counting in buffer allocation.
+    No expansion needed - returns components as-is.
     
     Example:
-        ["mlp", "attn"] -> {"mlp.gate", "mlp.experts", "attn"}
-        ["mlp.experts", "attn"] -> {"mlp.experts", "attn"}
+        ["mlp", "attn"] -> {"mlp", "attn"}
     """
-    result = set()
-    for comp in offload_components:
-        if comp in COMPONENT_HIERARCHY:
-            # Parent component: add children
-            result.update(COMPONENT_HIERARCHY[comp])
-        else:
-            result.add(comp)
-    return result
+    return set(offload_components)
 

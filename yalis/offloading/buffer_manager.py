@@ -50,7 +50,6 @@ class GPUBufferManager:
         self.num_buffer_sets = num_buffer_sets
         
         # Get unique fine-grained components for buffer allocation
-        # This expands "mlp" to ["mlp.gate", "mlp.experts"] etc.
         self.buffer_components = get_unique_components_for_offload(self.offload_components)
         
         # Allocate multiple buffer sets
