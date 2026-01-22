@@ -14,6 +14,8 @@ from .constants import (
 )
 from .buffer_manager import GPUBufferManager
 
+from yalis.constants import EnginePhase
+
 
 class CPUOffloadManager:
     """
@@ -279,6 +281,8 @@ class CPUOffloadManager:
         if layer_idx < 0 or layer_idx >= self.num_layers:
             return
 
+        row_indices = row_indices.cpu() if row_indices.device.type != 'cpu' else row_indice/fe
+
         if stream == None:
             stream = self.transfer_stream
         
@@ -292,7 +296,8 @@ class CPUOffloadManager:
             row_indices,
             stream,
             component,
-            buffer_idx
+            buffer_idx,
+            non_blocking=non_blocking,
         )
         
         if not non_blocking:
@@ -350,7 +355,6 @@ class CPUOffloadManager:
         with torch.cuda.stream(current_stream):
             if row_indices is not None:
                 for comp in components:
-                    #print_rank0(f"[CPUOffloadManager] Fetching layer {layer_idx} rows {row_indices}")
                     self._move_rows_to_gpu(layer_idx, row_indices, comp, non_blocking=False, stream=current_stream)
             else:
                 self._move_components_to_gpu(layer_idx, components, non_blocking=False)
@@ -404,7 +408,7 @@ class CPUOffloadManager:
         return self.prefetch_mode == PrefetchMode.INLINE
     
     @contextmanager
-    def layer_context(self, layer_idx: int):
+    def layer_context(self, layer_idx: int, phase: EnginePhase, prefetch_expert_ids=None, next_prefetch_expert_ids=None):
         """
         Context manager for layer execution with overlapped prefetching.
         
@@ -424,8 +428,11 @@ class CPUOffloadManager:
         
         if layer_idx not in self.layers_on_gpu:
             row_indices = None
-            if self.row_indices_callback:
-                row_indices = self.row_indices_callback(layer_idx)
+            if self.row_indices_callback and phase != EnginePhase.PREFILL:
+                if prefetch_expert_ids is not None:
+                    row_indices = prefetch_expert_ids.squeeze(0)
+                else:
+                    row_indices = self.row_indices_callback(layer_idx)
             self.fetch_layer(layer_idx, row_indices=row_indices, non_blocking=False)
         
         # Start prefetching next layers
@@ -433,8 +440,12 @@ class CPUOffloadManager:
             next_idx = layer_idx + offset
             if next_idx < self.num_layers:
                 row_indices = None
-                if self.row_indices_callback:
-                    row_indices = self.row_indices_callback(next_idx)
+                if self.row_indices_callback and phase != EnginePhase.PREFILL:
+                    if next_prefetch_expert_ids is not None:
+                        # TODO: This is not generalized and we should not assume squeeze(0)
+                        row_indices = next_prefetch_expert_ids.squeeze(0)
+                    else:
+                        row_indices = self.row_indices_callback(next_idx)
                 self.prefetch_layer(next_idx, row_indices=row_indices)
         
         yield

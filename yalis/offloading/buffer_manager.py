@@ -132,6 +132,7 @@ class GPUBufferManager:
         stream: torch.cuda.Stream,
         component: str = "mlp",
         buffer_idx: int = 0,
+        non_blocking: bool = True,
     ):
         """Copy specific rows of a component (for sparse computation)."""
         buffer_set = self.get_buffer_set(buffer_idx)
@@ -153,9 +154,10 @@ class GPUBufferManager:
                     # Copy rows for 2D, full copy for 1D
                     if cpu_tensor.dim() >= 2 and row_indices is not None:
                         for r in row_indices.tolist():
-                            gpu_buffer[r].copy_(cpu_tensor[r], non_blocking=True)
+                            assert r < cpu_tensor.size(0), f"Row index {r} out of bounds for tensor {name} with size {cpu_tensor.size(0)}"
+                            gpu_buffer[r].copy_(cpu_tensor[r], non_blocking=non_blocking)
                     else:
-                        gpu_buffer.copy_(cpu_tensor, non_blocking=True)
+                        gpu_buffer.copy_(cpu_tensor, non_blocking=non_blocking)
                     
                     # Point param to buffer if needed
                     self._maybe_set_param(block, name, gpu_buffer)
