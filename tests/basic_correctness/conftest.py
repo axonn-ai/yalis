@@ -133,7 +133,8 @@ def yalis_engine(model_id, dtype, attn_backend):
         model_path = os.path.abspath(model_id)
     else:
         model_path = model_id
-    model_config = ModelConfig(model_path=model_path, precision=dtype.yalis)
+    model_name_for_config = os.path.basename(model_path)
+    model_config = ModelConfig(model_name_for_config, model_path=model_path, precision=dtype.yalis)
     inference_config = InferenceConfig(
         max_batch_size=8,
         max_length_of_generated_sequences=2048,
@@ -162,12 +163,10 @@ def speculative_engine(model_id, draft_model_id, dtype, attn_backend):
     else:
         draft_model_path = draft_model_id
     
-    target_model_config = ModelConfig(
-        model_path=target_model_path, precision=dtype.yalis
-    )
-    draft_model_config = ModelConfig(
-        model_path=draft_model_path, precision=dtype.yalis
-    )
+    target_model_name = os.path.basename(target_model_path)
+    draft_model_name = os.path.basename(draft_model_path)
+    target_model_config = ModelConfig(target_model_name, model_path=target_model_path, precision=dtype.yalis)
+    draft_model_config = ModelConfig(draft_model_name, model_path=draft_model_path, precision=dtype.yalis)
     inference_config = InferenceConfig(
         max_batch_size=8,
         max_length_of_generated_sequences=2048,
