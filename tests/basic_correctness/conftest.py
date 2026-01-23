@@ -81,7 +81,7 @@ def attn_backend(request):
     yalis_attnb = attnb
 
     hf_map = {
-        "sdpa": "sdpa",
+        "sdpa": "eager",  # Use eager as fallback for models that don't support SDPA yet (e.g., GptOssForCausalLM)
         "flash": "flash_attention_2",
         # For some reason, flex does not work with in hf right now
         "flex": "flash_attention_2",
