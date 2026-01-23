@@ -1,3 +1,4 @@
+import os
 import pytest
 import torch.distributed as dist
 import torch
@@ -127,7 +128,12 @@ def hf_model(model_id, dtype, attn_backend, device):
 @pytest.fixture(scope="module")
 def yalis_engine(model_id, dtype, attn_backend):
     """Create a standard Yalis LLMEngine."""
-    model_config = ModelConfig(model_name=model_id, precision=dtype.yalis)
+    # Resolve model_path: if model_id is a relative path, make it absolute relative to repo root
+    if not os.path.isabs(model_id):
+        model_path = os.path.abspath(model_id)
+    else:
+        model_path = model_id
+    model_config = ModelConfig(model_path=model_path, precision=dtype.yalis)
     inference_config = InferenceConfig(
         max_batch_size=8,
         max_length_of_generated_sequences=2048,
@@ -145,11 +151,22 @@ def yalis_engine(model_id, dtype, attn_backend):
 @pytest.fixture(scope="module")
 def speculative_engine(model_id, draft_model_id, dtype, attn_backend):
     """Create a SpeculativeLLMEngine for testing."""
+    # Resolve model paths: if relative, make absolute relative to repo root
+    if not os.path.isabs(model_id):
+        target_model_path = os.path.abspath(model_id)
+    else:
+        target_model_path = model_id
+    
+    if not os.path.isabs(draft_model_id):
+        draft_model_path = os.path.abspath(draft_model_id)
+    else:
+        draft_model_path = draft_model_id
+    
     target_model_config = ModelConfig(
-        model_name=model_id, precision=dtype.yalis
+        model_path=target_model_path, precision=dtype.yalis
     )
     draft_model_config = ModelConfig(
-        model_name=draft_model_id, precision=dtype.yalis
+        model_path=draft_model_path, precision=dtype.yalis
     )
     inference_config = InferenceConfig(
         max_batch_size=8,

@@ -12,7 +12,7 @@ _KinetoProfile._get_distributed_info = lambda self: None
 
 if __name__ == "__main__":
     # Model ID from Hugging Face
-    model_id = "/home/hoffmuki/scratch/yalis/yalis/external/checkpoints/openai/gpt-oss-20b"
+    model_id = "yalis/external/checkpoints/openai/gpt-oss-20b"
 
     user_prompts = [
         "How to bake a cake?",
