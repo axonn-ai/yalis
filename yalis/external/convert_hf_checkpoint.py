@@ -1502,7 +1502,8 @@ def convert_hf_checkpoint(
     config = Config.from_name(model_name)
     
     # For GPT-OSS, load actual dimensions from HF config.json
-    if model_name.lower().startswith("gpt-oss") or config.mlp_class_name == "GptOssMoE":
+    if "gpt-oss" in model_name.lower():
+        print("Loading GPT-OSS config.json to get model dimensions...")
         hf_config_path = checkpoint_dir / "config.json"
         if hf_config_path.exists():
             import json

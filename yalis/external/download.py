@@ -151,6 +151,7 @@ def download_from_hub(
         # directory name (e.g., 'gpt-oss-20b') rather than the nested folder name
         # (e.g., 'metal') which is not a model config name.
         local_model_name = model_name or directory.name
+        print(f'Using model_name = "{local_model_name}"')
         convert_hf_checkpoint(
             checkpoint_dir=resolved_dir, dtype=dtype, model_name=local_model_name
         )
