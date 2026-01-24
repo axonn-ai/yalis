@@ -73,13 +73,14 @@ def download_from_hub(
     download_files = ["tokenizer*", "generation_config.json", "config.json"]
     if not tokenizer_only:
         bins, safetensors = find_weight_files(repo_id, access_token)
-        if bins:
-            # covers `.bin` files and `.bin.index.json`
-            download_files.append("*.bin*")
-        elif safetensors:
+        # Prefer safetensors (more robust, standard HF format) over .bin files
+        if safetensors:
             if not _SAFETENSORS_AVAILABLE:
                 raise ModuleNotFoundError(str(_SAFETENSORS_AVAILABLE))
             download_files.append("*.safetensors*")
+        elif bins:
+            # covers `.bin` files and `.bin.index.json`
+            download_files.append("*.bin*")
         else:
             raise ValueError(f"Couldn't find weight files for {repo_id}")
 
