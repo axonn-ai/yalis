@@ -1725,7 +1725,11 @@ def convert_hf_checkpoint(
                             )
                             del chunk
                     else:
-                        hf_weights = load_safetensors(bin_file)
+                        # Non-safetensors files (e.g., PyTorch .bin) should be
+                        # loaded lazily using the provided `lazy_load` helper
+                        # rather than attempting to parse them with the
+                        # safetensors loader which will fail on .bin files.
+                        hf_weights = lazy_load(bin_file)
                         copy_fn(
                             sd,
                             hf_weights,
