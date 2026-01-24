@@ -80,7 +80,7 @@ if __name__ == "__main__":
         max_length_of_generated_sequences=1024,
         top_p=0.80,
         temperature=0.0,
-        tp_dims=None,
+        tp_dims=(2,1,1),
         attention_backend="sdpa",
         use_paged_kv_caching=False,
         prestore_kv_cache=True,
