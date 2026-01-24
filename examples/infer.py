@@ -38,9 +38,7 @@ if __name__ == "__main__":
     print(f"Number of prompts = {len(user_prompts)}")
 
     system_prompt = (
-        "You are a helpful assistant. Answer directly and concisely. "
-        "Avoid meta-commentary or self-referential reasoning. Give a clear, actionable "
-        "response to the user's question.\n"
+        "You are a helpful chatbot. Answer the following question.\n"
     )
 
     # profile the run or not
