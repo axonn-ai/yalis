@@ -147,10 +147,13 @@ def download_from_hub(
         resolved_dir = _find_weights_dir(directory)
         if resolved_dir != directory:
             print(f"Detected weight files in nested directory: {resolved_dir}")
+        # If user did not provide an explicit model_name, prefer the top-level
+        # directory name (e.g., 'gpt-oss-20b') rather than the nested folder name
+        # (e.g., 'metal') which is not a model config name.
+        local_model_name = model_name or directory.name
         convert_hf_checkpoint(
-            checkpoint_dir=resolved_dir, dtype=dtype, model_name=model_name
+            checkpoint_dir=resolved_dir, dtype=dtype, model_name=local_model_name
         )
-
 
 def find_weight_files(
     repo_id: str, access_token: Optional[str]
