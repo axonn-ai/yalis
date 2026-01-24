@@ -62,7 +62,7 @@ def next_row_indices_callback(next_layer_index: int) -> Optional[list[int]]:
     total_experts = 128
 
     # Choose 8 experts randomly from the total experts
-    experts = torch.randint(0, total_experts, (8,))
+    experts = torch.randint(0, total_experts, (8,), device="cuda")
     return torch.sort(experts).values
 
 

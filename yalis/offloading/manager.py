@@ -58,7 +58,7 @@ class CPUOffloadManager:
         
         # CUDA streams
         self.compute_stream = torch.cuda.Stream(device=device)
-        self.transfer_stream = torch.cuda.Stream(device=device)
+        self.transfer_stream = torch.cuda.Stream(device=device, priority=-1)
         
         # State tracking
         self.layers_on_gpu: Set[int] = set()
@@ -78,7 +78,11 @@ class CPUOffloadManager:
         
         # Callback for sparse row indices
         self.row_indices_callback: Optional[Callable[[int], Optional[torch.Tensor]]] = None
-        
+
+        self.event_pool = {}
+        for i in range(self.num_layers):
+            self.event_pool[i] = torch.cuda.Event()
+    
     def _get_transformer_blocks(self) -> nn.ModuleList:
         """Get transformer blocks from model."""
         if hasattr(self.model, 'transformer') and hasattr(self.model.transformer, 'h'):
@@ -114,7 +118,7 @@ class CPUOffloadManager:
             self._prepare_block(idx, block)
         
         # Load first layer
-        self._move_components_to_gpu(0)
+        self._move_components_to_gpu(0, non_blocking=False)
         
         print_rank0(f"[CPUOffloadManager] Prepared {self.num_layers} layers")
     
@@ -245,10 +249,10 @@ class CPUOffloadManager:
         if self.use_preallocated_buffers and self.gpu_buffer_manager:
             buffer_idx = self.gpu_buffer_manager.get_buffer_idx_for_layer(layer_idx)
             self.gpu_buffer_manager.copy_components(
-                block, cpu_state, self.transfer_stream, components, buffer_idx
+                block, cpu_state, self.transfer_stream, components, buffer_idx, non_blocking
             )
-            if not non_blocking:
-                self.transfer_stream.synchronize()
+            #if not non_blocking:
+            #    self.transfer_stream.synchronize()
         else:
             # Direct .to() transfer
             for name, param in block.named_parameters():
@@ -281,7 +285,7 @@ class CPUOffloadManager:
         if layer_idx < 0 or layer_idx >= self.num_layers:
             return
 
-        row_indices = row_indices.cpu() if row_indices.device.type != 'cpu' else row_indice/fe
+        row_indices = row_indices.cpu() if row_indices.device.type != 'cpu' else row_indices
 
         if stream == None:
             stream = self.transfer_stream
@@ -300,11 +304,11 @@ class CPUOffloadManager:
             non_blocking=non_blocking,
         )
         
-        if not non_blocking:
-          if stream is None:
-              self.transfer_stream.synchronize()
-          else:
-              stream.synchronize()
+        #if not non_blocking:
+        #  if stream is None:
+        #      self.transfer_stream.synchronize()
+        #  else:
+        #      stream.synchronize()
 
         
         self.components_on_gpu[layer_idx].add(f'{component}')
@@ -343,7 +347,6 @@ class CPUOffloadManager:
         layer_idx: int, 
         components: List[str] = None,
         row_indices: torch.Tensor = None,
-        non_blocking: bool = False,
     ):
         """Fetch layer synchronously."""
         if layer_idx < 0 or layer_idx >= self.num_layers:
@@ -352,12 +355,15 @@ class CPUOffloadManager:
         components = components or self.offload_components
         current_stream = torch.cuda.current_stream()
         
-        with torch.cuda.stream(current_stream):
+        with torch.cuda.stream(self.transfer_stream):
+            self.transfer_stream.wait_stream(current_stream)
             if row_indices is not None:
                 for comp in components:
-                    self._move_rows_to_gpu(layer_idx, row_indices, comp, non_blocking=False, stream=current_stream)
+                    self._move_rows_to_gpu(layer_idx, row_indices, comp, non_blocking=True)
             else:
-                self._move_components_to_gpu(layer_idx, components, non_blocking=False)
+                self._move_components_to_gpu(layer_idx, components, non_blocking=True)
+
+        current_stream.wait_stream(self.transfer_stream)
         
         
     def prefetch_layer(
@@ -384,7 +390,7 @@ class CPUOffloadManager:
             else:
                 self._move_components_to_gpu(layer_idx, components, non_blocking=True)
             
-            event = torch.cuda.Event()
+            event = self.event_pool[layer_idx]
             event.record(self.transfer_stream)
             self.transfer_events[layer_idx] = event
     
@@ -433,7 +439,7 @@ class CPUOffloadManager:
                     row_indices = prefetch_expert_ids.squeeze(0)
                 else:
                     row_indices = self.row_indices_callback(layer_idx)
-            self.fetch_layer(layer_idx, row_indices=row_indices, non_blocking=False)
+            self.fetch_layer(layer_idx, row_indices=row_indices)
         
         # Start prefetching next layers
         for offset in range(1, self.num_prefetch_layers + 1):

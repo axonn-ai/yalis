@@ -77,6 +77,8 @@ def get_component_for_param(name: str) -> str:
             # This is the router - mark it as 'norm' so it won't match 'mlp' component
             # (router stays on GPU, not offloaded as part of 'mlp')
             return 'router'  # Special component that won't match any offload component
+        if 'default_vect' in name:
+            return 'default_vect'
         return 'mlp'
     return 'norm'
 

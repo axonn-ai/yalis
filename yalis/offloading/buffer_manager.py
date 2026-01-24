@@ -112,6 +112,7 @@ class GPUBufferManager:
         stream: torch.cuda.Stream,
         components: List[str] = None,
         buffer_idx: int = 0,
+        non_blocking: bool = True,
     ):
         """Copy components from CPU to GPU buffers."""
         components = components or self.offload_components
@@ -121,7 +122,7 @@ class GPUBufferManager:
             # Iterate over buffer components and check if they match requested components
             for buffer_comp in self.buffer_components:
                 if buffer_comp in buffer_set and component_matches(buffer_comp, components):
-                    self._copy_to_buffer(block, cpu_state, buffer_set[buffer_comp])
+                    self._copy_to_buffer(block, cpu_state, buffer_set[buffer_comp], non_blocking)
     
     @compiler_disable()
     def copy_rows(
@@ -168,6 +169,7 @@ class GPUBufferManager:
         block: nn.Module,
         cpu_state: Dict[str, torch.Tensor],
         buffers: ComponentBuffers,
+        non_blocking: bool,
     ):
         """Copy tensors to GPU buffer."""
         for name, gpu_buffer in buffers.tensors.items():
@@ -178,7 +180,7 @@ class GPUBufferManager:
             param_data = self._get_param_data(block, name)
             
             # Copy data
-            gpu_buffer.copy_(cpu_tensor, non_blocking=True)
+            gpu_buffer.copy_(cpu_tensor, non_blocking=non_blocking)
             
             # Point param to buffer if not already
             if param_data is None or param_data.data_ptr() != gpu_buffer.data_ptr():

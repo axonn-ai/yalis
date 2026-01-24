@@ -1210,8 +1210,8 @@ class LLaMAMoE(nn.Module):
                 row_indices = None
             else:
                 row_indices = topk_ids.squeeze(0)
-            offload_manager.fetch_layer(self.block_idx, row_indices=row_indices, non_blocking=False) 
-            y = self.experts(x, router, topk_weights, topk_ids) # overlap load with expert computation
+            offload_manager.fetch_layer(self.block_idx, row_indices=row_indices) 
+            y = self.experts(x, router, topk_weights, topk_ids) 
             return y.view(B, T, C), None, None 
       
         next_prefetch_weights, next_prefetch_expert_ids = None, None  # prefetched expert weights and ids for next layer
