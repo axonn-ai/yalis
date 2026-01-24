@@ -140,7 +140,7 @@ def yalis_engine(model_id, dtype, attn_backend):
         max_length_of_generated_sequences=2048,
         top_p=0.0,
         temperature=0.0,
-        tp_dims=None,
+        tp_dims=(2,1,1),
         attention_backend=attn_backend.yalis,
         use_paged_kv_caching=False,
     )
@@ -172,7 +172,7 @@ def speculative_engine(model_id, draft_model_id, dtype, attn_backend):
         max_length_of_generated_sequences=2048,
         top_p=0.0,
         temperature=0.0,
-        tp_dims=None,
+        tp_dims=(2,1,1),
         attention_backend=attn_backend.yalis,
         use_paged_kv_caching=False,
     )
