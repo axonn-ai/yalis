@@ -1729,7 +1729,19 @@ def convert_hf_checkpoint(
                         # loaded lazily using the provided `lazy_load` helper
                         # rather than attempting to parse them with the
                         # safetensors loader which will fail on .bin files.
-                        hf_weights = lazy_load(bin_file)
+                        try:
+                            hf_weights = lazy_load(bin_file)
+                        except RuntimeError as e:
+                            # Fallback: try safetensors loader in case the file is
+                            # mislabeled or uses the safetensors format.
+                            try:
+                                hf_weights = load_safetensors(bin_file)
+                            except Exception:
+                                raise RuntimeError(
+                                    f"Failed to read checkpoint file {bin_file!s} as a PyTorch .bin (lazy_load) and as a safetensors file. "
+                                    "This may indicate the file is corrupt, incomplete, or uses an unsupported format. "
+                                    "Please verify the downloaded files and consider re-downloading or pointing to the correct subdirectory."
+                                ) from e
                         copy_fn(
                             sd,
                             hf_weights,
@@ -1758,7 +1770,17 @@ def convert_hf_checkpoint(
                         )
                         del chunk
                 else:
-                    hf_weights = lazy_load(bin_file)
+                    try:
+                        hf_weights = lazy_load(bin_file)
+                    except RuntimeError as e:
+                        try:
+                            hf_weights = load_safetensors(bin_file)
+                        except Exception:
+                            raise RuntimeError(
+                                f"Failed to read checkpoint file {bin_file!s} as a PyTorch .bin (lazy_load) and as a safetensors file. "
+                                "This may indicate the file is corrupt, incomplete, or uses an unsupported format. "
+                                "Please verify the downloaded files and consider re-downloading or pointing to the correct subdirectory."
+                            ) from e
                     copy_fn(
                         sd,
                         hf_weights,
