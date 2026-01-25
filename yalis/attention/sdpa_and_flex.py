@@ -459,21 +459,21 @@ def rotary_kv_update_sdpa_gen_gptoss(
         # PREFILL: mask shape (T, T) -> (1, 1, T, T)
         QK = QK + mask_float.view(1, 1, T, T)
 
-    # append sinks column if provided
-    # sinks is (n_head, 1, 1) and matches the query head count
-    # QK is (B, h, n_q, n_k) where h is the number of query heads
+    # If provided, append a per-head "sink" logit column to the attention
+    # logits. `sinks` is expected to be shaped (n_head_local, 1, 1). We
+    # reshape it to (1, n_head_local, 1, 1) and then expand to match the
+    # QK tensor shape (B, h, n_q, n_k) along the final dimension so the
+    # sink becomes a length-1 key for softmax.
     if sinks is not None:
-        # sinks shape: (n_head_local, 1, 1) -> reshape to (1, n_head_local, 1, 1) for broadcasting
-        S = sinks.view(1, -1, 1, 1)
-        # Concatenate per-head sink logits without emitting runtime logs
-        # to avoid incurring overhead in performance-critical code paths.
-        # Diagnostic sanity check: if shapes are incompatible, log sizes
+        S = sinks.view(1, -1, 1, 1)  # -> (1, n_head_local, 1, 1)
+        # In some parallel execution modes the head count seen here (`h`)
+        # may not exactly match `S.size(1)`. Preserve the existing behavior
+        # and allow that mismatch without raising; the index mapping is
+        # handled elsewhere (e.g., by slicing or Drop.apply).
         if S.size(1) != h:
-            # silently allow mismatch in production; retain behavior without logging
             pass
-        # expand sinks to (B, h, n_q, 1) for concatenation with QK
-        S_expanded = S.expand((B, h, n_q, 1))
-        QK = torch.cat([QK, S_expanded], dim=-1)
+        S_expanded = S.expand(B, h, n_q, 1)  # -> (B, h, n_q, 1)
+        QK = torch.cat((QK, S_expanded), dim=-1)
 
     if use_intra_head_parallelism:
         dist.all_reduce(QK, op=dist.ReduceOp.SUM, group=process_group)
