@@ -126,6 +126,12 @@ if __name__ == "__main__":
 
     output_tokens = output_tokens.cpu()
 
+    # Clamp token IDs to valid vocab range. The model's logits may include
+    # padding up to padded_vocab_size, but the tokenizer only recognizes
+    # tokens up to vocab_size. Clamp to prevent invalid token decoding.
+    actual_vocab_size = tokenizer.vocab_size
+    output_tokens = torch.clamp(output_tokens, max=actual_vocab_size - 1)
+
     # Decode the token IDs into text
     detokenized_text = tokenizer.batch_decode(
         output_tokens, skip_special_tokens=True
