@@ -1502,8 +1502,7 @@ def convert_hf_checkpoint(
     config = Config.from_name(model_name)
     
     # For GPT-OSS, load actual dimensions from HF config.json
-    if "gpt-oss" in model_name.lower():
-        print("Loading GPT-OSS config.json to get model dimensions...")
+    if model_name.lower().startswith("gpt-oss"):
         hf_config_path = checkpoint_dir / "config.json"
         if hf_config_path.exists():
             import json
@@ -1591,7 +1590,7 @@ def convert_hf_checkpoint(
 
     if "falcon" in model_name:
         copy_fn = partial(copy_weights_falcon, model_name)
-    elif model_name.lower().startswith("gpt-oss") or config.mlp_class_name == "GptOssMoE":
+    elif model_name.lower().startswith("gpt-oss"):
         # GPT-OSS models with quantized MoE
         qkv_weights = {}
         moe_weights = {}
