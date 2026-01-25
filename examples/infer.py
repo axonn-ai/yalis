@@ -47,6 +47,21 @@ if __name__ == "__main__":
     # Tokenizer for encoding the prompt
     tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True, local_files_only=True)
 
+    # Set a default chat template if not already present
+    if tokenizer.chat_template is None:
+        tokenizer.chat_template = (
+            "{% for message in messages %}"
+            "{% if message['role'] == 'system' %}"
+            "{{ message['content'] }}\n\n"
+            "{% elif message['role'] == 'user' %}"
+            "{{ message['content'] }}\n\n"
+            "{% elif message['role'] == 'assistant' %}"
+            "{{ message['content'] }}\n"
+            "{% endif %}"
+            "{% endfor %}"
+            "{% if add_generation_prompt %}Assistant:{% endif %}"
+        )
+
     input_prompts = []
     for user_prompt in user_prompts:
         conversation = [
