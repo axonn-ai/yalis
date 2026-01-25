@@ -236,9 +236,8 @@ class LLMEngine:
         print_rank0(
             f"Memory Stats after Symm Pool Creation - {get_gpu_memory_info()} "
         )
-        # Try loading tokenizer from model_path first (for local checkpoints), 
-        # then fall back to model_name (for HF models)
-        import os
+        # Try loading tokenizer from model_path first for local checkpoints, 
+        # then fall back to model_name for HF models
         tokenizer_path = model_config.model_path if os.path.isdir(model_config.model_path) else model_config.model_name
         tokenizer = AutoTokenizer.from_pretrained(
             tokenizer_path, 

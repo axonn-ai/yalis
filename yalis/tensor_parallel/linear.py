@@ -452,35 +452,7 @@ class TPLinear(torch.nn.Module):
         if weight is not None:
             # Determine which layout the checkpoint provided
             is_full_weight_matrix = self._is_full_weight_matrix(weight)
-            is_sharded_weight_matrix = self._is_sharded_weight_matrix(weight)
-
-            # Compute specific sharding flags for clearer diagnostics
-            provided_shape = tuple(weight.shape)
-            fully_sharded = (
-                weight.size(0) == self.local_out_features
-                and weight.size(1) == self.local_in_features
-            )
-            row_parallel = (
-                weight.size(0) == self.local_out_features
-                and weight.size(1) == self.in_features
-            )
-            col_parallel = (
-                weight.size(0) == self.out_features
-                and weight.size(1) == self.local_in_features
-            )
-
-            if not (is_full_weight_matrix or is_sharded_weight_matrix):
-                import sys
-                print(f"[LINEAR LOADER ERROR] {prefix}weight", file=sys.stderr)
-                print(f"  Provided shape: {provided_shape}", file=sys.stderr)
-                print(f"  self.out_features={self.out_features}, self.in_features={self.in_features}", file=sys.stderr)
-                print(f"  self.local_out_features={self.local_out_features}, self.local_in_features={self.local_in_features}", file=sys.stderr)
-                print(f"  is_full_weight_matrix={is_full_weight_matrix} (expects {self.out_features} x {self.in_features})", file=sys.stderr)
-                print(f"  is_sharded_weight_matrix={is_sharded_weight_matrix}", file=sys.stderr)
-                print(f"    fully_sharded={fully_sharded} ({self.local_out_features} x {self.local_in_features})", file=sys.stderr)
-                print(f"    row_parallel={row_parallel} ({self.local_out_features} x {self.in_features})", file=sys.stderr)
-                print(f"    col_parallel={col_parallel} ({self.out_features} x {self.local_in_features})", file=sys.stderr)
-            
+            is_sharded_weight_matrix = self._is_sharded_weight_matrix(weight)           
             assert (
                 is_full_weight_matrix or is_sharded_weight_matrix
             ), "This is neither a full checkpoint nor a sharded checkpoint"
@@ -541,7 +513,6 @@ class TPLinear(torch.nn.Module):
                 else None
             )
             if bias is not None:
-                # Skip TP sharding logic for MoE biases (2D), only process 1D biases
                 if bias.ndim == 1:
                     if bias.size(0) == self.out_features:
                         # Full checkpoint: shard bias to local_out_features

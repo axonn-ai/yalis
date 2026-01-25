@@ -1251,7 +1251,6 @@ def copy_weights_gpt_oss(
                 param = load_param(param, name, dtype, verbose=debug_mode)
                 state_dict[to_name] = param
             elif "self_attn.o_proj.bias" in name:
-                # GPT-OSS uses attention biases (attention_bias=True in HF config)
                 to_name = f"transformer.h.{number}.attn.proj.bias"
                 param = load_param(param, name, dtype, verbose=debug_mode)
                 state_dict[to_name] = param
@@ -1391,7 +1390,7 @@ def copy_weights_gpt_oss(
             gate_up_scales = load_param(moe["gate_up_proj_scales"], f"layer {i} gate_up_proj_scales", None, verbose=debug_mode)  # Keep as uint8
             gate_up_bias = load_param(moe["gate_up_proj_bias"], f"layer {i} gate_up_proj_bias", dtype, verbose=debug_mode)
             
-            # Dequantize gate_up using MXFP4 decoding (following GPT-OSS reference)
+            # Dequantize gate_up using MXFP4 decoding
             # Blocks shape: (n_experts, out_features, in_blocks, block_size=16)
             # Each uint8 byte contains TWO 4-bit FP4 values (nibbles)
             n_experts, out_features, in_blocks, block_size = gate_up_blocks.shape
@@ -1505,7 +1504,6 @@ def convert_hf_checkpoint(
     if model_name.lower().startswith("gpt-oss"):
         hf_config_path = checkpoint_dir / "config.json"
         if hf_config_path.exists():
-            import json
             with open(hf_config_path, "r") as f:
                 hf_config = json.load(f)
             

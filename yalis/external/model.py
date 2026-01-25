@@ -237,11 +237,11 @@ class GPT(nn.Module):
 
         extra_config = None
 
-        # Check for yaRN mode in rope_adjustments (GPT-OSS style)
+        # Check for yaRN mode in rope_adjustments
         if getattr(self.config, "rope_adjustments", None) is not None:
             rope_adj = self.config.rope_adjustments
             
-            # Check if this is yaRN mode (GPT-OSS style)
+            # Check if this is yaRN mode
             if rope_adj.get("mode") == "yaRN":
                 extra_config = {
                     "mode": "yaRN",
@@ -510,7 +510,7 @@ class Block(nn.Module):
         """
 
         x_normed = self.norm_1(x)
-        # Use self.sinks if no sinks argument provided (for GPT-OSS mode)
+        # Use self.sinks if no sinks argument provided
         effective_sinks = sinks if sinks is not None else self.sinks
         attention_output = self.attn(
             x_normed,
@@ -558,7 +558,7 @@ class CausalSelfAttention(nn.Module):
         # output projection
         # if `head_size` is explicitly specified in the config,
         # `n_embd` might not be equal to `head_size * n_head`
-        # Use attn_bias for output projection as well (GPT-OSS uses attention_bias=True)
+        # Use attn_bias for output projection as well
         if not config.tensor_parallel:
             self.proj = nn.Linear(
                 config.head_size * config.n_head,
@@ -1245,7 +1245,7 @@ class GptOssMoE(nn.Module):
         # x: (B, T, C)
         B, T, C = x.size()
         M = B * T
-        # Flatten batch and sequence dims to behave like GPT-OSS' per-token MLP
+        # Flatten batch and sequence dims
         t = x.view(M, C)  # (M, C)
 
         # gating

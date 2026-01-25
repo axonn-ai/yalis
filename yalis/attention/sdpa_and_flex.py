@@ -257,51 +257,50 @@ def rotary_kv_update_sdpa_gen_gptoss(
     if use_intra_head_parallelism:
         assert not use_flex, "GPT-OSS helper does not support flex attention"
         q = Drop.apply(q, process_group).contiguous()
-        # Also apply Drop to sinks if provided, since sinks is per-head.
-        # Drop semantics vary by tensor rank; explicitly expand sinks to
-        # (1, n_head, 1, 1) and drop along dim=1 (head dim) so the
-        # resulting sinks matches the reduced per-inner-rank head count.
+        # If `sinks` is provided it is per-head. Expand to the 4D
+        # layout expected by downstream code, then apply Drop along the
+        # head dimension so the reduced-per-inner-rank sinks match the
+        # dropped `q` shape.
         if sinks is not None:
-            S = sinks.view(1, -1, 1, 1)
-            S_dropped = Drop.apply(S, process_group, 1)
-            S = S_dropped.contiguous()
-            # keep sinks in the expanded 4D form so downstream code can
-            # use it directly when concatenating with QK
-            sinks = S
+            sinks_expanded = sinks.view(1, -1, 1, 1)
+            sinks_dropped = Drop.apply(sinks_expanded, process_group, 1)
+            sinks = sinks_dropped.contiguous()
     else:
         # When not using intra-head parallelism but tensor parallelism is active,
-        # sinks is still full-model-size (n_head_global, 1, 1) from Block initialization.
+        # sinks is still (n_head_global, 1, 1) from Block initialization.
         # We need to slice it to match the per-rank head count (nh).
         # Determine per-rank head count from q shape
         if sinks is not None:
-            # `ax.is_initialized` may be a boolean attribute in some axonn
-            # versions or a callable in others. Handle both cases safely.
+            # `ax.is_initialized` may be a boolean attribute in some
+            # axonn versions or a callable in others; handle both.
             is_ax_init = getattr(ax, "is_initialized", False)
-            if callable(is_ax_init):
-                ax_initialized = is_ax_init()
-            else:
-                ax_initialized = bool(is_ax_init)
-            # Initialize defaults
+            ax_initialized = is_ax_init() if callable(is_ax_init) else bool(is_ax_init)
+
+            # Defaults for single-process / non-distributed runs
             tp_rank = 0
             tp_size = 1
             if ax_initialized:
-                # `ax.comm_handle` exposes the intra-layer row rank as
-                # `intra_layer_row_parallel_rank`. Use it when available.
-                tp_rank = getattr(
-                    ax.comm_handle, "intra_layer_row_parallel_rank", None
-                )
+                # Prefer an explicit intra-layer row rank when available.
+                tp_rank = getattr(ax.comm_handle, "intra_layer_row_parallel_rank", None)
                 if tp_rank is None:
-                    # Fallback: try intra_layer_parallel_rank divided by G_intra_c
-                    tp_rank = getattr(ax.comm_handle, "intra_layer_parallel_rank", 0)
+                    # Fallback: derive a row-rank from the generic intra-layer
+                    # parallel rank and the G_intra_c configuration.
+                    raw_rank = getattr(ax.comm_handle, "intra_layer_parallel_rank", 0)
                     g_intra_c = getattr(ax.config, "G_intra_c", 1)
-                    tp_rank = (tp_rank // g_intra_c) % getattr(ax.config, "G_intra_r", 1)
+                    tp_rank = (raw_rank // g_intra_c) % getattr(ax.config, "G_intra_r", 1)
 
-                tp_size = getattr(ax.config, "G_intra_r", 1)
-            n_head_global = sinks.size(0)
+                tp_size = getattr(ax.config, "G_intra_r", 1) or 1
+
+            # Slice the global sinks to obtain the per-rank subset. Require
+            # that the total head count divides evenly across parallel ranks
+            # to avoid silent misalignment.
+            n_head_global = int(sinks.size(0))
+            if n_head_global % tp_size != 0:
+                raise ValueError(
+                    f"sinks head count ({n_head_global}) not divisible by tp_size ({tp_size})"
+                )
             n_head_per_rank = n_head_global // tp_size
-            
-            # Slice sinks to get only the heads for this rank
-            start_idx = tp_rank * n_head_per_rank
+            start_idx = int(tp_rank) * n_head_per_rank
             end_idx = start_idx + n_head_per_rank
             sinks = sinks[start_idx:end_idx]
 
@@ -459,19 +458,12 @@ def rotary_kv_update_sdpa_gen_gptoss(
         # PREFILL: mask shape (T, T) -> (1, 1, T, T)
         QK = QK + mask_float.view(1, 1, T, T)
 
-    # If provided, append a per-head "sink" logit column to the attention
-    # logits. `sinks` is expected to be shaped (n_head_local, 1, 1). We
+    # sinks is expected to be shaped (n_head_local, 1, 1). We
     # reshape it to (1, n_head_local, 1, 1) and then expand to match the
     # QK tensor shape (B, h, n_q, n_k) along the final dimension so the
     # sink becomes a length-1 key for softmax.
     if sinks is not None:
         S = sinks.view(1, -1, 1, 1)  # -> (1, n_head_local, 1, 1)
-        # In some parallel execution modes the head count seen here (`h`)
-        # may not exactly match `S.size(1)`. Preserve the existing behavior
-        # and allow that mismatch without raising; the index mapping is
-        # handled elsewhere (e.g., by slicing or Drop.apply).
-        if S.size(1) != h:
-            pass
         S_expanded = S.expand(B, h, n_q, 1)  # -> (B, h, n_q, 1)
         QK = torch.cat((QK, S_expanded), dim=-1)
 
