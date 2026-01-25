@@ -18,19 +18,19 @@ if __name__ == "__main__":
         "How to bake a cake?",
         "How to drive a car on a freeway?",
         "What are the best practices for time management?",
-        "Explain quantum mechanics in simple terms.",
-        "How do I write a great resume for a software engineer role?",
-        "What are the steps to start a successful business?",
-        "How can I improve my public speaking skills?",
-        "What are the benefits of a balanced diet?",
-        "How to train a dog to follow basic commands?",
-        "What is the process for applying to graduate school in the US?",
-        "How do I troubleshoot a slow internet connection?",
-        "What is the meaning of life according to philosophy?",
-        "How can I learn to play the guitar?",
-        "What are the key elements of a good story?",
-        "How do I stay motivated while working from home?",
-        "What is the easiest way to learn a new language?",
+       # "Explain quantum mechanics in simple terms.",
+       # "How do I write a great resume for a software engineer role?",
+       # "What are the steps to start a successful business?",
+       # "How can I improve my public speaking skills?",
+       # "What are the benefits of a balanced diet?",
+       # "How to train a dog to follow basic commands?",
+       # "What is the process for applying to graduate school in the US?",
+       # "How do I troubleshoot a slow internet connection?",
+       # "What is the meaning of life according to philosophy?",
+       # "How can I learn to play the guitar?",
+       # "What are the key elements of a good story?",
+       # "How do I stay motivated while working from home?",
+       # "What is the easiest way to learn a new language?",
     ]
 
     # take 16 prompts from this dataset
@@ -47,33 +47,9 @@ if __name__ == "__main__":
     # Tokenizer for encoding the prompt
     tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True, local_files_only=True)
 
-    # Set a default chat template if not already present
-    if tokenizer.chat_template is None:
-        tokenizer.chat_template = (
-            "{% for message in messages %}"
-            "{% if message['role'] == 'system' %}"
-            "{{ message['content'] }}\n\n"
-            "{% elif message['role'] == 'user' %}"
-            "{{ message['content'] }}\n\n"
-            "{% elif message['role'] == 'assistant' %}"
-            "{{ message['content'] }}\n"
-            "{% endif %}"
-            "{% endfor %}"
-            "{% if add_generation_prompt %}Assistant:{% endif %}"
-        )
-
     input_prompts = []
     for user_prompt in user_prompts:
-        conversation = [
-            {
-                "role": "system",
-                "content": system_prompt,
-            },  # not needed for gemma
-            {"role": "user", "content": user_prompt},
-        ]
-        formatted_prompt = tokenizer.apply_chat_template(
-            conversation, add_generation_prompt=True, tokenize=False
-        )
+        formatted_prompt = f"{system_prompt.strip()}\n\n{user_prompt.strip()}\n"
         input_prompts.append(formatted_prompt)
 
     # Number of tokens to generate
@@ -125,12 +101,6 @@ if __name__ == "__main__":
             dist.barrier()
 
     output_tokens = output_tokens.cpu()
-
-    # Clamp token IDs to valid vocab range. The model's logits may include
-    # padding up to padded_vocab_size, but the tokenizer only recognizes
-    # tokens up to vocab_size. Clamp to prevent invalid token decoding.
-    actual_vocab_size = tokenizer.vocab_size
-    output_tokens = torch.clamp(output_tokens, max=actual_vocab_size - 1)
 
     # Decode the token IDs into text
     detokenized_text = tokenizer.batch_decode(
