@@ -260,8 +260,37 @@ class GPT(nn.Module):
         
         self.kv_length = max_seq_length
 
+        sorted_channels = None
+        heavy_const = None
+        heavy_channel_num = None
+        q_heads = None
+        if self.config.attention_backend == AttentionBackend.DOUBLE_SPARSE:
+            from yalis.attention.double_sparse import (
+                load_channel_config,
+                init_double_sparse_state,
+                resolve_double_sparse_config,
+            )
+            q_heads = self.config.n_head
+            kv_heads = self.config.n_query_groups
+            heavy_channel_num, heavy_const = resolve_double_sparse_config(
+                head_dim=self.config.head_size,
+                max_seq_length=max_seq_length,
+                sparsity=self.config.double_sparse_sparsity,
+                heavy_channel_num=self.config.double_sparse_heavy_channel_num,
+                heavy_const=self.config.double_sparse_heavy_const,
+            )
+            if self.config.double_sparse_channel_config_path is None:
+                raise ValueError("double_sparse requires double_sparse_channel_config_path.")
+            sorted_channels = load_channel_config(
+                self.config.double_sparse_channel_config_path,
+                n_layers=len(self.transformer.h),
+                channel_type=self.config.double_sparse_channel_type,
+                heavy_channel_num=heavy_channel_num,
+                device=device if device is not None else torch.device("cuda"),
+            )
+
         # initialize the kv cache for all blocks
-        for block in self.transformer.h:
+        for idx, block in enumerate(self.transformer.h):
             block.attn.kv_cache = block.attn.build_kv_cache(
                 batch_size,
                 max_seq_length,
@@ -288,6 +317,18 @@ class GPT(nn.Module):
             )
             if self.config.attention_backend == AttentionBackend.THRESH_ATTN_NOWMP:
                 block.attn.nowmp_state = init_nowmp_state(batch_size, heads, device=device)
+            if self.config.attention_backend == AttentionBackend.DOUBLE_SPARSE:
+                block.attn.double_sparse_state = init_double_sparse_state(
+                    batch_size=batch_size,
+                    max_seq_length=max_seq_length,
+                    heads=q_heads if q_heads is not None else heads,
+                    head_dim=self.config.head_size,
+                    heavy_const=heavy_const,
+                    heavy_channel_num=heavy_channel_num,
+                    sorted_channel=sorted_channels[idx],
+                    device=device if device is not None else torch.device("cuda"),
+                    dtype=dtype,
+                )
 
         if self.config.use_paged_kv_caching:
             self.kv_cache_manager = KVCacheManager(batch_size, 
@@ -422,6 +463,7 @@ class CausalSelfAttention(nn.Module):
         self.powerlaw_a = None
         self.powerlaw_b = None
         self.nowmp_state = None
+        self.double_sparse_state = None
 
         self.config = config
         if config.tensor_parallel:
@@ -530,6 +572,7 @@ class CausalSelfAttention(nn.Module):
             powerlaw_a=self.powerlaw_a,
             powerlaw_b=self.powerlaw_b,
             nowmp_state=self.nowmp_state,
+            double_sparse_state=self.double_sparse_state,
         )
         
         if not self.config.attention_backend == AttentionBackend.FLASH:

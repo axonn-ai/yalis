@@ -93,7 +93,7 @@ if __name__ == "__main__":
         input_prompts.append(formatted_prompt)
 
     # Number of tokens to generate
-    tokens_to_gen = 4096
+    tokens_to_gen = 2048
 
     # configs
     model_config = ModelConfig(model_name=model_id, precision="fp16")

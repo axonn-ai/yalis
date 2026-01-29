@@ -16,38 +16,21 @@ limitations under the License.
 Adapted from https://github.com/thu-ml/SpargeAttn on 1/20/2026.
 Changes:
 - Removed int8 quantization (per-block int8 + scales) and compute attention in fp16/bf16.
-- Added optional GQA support by repeating KV heads for block-map computation.
-- Allowed non-square Q/K lengths for decode (removed the original qo_len==kv_len assertion).
+- Relocated into yalis; no other functional changes.
 """
 
-import torch
+import torch, math
 import triton
 import triton.language as tl
-
+import torch.nn.functional as F
 from .utils import hyperparameter_check, get_block_map_meansim
 
 _LOG2_E = 1.44269504
 
 
 @torch.compiler.disable
-def sparge_attn_meansim(
-    q,
-    k,
-    v,
-    attn_mask=None,
-    dropout_p=0.0,
-    is_causal=False,
-    scale=None,
-    smooth_k=True,
-    simthreshd1=0.3,
-    cdfthreshd=0.96,
-    pvthreshd=20,
-    attention_sink=False,
-    tensor_layout="HND",
-    output_dtype=torch.float16,
-    return_sparsity=False,
-):
-    assert q.size(-2) >= 128, "seq_len should be not less than 128."
+def spas_sage_attn_meansim(q, k, v, attn_mask=None, dropout_p=0.0, is_causal=False, scale=None, smooth_k=True, simthreshd1=0.3, cdfthreshd=0.96, pvthreshd=20, attention_sink=False, tensor_layout="HND", output_dtype=torch.float16, return_sparsity=False):
+    assert q.size(-2)>=128, "seq_len should be not less than 128."
 
     torch.cuda.set_device(v.device)
 
@@ -59,60 +42,27 @@ def sparge_attn_meansim(
 
     if smooth_k:
         k = k - k.mean(dim=-2, keepdim=True)
-    k_for_map = k
-    if q.size(1) != k.size(1):
-        assert q.size(1) % k.size(1) == 0, "Hq must be divisible by Hk for GQA."
-        num_kv_groups = q.size(1) // k.size(1)
-        k_for_map = k.repeat_interleave(num_kv_groups, dim=1)
-    k_block_indices = get_block_map_meansim(
-        q,
-        k_for_map,
-        is_causal=is_causal,
-        simthreshd1=simthreshd1,
-        cdfthreshd=cdfthreshd,
-        attention_sink=attention_sink,
-    )
-    k_block_indices = k_block_indices.contiguous()
+    k_block_indices = get_block_map_meansim(q, k, is_causal=is_causal, simthreshd1=simthreshd1, cdfthreshd=cdfthreshd, attention_sink=attention_sink)  # 
     headdim = q.size(-1)
 
     assert headdim in [64, 128], "headdim should be in [64, 96, 128]."
 
     pvthreshd = hyperparameter_check(pvthreshd, q.size(-3), q.device)
-    o = forward(
-        q,
-        k,
-        k_block_indices,
-        v,
-        pvthreshd,
-        is_causal=is_causal,
-        tensor_layout=tensor_layout,
-        output_dtype=dtype,
-    )
+    # k_block_indices[:] = 1
+    o = forward(q, k, k_block_indices, v, pvthreshd, is_causal=is_causal, tensor_layout="HND", output_dtype=dtype)
 
     return o
 
 
+
 @triton.jit
-def _attn_fwd_inner(
-    acc,
-    l_i,
-    old_m,
-    q,
-    kv_len,
-    K_ptrs,
-    K_bid_ptr,
-    V_ptrs,
-    stride_kn,
-    stride_vn,
-    start_m,
-    sm_scale_log2,
-    BLOCK_M: tl.constexpr,
-    HEAD_DIM: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-    STAGE: tl.constexpr,
-    offs_m: tl.constexpr,
-    offs_n: tl.constexpr,
-):
+def _attn_fwd_inner(acc, l_i, old_m, q, kv_len,
+                    K_ptrs, K_bid_ptr, V_ptrs, stride_kn, stride_vn, 
+                    pvthreshd, start_m,  
+                    BLOCK_M: tl.constexpr, HEAD_DIM: tl.constexpr, BLOCK_N: tl.constexpr,  
+                    STAGE: tl.constexpr, offs_m: tl.constexpr, offs_n: tl.constexpr,
+                    sm_scale_log2,
+                    ):
     if STAGE == 1:
         lo, hi = 0, start_m * BLOCK_M
     elif STAGE == 2:
@@ -123,10 +73,10 @@ def _attn_fwd_inner(
     elif STAGE == 3:
         lo, hi = 0, kv_len
     for start_n in range(lo, hi, BLOCK_N):
-        kbid = tl.load(K_bid_ptr + start_n // BLOCK_N)
+        kbid = tl.load(K_bid_ptr + start_n//BLOCK_N)
         if kbid:
-            k_mask = offs_n[None, :] < (kv_len - start_n)
-            k = tl.load(K_ptrs, mask=k_mask)
+            k_mask = offs_n[None, :] < (kv_len - start_n)   
+            k = tl.load(K_ptrs, mask = k_mask)
             qk = tl.dot(q, k).to(tl.float32) * sm_scale_log2
             if STAGE == 2:
                 mask = offs_m[:, None] >= (start_n + offs_n[None, :])
@@ -138,124 +88,66 @@ def _attn_fwd_inner(
                 local_m = tl.max(qk, 1)
                 new_m = tl.maximum(old_m, local_m)
                 qk = qk - new_m[:, None]
+            # if tl.min(new_m - local_m) < pvthreshd:
             p = tl.math.exp2(qk)
             l_ij = tl.sum(p, 1)
             alpha = tl.math.exp2(old_m - new_m)
             l_i = l_i * alpha + l_ij
             acc = acc * alpha[:, None]
-            v = tl.load(V_ptrs, mask=offs_n[:, None] < (kv_len - start_n))
+            v = tl.load(V_ptrs, mask = offs_n[:, None] < (kv_len - start_n))
             p = p.to(tl.float16)
-            acc += tl.dot(p, v, out_dtype=tl.float16)
+            acc += tl.dot(p, v, out_dtype=tl.float16)   
             old_m = new_m
         K_ptrs += BLOCK_N * stride_kn
         V_ptrs += BLOCK_N * stride_vn
     return acc, l_i, old_m
 
-
 @triton.jit
-def _attn_fwd(
-    Q,
-    K,
-    K_blkid,
-    V,
-    PVThreshd,
-    Out,
-    stride_qz,
-    stride_qh,
-    stride_qn,
-    stride_kz,
-    stride_kh,
-    stride_kn,
-    stride_vz,
-    stride_vh,
-    stride_vn,
-    stride_oz,
-    stride_oh,
-    stride_on,
-    stride_kbidq,
-    stride_kbidk,
-    qo_len,
-    kv_len,
-    sm_scale_log2,
-    H: tl.constexpr,
-    num_kv_groups: tl.constexpr,
-    HEAD_DIM: tl.constexpr,
-    BLOCK_M: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-    STAGE: tl.constexpr,
-):
+def _attn_fwd(Q, K, K_blkid, V, PVThreshd, Out,  
+              stride_qz, stride_qh, stride_qn,
+              stride_kz, stride_kh, stride_kn,  
+              stride_vz, stride_vh, stride_vn,  
+              stride_oz, stride_oh, stride_on,  
+              stride_kbidq, stride_kbidk,
+              qo_len, kv_len, sm_scale_log2, H:tl.constexpr, num_kv_groups:tl.constexpr, 
+              HEAD_DIM: tl.constexpr,  
+              BLOCK_M: tl.constexpr,  
+              BLOCK_N: tl.constexpr,  
+              STAGE: tl.constexpr
+              ):
     start_m = tl.program_id(0)
     off_z = tl.program_id(2).to(tl.int64)
     off_h = tl.program_id(1).to(tl.int64)
-    k_bid_offset = (off_z * H + off_h) * stride_kbidq
-    _ = tl.load(PVThreshd + off_h)
+    k_bid_offset = (off_z * (H // num_kv_groups) + off_h // num_kv_groups) * stride_kbidq
+    pvthreshd = tl.load(PVThreshd+off_h)
     offs_m = start_m * BLOCK_M + tl.arange(0, BLOCK_M)
     offs_n = tl.arange(0, BLOCK_N)
     offs_k = tl.arange(0, HEAD_DIM)
     Q_ptrs = Q + (off_z * stride_qz + off_h * stride_qh) + offs_m[:, None] * stride_qn + offs_k[None, :]
-    K_ptrs = K + (off_z * stride_kz + (off_h // num_kv_groups) * stride_kh) + offs_n[None, :] * stride_kn + offs_k[:, None]
-    K_bid_ptr = K_blkid + k_bid_offset + start_m * stride_kbidk
+    K_ptrs = K + (off_z * stride_kz + (off_h // num_kv_groups) * stride_kh) + offs_n[None, :] * stride_kn + offs_k[:, None] 
+    K_bid_ptr = K_blkid + k_bid_offset + start_m * stride_kbidk 
     V_ptrs = V + (off_z * stride_vz + (off_h // num_kv_groups) * stride_vh) + offs_n[:, None] * stride_vn + offs_k[None, :]
     O_block_ptr = Out + (off_z * stride_oz + off_h * stride_oh) + offs_m[:, None] * stride_on + offs_k[None, :]
     m_i = tl.zeros([BLOCK_M], dtype=tl.float32) - float("inf")
     l_i = tl.zeros([BLOCK_M], dtype=tl.float32) + 1.0
     acc = tl.zeros([BLOCK_M, HEAD_DIM], dtype=tl.float32)
-    q = tl.load(Q_ptrs, mask=offs_m[:, None] < qo_len)
-    acc, l_i, m_i = _attn_fwd_inner(
-        acc,
-        l_i,
-        m_i,
-        q,
-        kv_len,
-        K_ptrs,
-        K_bid_ptr,
-        V_ptrs,
-        stride_kn,
-        stride_vn,
-        start_m,
-        sm_scale_log2,
-        BLOCK_M,
-        HEAD_DIM,
-        BLOCK_N,
-        4 - STAGE,
-        offs_m,
-        offs_n,
-    )
+    q = tl.load(Q_ptrs, mask = offs_m[:, None] < qo_len)
+    acc, l_i, m_i = _attn_fwd_inner(acc, l_i, m_i, q, kv_len, K_ptrs, K_bid_ptr, V_ptrs, stride_kn, stride_vn,
+                                    pvthreshd, start_m,  
+                                    BLOCK_M, HEAD_DIM, BLOCK_N,  
+                                    4 - STAGE, offs_m, offs_n, sm_scale_log2
+                                    )
     if STAGE != 1:
-        acc, l_i, _ = _attn_fwd_inner(
-            acc,
-            l_i,
-            m_i,
-            q,
-            kv_len,
-            K_ptrs,
-            K_bid_ptr,
-            V_ptrs,
-            stride_kn,
-            stride_vn,
-            start_m,
-            sm_scale_log2,
-            BLOCK_M,
-            HEAD_DIM,
-            BLOCK_N,
-            2,
-            offs_m,
-            offs_n,
-        )
+        acc, l_i, _ = _attn_fwd_inner(acc, l_i, m_i, q, kv_len, K_ptrs, K_bid_ptr, V_ptrs, stride_kn, stride_vn,
+                                        pvthreshd, start_m,  
+                                        BLOCK_M, HEAD_DIM, BLOCK_N,  
+                                        2, offs_m, offs_n, sm_scale_log2
+                                        )
     acc = acc / l_i[:, None]
-    tl.store(O_block_ptr, acc.to(Out.type.element_ty), mask=(offs_m[:, None] < qo_len))
+    tl.store(O_block_ptr, acc.to(Out.type.element_ty), mask = (offs_m[:, None] < qo_len))
 
 
-def forward(
-    q,
-    k,
-    k_block_id,
-    v,
-    pvthreshd,
-    is_causal=False,
-    tensor_layout="HND",
-    output_dtype=torch.float16,
-):
+def forward(q, k, k_block_id, v, pvthreshd, is_causal=False, tensor_layout="HND", output_dtype=torch.float16):
     BLOCK_M = 128
     BLOCK_N = 64
     stage = 3 if is_causal else 1
@@ -277,47 +169,30 @@ def forward(
         stride_bz_o, stride_h_o, stride_seq_o = o.stride(0), o.stride(2), o.stride(1)
     else:
         raise ValueError(f"tensor_layout {tensor_layout} not supported")
+    
+    assert qo_len == kv_len, "qo_len and kv_len must be equal for causal attention"
 
     HEAD_DIM_K = head_dim
     num_kv_groups = h_qo // h_kv
-    sm_scale_log2 = (head_dim**-0.5) * _LOG2_E
+    sm_scale_log2 = (head_dim ** -0.5) * _LOG2_E
 
-    grid = (triton.cdiv(qo_len, BLOCK_M), h_qo, b)
+    grid = (triton.cdiv(qo_len, BLOCK_M), h_qo, b   )
     _attn_fwd[grid](
-        q,
-        k,
-        k_block_id,
-        v,
-        pvthreshd,
-        o,
-        stride_bz_q,
-        stride_h_q,
-        stride_seq_q,
-        stride_bz_k,
-        stride_h_k,
-        stride_seq_k,
-        stride_bz_v,
-        stride_h_v,
-        stride_seq_v,
-        stride_bz_o,
-        stride_h_o,
-        stride_seq_o,
-        k_block_id.stride(1),
-        k_block_id.stride(2),
-        qo_len,
-        kv_len,
+        q, k, k_block_id, v, pvthreshd, o,  
+        stride_bz_q, stride_h_q, stride_seq_q, 
+        stride_bz_k, stride_h_k, stride_seq_k,  
+        stride_bz_v, stride_h_v, stride_seq_v,  
+        stride_bz_o, stride_h_o, stride_seq_o,
+        k_block_id.stride(1), k_block_id.stride(2),
+        qo_len, kv_len,
         sm_scale_log2,
-        h_qo,
-        num_kv_groups,
-        BLOCK_M=BLOCK_M,
-        BLOCK_N=BLOCK_N,
-        HEAD_DIM=HEAD_DIM_K,
-        STAGE=stage,
+        h_qo, num_kv_groups,
+        BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, HEAD_DIM=HEAD_DIM_K,  
+        STAGE=stage,  
         num_warps=4 if head_dim == 64 else 8,
-        num_stages=4,
-    )
+        num_stages=4)
     return o
 
 
 def sparge_attention_forward(*args, **kwargs):
-    return sparge_attn_meansim(*args, **kwargs)
+    return spas_sage_attn_meansim(*args, **kwargs)

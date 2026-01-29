@@ -25,7 +25,6 @@ def _apply_rope(q, k, cos, sin):
 
 
 def _index_into_rope_cache(cache, index):
-    assert index.dim() == 1, "this method is only for the generation phase"
     return torch.index_select(cache, 0, index.view(-1)).reshape(index.size(0), 1, -1)
 
 
@@ -41,13 +40,6 @@ def sparge_attention(
     prestore_kv_cache: bool = True,
     **kwargs,
 ) -> torch.Tensor:
-    if "block_table" in kwargs and kwargs["block_table"] is not None:
-        raise ValueError("'block_table' or paged kv-caching is not compatible with SpargeAttn.")
-    if not prestore_kv_cache:
-        raise ValueError("sparge attention requires prestore_kv_cache=True")
-    if k_cache is None or v_cache is None:
-        raise ValueError("sparge attention requires k_cache and v_cache")
-
     T = q.shape[-2]
     simthreshd1 = kwargs.get("sparge_simthreshd1", 0.3)
     cdfthreshd = kwargs.get("sparge_cdfthreshd", 0.96)
@@ -56,8 +48,6 @@ def sparge_attention(
     attention_sink = kwargs.get("sparge_attention_sink", False)
 
     if T == 1:
-        if cache_seqlens is None:
-            raise ValueError("sparge attention requires cache_seqlens for decode")
         cos = _index_into_rope_cache(rotary_cos, cache_seqlens) if rotary_cos is not None else None
         sin = _index_into_rope_cache(rotary_sin, cache_seqlens) if rotary_sin is not None else None
         q, k = _apply_rope(q, k, cos, sin)
@@ -118,8 +108,6 @@ def sparge_attn(
     prestore_kv_cache: bool = True,
     **kwargs,
 ):
-    if use_intra_head_parallelism:
-        raise ValueError("sparge attention does not support intra head parallelism")
     return sparge_attention(
         q=q,
         k=k,

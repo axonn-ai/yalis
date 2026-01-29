@@ -39,6 +39,11 @@ def get_model(
     config.init_device = device if random_init else "meta"
     config.threshold_percentile = inference_config.threshold_percentile
     config.num_warmup_steps = inference_config.num_warmup_steps
+    config.double_sparse_channel_config_path = inference_config.double_sparse_channel_config
+    config.double_sparse_channel_type = inference_config.double_sparse_channel_type
+    config.double_sparse_sparsity = inference_config.double_sparse_sparsity
+    config.double_sparse_heavy_const = inference_config.double_sparse_heavy_const
+    config.double_sparse_heavy_channel_num = inference_config.double_sparse_heavy_channel_num
 
     with _EmptyInit(enabled=(not random_init)):
         model = GPT(config).to(model_dtype)

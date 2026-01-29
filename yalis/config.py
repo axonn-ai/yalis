@@ -112,7 +112,12 @@ class InferenceConfig:
         use_paged_kv_caching: bool = False,
         prestore_kv_cache: bool = True,
         threshold_percentile: Optional[float] = 0.0,
-        num_warmup_steps: Optional[int] = 64
+        num_warmup_steps: Optional[int] = 64,
+        double_sparse_channel_config: Optional[str] = None,
+        double_sparse_channel_type: str = "qk",
+        double_sparse_sparsity: int = 16,
+        double_sparse_heavy_const: Optional[int] = None,
+        double_sparse_heavy_channel_num: Optional[int] = None,
     ):
         """
         Initialize the inference configuration.
@@ -127,7 +132,7 @@ class InferenceConfig:
             top_p (Optional[float]): Nucleus sampling probability.
             tp_dims (Optional[Tuple[int, int, int]]): Tensor parallelism dimensions. If None, all GPUs are used in the first dimension
             metrics (bool): Enable real-time metrics collection.
-            attention_backend (str): Attention backend to use. Options are 'flash', 'flex', or 'sdpa'.
+            attention_backend (str): Attention backend to use. Options are 'flash', 'flex', 'sdpa', 'thresh', 'topk', 'sparge', or 'double_sparse'.
             use_intra_head_parallelism (bool): Use intra-head parallelism for attention. 
             use_paged_kv_caching (bool): Use paged k/v caching for attention. 
             prestore_kv_cache (bool): Pre-store k/v in cache before calling attention.
@@ -150,15 +155,29 @@ class InferenceConfig:
         self.use_intra_head_parallelism = use_intra_head_parallelism
         self.use_paged_kv_caching = use_paged_kv_caching
         self.prestore_kv_cache = prestore_kv_cache
-        if attention_backend not in ["flash", "sdpa", "flex", "thresh", "thresh_attn_nowmp", "topk", "sparge"]:
+        if attention_backend not in [
+            "flash",
+            "sdpa",
+            "flex",
+            "thresh",
+            "thresh_attn_nowmp",
+            "topk",
+            "sparge",
+            "double_sparse",
+        ]:
             raise ValueError(
                 "Invalid attention backend: "
                 f"{attention_backend}. Supported values are 'flash', 'sdpa', 'flex', "
-                "'thresh', 'thresh_attn_nowmp', 'topk', 'sparge'."
+                "'thresh', 'thresh_attn_nowmp', 'topk', 'sparge', 'double_sparse'."
             )
         self.attention_backend = AttentionBackend(attention_backend)
         self.threshold_percentile = threshold_percentile
         self.num_warmup_steps = num_warmup_steps
+        self.double_sparse_channel_config = double_sparse_channel_config
+        self.double_sparse_channel_type = double_sparse_channel_type
+        self.double_sparse_sparsity = double_sparse_sparsity
+        self.double_sparse_heavy_const = double_sparse_heavy_const
+        self.double_sparse_heavy_channel_num = double_sparse_heavy_channel_num
         try:
             pkg_ver = version("torch")
         except PackageNotFoundError:
@@ -195,6 +214,18 @@ class InferenceConfig:
 
         if self.use_intra_head_parallelism and not self.attention_backend == AttentionBackend.SDPA:
             raise ValueError("use_intra_head_parallelism requires attention_backend=sdpa") 
+
+        if self.attention_backend == AttentionBackend.DOUBLE_SPARSE:
+            if self.double_sparse_channel_config is None:
+                raise ValueError("double_sparse requires double_sparse_channel_config.")
+            if self.double_sparse_channel_type not in {"q", "k", "qk"}:
+                raise ValueError("double_sparse_channel_type must be one of: q, k, qk.")
+            if self.double_sparse_sparsity <= 0:
+                raise ValueError("double_sparse_sparsity must be a positive integer.")
+            if self.double_sparse_heavy_const is not None and self.double_sparse_heavy_const <= 0:
+                raise ValueError("double_sparse_heavy_const must be a positive integer.")
+            if self.double_sparse_heavy_channel_num is not None and self.double_sparse_heavy_channel_num <= 0:
+                raise ValueError("double_sparse_heavy_channel_num must be a positive integer.")
     
 
     def __repr__(self):
