@@ -266,6 +266,7 @@ def invoke_fused_moe_kernel(
     assert topk_weights.stride(1) == 1
     assert sorted_token_ids.stride(0) == 1
 
+    # TODO:(Prajwal) Test and enable this later
     # if use_fp8_w8a8:
     #     A, A_scale = torch.ops.vllm_ops.scaled_fp8_quant(A, A_scale)
     #     assert B_scale is not None
@@ -341,7 +342,7 @@ def get_moe_configs(
     if os.path.exists(config_file_path):
         with open(config_file_path) as f:
             print(
-                "Using configuration from %s for MoE layer.", config_file_path
+                f"Using configuration from {config_file_path} for MoE layer."
             )
             # If a configuration has been found, return it
             return {int(key): val for key, val in json.load(f).items()}

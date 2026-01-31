@@ -198,7 +198,6 @@ def copy_weights_qwen_3(
                 name_template, e = layer_template(name_template, 5)
             else:
                 e = None
-            # print (f"{name_template}, {e}")
 
             if any(w in from_name for w in ("q_proj", "k_proj", "v_proj")):
                 qkv = qkv_weights.setdefault(l, defaultdict(dict))
@@ -593,7 +592,6 @@ def copy_weights_hf_llama(
 
     transformer_wte_weight = None
     for name, param in hf_weights.items():
-        # print (f"{name}")
         if "model.layers" in name:
             from_name, l = layer_template(name, 2)
             e = None
@@ -610,7 +608,6 @@ def copy_weights_hf_llama(
                 down_proj = down_proj_weights.setdefault(
                     l, defaultdict(lambda: [None])
                 )
-                # print (f"{name} Gate up proj for layer {l} expert {e}: {gate_up_proj}")
             elif "mlp" in name:
                 gate_up_proj = gate_up_proj_weights.setdefault(l, [None, None])
             else:
@@ -801,7 +798,6 @@ def copy_weights_hf_llama(
             assert (
                 gate_up_proj_combined.shape[0] == config.n_expert
             ), "Gate up projection combined shape should be equal to the number of experts"
-            # print (f"Gate up projection for layer {i} combined: {gate_up_proj_combined.shape}")
             del gate_up_proj_combined
             del gate_up_proj_weights[i]
 

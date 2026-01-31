@@ -138,11 +138,6 @@ class TPMoE(torch.nn.Module):
                 self.outer_group
             )
         )
-        # We do not need NCCL communicators for the inner and depth group
-        # as no collective is performed on them during the forward pass
-
-        # depth_group is the Z tensor parallel group (akin to FSDP)
-        self.depth_group = ax.comm_handle.depth_intra_layer_parallel_group
 
         # calculating the sizes of each tensor parallel process group
         self.inner_group_size = dist.get_world_size(self.inner_group)
@@ -244,7 +239,7 @@ class TPMoE(torch.nn.Module):
         algorithm,
     ):
         """
-        This function is used to set the symmmetric memory
+        This function is used to set the symmetric memory
         output tensor for the layer. We check if the
         pool already has a tensor for the current cache key.
         If it does, we use that tensor.
