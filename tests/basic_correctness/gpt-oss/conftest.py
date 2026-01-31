@@ -10,6 +10,9 @@ from yalis import ModelConfig, InferenceConfig, LLMEngine, SpeculativeLLMEngine
 from types import SimpleNamespace
 from tests.sample_dataset import AlpacaDataset
 
+# Assume offline mode by default unless otherwise specified
+HF_DATASETS_OFFLINE = os.environ.get("HF_DATASETS_OFFLINE", "1")
+
 # Configure logging for tests
 logging.basicConfig(
     level=logging.INFO,
@@ -105,16 +108,17 @@ def attn_backend(request):
 
 
 # Dataset and tokenizer fixtures
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="function")
 def tokenizer(model_id):
     """Create a tokenizer for the test model."""
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    # If running in offline mode, force local-only loading to avoid online requests
+    tokenizer = AutoTokenizer.from_pretrained(model_id, local_files_only=HF_DATASETS_OFFLINE)
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
     return tokenizer
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="function")
 def alpaca_dataset():
     """Create an Alpaca dataset for testing."""
     dataset = AlpacaDataset(random_seed=42)
@@ -130,6 +134,7 @@ def hf_model(model_id, dtype, attn_backend, device):
         attn_implementation=attn_backend.hf,
         dtype=dtype.hf,
         device_map="auto",
+        local_files_only=HF_DATASETS_OFFLINE,
         trust_remote_code=True,
     )
     model.eval()
