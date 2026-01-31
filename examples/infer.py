@@ -12,7 +12,7 @@ _KinetoProfile._get_distributed_info = lambda self: None
 
 if __name__ == "__main__":
     # Model ID from Hugging Face
-    model_id = "yalis/external/checkpoints/openai/gpt-oss-20b"
+    model_id = "meta-llama/Llama-3.1-8B-Instruct"
 
     user_prompts = [
         "How to bake a cake?",
@@ -45,11 +45,20 @@ if __name__ == "__main__":
     enable_profiling = False
 
     # Tokenizer for encoding the prompt
-    tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True, local_files_only=True)
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
 
     input_prompts = []
     for user_prompt in user_prompts:
-        formatted_prompt = f"{system_prompt.strip()}\n\n{user_prompt.strip()}\n"
+        conversation = [
+            {
+                "role": "system",
+                "content": system_prompt,
+            },  # not needed for gemma
+            {"role": "user", "content": user_prompt},
+        ]
+        formatted_prompt = tokenizer.apply_chat_template(
+            conversation, add_generation_prompt=True, tokenize=False
+        )
         input_prompts.append(formatted_prompt)
 
     # Number of tokens to generate
@@ -65,14 +74,14 @@ if __name__ == "__main__":
         )
 
     # configs
-    model_config = ModelConfig(model_name="gpt-oss-20b", model_path=model_id, precision="bf16")
+    model_config = ModelConfig(model_name=model_id, precision="bf16")
     inference_config = InferenceConfig(
         max_batch_size=MAX_BATCH_SIZE,
         max_length_of_generated_sequences=1024,
         top_p=0.80,
-        temperature=0.0,
+        temperature=1.0,
         tp_dims=None,
-        attention_backend="sdpa",
+        attention_backend="flash",
         use_paged_kv_caching=False,
         prestore_kv_cache=True,
     )
