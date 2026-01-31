@@ -1,4 +1,6 @@
 import os
+import sys
+from pathlib import Path
 import pytest
 import torch.distributed as dist
 import torch
@@ -6,6 +8,11 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from yalis import ModelConfig, InferenceConfig, LLMEngine, SpeculativeLLMEngine
 from types import SimpleNamespace
 from tests.sample_dataset import AlpacaDataset
+
+# Add parent test directory to sys.path so imports like 'from utils import ...' work
+parent_test_dir = Path(__file__).parent.parent
+if str(parent_test_dir) not in sys.path:
+    sys.path.insert(0, str(parent_test_dir))
 
 
 def pytest_addoption(parser):
