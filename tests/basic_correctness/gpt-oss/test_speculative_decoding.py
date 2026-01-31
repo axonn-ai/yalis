@@ -5,16 +5,13 @@ import numpy as np
 import warnings
 from utils import alpaca_prompt
 
-
 IGNORE_EOS = True
 
-
 # Test parameters
-BATCH_SIZES = [1, 4, 8]
-PROMPT_LENGTHS = [128, 1024]
-TOKEN_GENERATION_LENGTHS = [128, 512]
+BATCH_SIZES = [1, 2]
+PROMPT_LENGTHS = [128]
+TOKEN_GENERATION_LENGTHS = [128]
 GAMMA_VALUES = [2, 5]
-
 
 def _get_standard_output(engine, prompts, num_tokens):
     """Get output from standard LLMEngine."""

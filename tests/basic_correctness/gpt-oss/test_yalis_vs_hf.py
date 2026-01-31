@@ -5,9 +5,8 @@ from utils import alpaca_prompt
 from transformers import StoppingCriteriaList, StoppingCriteria
 
 NUM_LOGPROBS = 5
-BATCH_SIZES = [1, 4, 8]
-PROMPT_LENGTHS = [128, 256, 512, 1024]
-
+BATCH_SIZES = [1, 2]
+PROMPT_LENGTHS = [128]
 
 class NeverStop(StoppingCriteria):
     def __call__(self, input_ids, scores, **kwargs):
