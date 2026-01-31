@@ -205,6 +205,18 @@ class LLMEngine:
         Internal method to load and set up the model based on ModelConfig.
         """
         t0 = time.time()
+        # Caller-level logging: snapshot memory just before creating/loading the model
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+        except Exception:
+            pass
+        print_rank0(
+            f"[engine] Before get_model: allocated={torch.cuda.memory_allocated() / 1024**3:.3f}GB, "
+            f"reserved={torch.cuda.memory_reserved() / 1024**3:.3f}GB, "
+            f"max_allocated={torch.cuda.max_memory_allocated() / 1024**3:.3f}GB"
+        )
+
         model = get_model(
             model_config.model_path,
             self.dtype,
@@ -215,6 +227,18 @@ class LLMEngine:
             use_paged_kv_caching=inference_config.use_paged_kv_caching,
             prestore_kv_cache=inference_config.prestore_kv_cache,
             disable_tp=model_config.disable_tp,
+        )
+
+        # Caller-level logging: snapshot memory immediately after model creation/load
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+        except Exception:
+            pass
+        print_rank0(
+            f"[engine] After get_model (took {time.time()-t0:.2f}s): allocated={torch.cuda.memory_allocated() / 1024**3:.3f}GB, "
+            f"reserved={torch.cuda.memory_reserved() / 1024**3:.3f}GB, "
+            f"max_allocated={torch.cuda.max_memory_allocated() / 1024**3:.3f}GB"
         )
         model = self._make_params_contiguous(model)
         model.set_kv_cache(
