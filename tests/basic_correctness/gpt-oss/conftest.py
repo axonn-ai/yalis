@@ -146,7 +146,7 @@ def yalis_engine(model_id, dtype, attn_backend):
         temperature=0.0,
         tp_dims=None,
         attention_backend=attn_backend.yalis,
-        use_paged_kv_caching=True,
+        use_paged_kv_caching=False,
     )
     return LLMEngine(
         model_config=model_config, inference_config=inference_config
@@ -178,7 +178,7 @@ def speculative_engine(model_id, draft_model_id, dtype, attn_backend):
         temperature=0.0,
         tp_dims=None,
         attention_backend=attn_backend.yalis,
-        use_paged_kv_caching=True,
+        use_paged_kv_caching=False,
     )
     return SpeculativeLLMEngine(
         target_model_config=target_model_config,
