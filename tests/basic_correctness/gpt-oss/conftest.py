@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from tests.sample_dataset import AlpacaDataset
 
 # Assume offline mode by default unless otherwise specified
-HF_DATASETS_OFFLINE = os.environ.get("HF_DATASETS_OFFLINE", "1")
+HF_DATASETS_OFFLINE = os.environ.get("HF_DATASETS_OFFLINE", "1") == "1"
 
 # Configure logging for tests
 logging.basicConfig(
