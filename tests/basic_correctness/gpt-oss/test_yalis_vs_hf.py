@@ -1,16 +1,41 @@
 import pytest
 import torch
 import warnings
+import gc
+import logging
 from utils import alpaca_prompt
 from transformers import StoppingCriteriaList, StoppingCriteria
+
+# Get logger instance (logging configured in conftest.py)
+logger = logging.getLogger(__name__)
 
 NUM_LOGPROBS = 5
 BATCH_SIZES = [1, 2]
 PROMPT_LENGTHS = [128]
 
+
+def log_gpu_memory(phase: str):
+    """Log current GPU memory usage.
+    
+    Args:
+        phase: Descriptive name of the current phase (e.g., "After HF inference")
+    """
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+        allocated = torch.cuda.memory_allocated() / 1024**3  # GB
+        reserved = torch.cuda.memory_reserved() / 1024**3    # GB
+        max_allocated = torch.cuda.max_memory_allocated() / 1024**3  # GB
+        logger.info(
+            f"[GPU Memory] {phase:.<50} "
+            f"Allocated: {allocated:.2f}GB | Reserved: {reserved:.2f}GB | "
+            f"Peak: {max_allocated:.2f}GB"
+        )
+
+
 class NeverStop(StoppingCriteria):
     def __call__(self, input_ids, scores, **kwargs):
         return False
+
 
 
 def _get_logprobs(logits):
@@ -195,16 +220,41 @@ def test_01_prefill(
     dtype,
     alpaca_dataset,
 ):
+    logger.info(
+        f"Starting test_01_prefill with batch_size={batch_size}, "
+        f"prompt_length={prompt_length}"
+    )
+    log_gpu_memory("Test start")
+    
     prompts = alpaca_prompt(
         alpaca_dataset, tokenizer, prompt_length, batch_size
     )
+    
+    # Run HF inference
+    logger.info("Starting HF model inference...")
     hf_tokens, hf_logits = _get_hf_output(
         tokenizer, hf_model, prompts, num_tokens=1
     )
+    log_gpu_memory("After HF inference")
+    
+    # Move HF logits to CPU immediately and cleanup GPU memory
+    logger.info("Moving HF logits to CPU and clearing GPU memory...")
+    hf_logits = [logit.cpu() for logit in hf_logits]
+    torch.cuda.empty_cache()
+    gc.collect()
+    log_gpu_memory("After HF cleanup")
+    
+    # Run YALIS inference
+    logger.info("Starting YALIS engine inference...")
     yalis_tokens, yalis_logits = _get_yalis_output(
         yalis_engine, prompts, num_tokens=1
     )
+    log_gpu_memory("After YALIS inference")
+    
+    logger.info("Comparing logprobs...")
     _compare_logprobs(hf_logits, hf_tokens, yalis_logits, yalis_tokens)
+    log_gpu_memory("After comparison")
+    logger.info("test_01_prefill completed successfully")
 
 
 @pytest.mark.parametrize("batch_size", BATCH_SIZES)
@@ -220,16 +270,41 @@ def test_02_decode(
     dtype,
     alpaca_dataset,
 ):
+    logger.info(
+        f"Starting test_02_decode with batch_size={batch_size}, "
+        f"prompt_length={prompt_length}"
+    )
+    log_gpu_memory("Test start")
+    
     prompts = alpaca_prompt(
         alpaca_dataset, tokenizer, prompt_length, batch_size
     )
+    
+    # Run HF inference
+    logger.info("Starting HF model inference...")
     hf_tokens, hf_logits = _get_hf_output(
         tokenizer, hf_model, prompts, num_tokens=32
     )
+    log_gpu_memory("After HF inference")
+    
+    # Move HF logits to CPU immediately and cleanup GPU memory
+    logger.info("Moving HF logits to CPU and clearing GPU memory...")
+    hf_logits = [logit.cpu() for logit in hf_logits]
+    torch.cuda.empty_cache()
+    gc.collect()
+    log_gpu_memory("After HF cleanup")
+    
+    # Run YALIS inference
+    logger.info("Starting YALIS engine inference...")
     yalis_tokens, yalis_logits = _get_yalis_output(
         yalis_engine, prompts, num_tokens=32
     )
+    log_gpu_memory("After YALIS inference")
+    
+    logger.info("Comparing logprobs...")
     _compare_logprobs(hf_logits, hf_tokens, yalis_logits, yalis_tokens)
+    log_gpu_memory("After comparison")
+    logger.info("test_02_decode completed successfully")
 
 
 # TODO: Add perplexity test

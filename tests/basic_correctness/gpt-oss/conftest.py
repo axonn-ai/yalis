@@ -4,10 +4,17 @@ from pathlib import Path
 import pytest
 import torch.distributed as dist
 import torch
+import logging
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from yalis import ModelConfig, InferenceConfig, LLMEngine, SpeculativeLLMEngine
 from types import SimpleNamespace
 from tests.sample_dataset import AlpacaDataset
+
+# Configure logging for tests
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(levelname)s] %(message)s'
+)
 
 # Add parent test directory to sys.path so imports like 'from utils import ...' work
 parent_test_dir = Path(__file__).parent.parent
