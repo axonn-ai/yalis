@@ -411,27 +411,11 @@ class TPLinear(torch.nn.Module):
         )
 
     def _is_sharded_weight_matrix(self, weight):
-        # Accept multiple on-disk sharding layouts:
-        # - fully sharded: (local_out_features, local_in_features)
-        # - row-parallel: (local_out_features, in_features)  -> rows sharded
-        # - col-parallel: (out_features, local_in_features)  -> cols sharded
-        if weight.ndim != 2:
-            return False
-
-        fully_sharded = (
-            weight.size(0) == self.local_out_features
+        return (
+            weight.ndim == 2
+            and weight.size(0) == self.local_out_features
             and weight.size(1) == self.local_in_features
         )
-        row_parallel = (
-            weight.size(0) == self.local_out_features
-            and weight.size(1) == self.in_features
-        )
-        col_parallel = (
-            weight.size(0) == self.out_features
-            and weight.size(1) == self.local_in_features
-        )
-
-        return fully_sharded or row_parallel or col_parallel
 
     @torch.no_grad()
     def _modified_load_from_state_dict(
@@ -450,9 +434,9 @@ class TPLinear(torch.nn.Module):
         )
 
         if weight is not None:
-            # Determine which layout the checkpoint provided
             is_full_weight_matrix = self._is_full_weight_matrix(weight)
-            is_sharded_weight_matrix = self._is_sharded_weight_matrix(weight)           
+            is_sharded_weight_matrix = self._is_sharded_weight_matrix(weight)
+
             assert (
                 is_full_weight_matrix or is_sharded_weight_matrix
             ), "This is neither a full checkpoint nor a sharded checkpoint"
@@ -513,17 +497,12 @@ class TPLinear(torch.nn.Module):
                 else None
             )
             if bias is not None:
-                if bias.ndim == 1:
-                    if bias.size(0) == self.out_features:
-                        # Full checkpoint: shard bias to local_out_features
-                        bias = Drop.apply(bias, self.outer_group)
-                        state_dict[prefix + "bias"] = bias
-                    else:
-                        # Already sharded checkpoint
-                        assert bias.size(0) == self.local_out_features, (
-                            f"Bias size {bias.size(0)} is neither full ({self.out_features}) "
-                            f"nor sharded ({self.local_out_features})"
-                        )
-                # MoE biases are 2D and not wrapped in TPLinear; skip TP sharding checks
+                if bias.size(0) == self.out_features:
+                    bias = Drop.apply(bias, self.outer_group)
+                    state_dict[prefix + "bias"] = bias
+                else:
+                    assert (
+                        bias.size(0) == self.local_out_features
+                    ), "This is neither a full nor a sharded checkpoint"
 
         self._old_load_from_state_dict(state_dict, prefix, *args, **kwargs)
