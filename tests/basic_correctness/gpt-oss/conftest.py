@@ -1,3 +1,4 @@
+import os
 import pytest
 import torch.distributed as dist
 import torch
@@ -12,7 +13,7 @@ def pytest_addoption(parser):
         "model",
         "Model to use for the test",
         type="string",
-        default="meta-llama/Llama-3.1-8B-Instruct",
+        default="yalis/external/checkpoints/openai/gpt-oss-20b",
     )
     parser.addini(
         "dtype", "Data type to use for the test", type="string", default="bf16"
@@ -27,7 +28,7 @@ def pytest_addoption(parser):
         "draft_model",
         "Draft model to use for Speculative Decoding tests",
         type="string",
-        default="meta-llama/Llama-3.2-1B-Instruct",
+        default="yalis/external/checkpoints/openai/gpt-oss-20b",
     )
 
 
@@ -81,10 +82,7 @@ def attn_backend(request):
     yalis_attnb = attnb
 
     hf_map = {
-        "sdpa": "sdpa",
-        "flash": "flash_attention_2",
-        # For some reason, flex does not work with in hf right now
-        "flex": "flash_attention_2",
+        "sdpa": "eager",  # Use eager as fallback for models that don't support SDPA yet (e.g., GptOssForCausalLM)
     }
 
     hf_attnb = hf_map[attnb]
@@ -127,7 +125,13 @@ def hf_model(model_id, dtype, attn_backend, device):
 @pytest.fixture(scope="module")
 def yalis_engine(model_id, dtype, attn_backend):
     """Create a standard Yalis LLMEngine."""
-    model_config = ModelConfig(model_name=model_id, precision=dtype.yalis)
+    # Resolve model_path: if model_id is a relative path, make it absolute relative to repo root
+    if not os.path.isabs(model_id):
+        model_path = os.path.abspath(model_id)
+    else:
+        model_path = model_id
+    model_name_for_config = os.path.basename(model_path)
+    model_config = ModelConfig(model_name_for_config, model_path=model_path, precision=dtype.yalis)
     inference_config = InferenceConfig(
         max_batch_size=8,
         max_length_of_generated_sequences=2048,
@@ -145,12 +149,21 @@ def yalis_engine(model_id, dtype, attn_backend):
 @pytest.fixture(scope="module")
 def speculative_engine(model_id, draft_model_id, dtype, attn_backend):
     """Create a SpeculativeLLMEngine for testing."""
-    target_model_config = ModelConfig(
-        model_name=model_id, precision=dtype.yalis
-    )
-    draft_model_config = ModelConfig(
-        model_name=draft_model_id, precision=dtype.yalis
-    )
+    # Resolve model paths: if relative, make absolute relative to repo root
+    if not os.path.isabs(model_id):
+        target_model_path = os.path.abspath(model_id)
+    else:
+        target_model_path = model_id
+    
+    if not os.path.isabs(draft_model_id):
+        draft_model_path = os.path.abspath(draft_model_id)
+    else:
+        draft_model_path = draft_model_id
+    
+    target_model_name = os.path.basename(target_model_path)
+    draft_model_name = os.path.basename(draft_model_path)
+    target_model_config = ModelConfig(target_model_name, model_path=target_model_path, precision=dtype.yalis)
+    draft_model_config = ModelConfig(draft_model_name, model_path=draft_model_path, precision=dtype.yalis)
     inference_config = InferenceConfig(
         max_batch_size=8,
         max_length_of_generated_sequences=2048,
