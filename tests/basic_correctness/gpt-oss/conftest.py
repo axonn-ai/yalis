@@ -122,7 +122,7 @@ def alpaca_dataset():
 
 
 # Model fixtures
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="function")
 def hf_model(model_id, dtype, attn_backend, device):
     """Create a HuggingFace model for comparison testing."""
     model = AutoModelForCausalLM.from_pretrained(
@@ -136,7 +136,7 @@ def hf_model(model_id, dtype, attn_backend, device):
     return model
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="function")
 def yalis_engine(model_id, dtype, attn_backend):
     """Create a standard Yalis LLMEngine."""
     # Resolve model_path: if model_id is a relative path, make it absolute relative to repo root
@@ -160,7 +160,7 @@ def yalis_engine(model_id, dtype, attn_backend):
     )
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="function")
 def speculative_engine(model_id, draft_model_id, dtype, attn_backend):
     """Create a SpeculativeLLMEngine for testing."""
     # Resolve model paths: if relative, make absolute relative to repo root
