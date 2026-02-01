@@ -41,7 +41,6 @@ from yalis.external.fused_moe import (  # noqa: E402
     get_config_dtype_str,
 )
 
-
 # Configurations to benchmark
 BLOCK_CONFIGS = [
     {

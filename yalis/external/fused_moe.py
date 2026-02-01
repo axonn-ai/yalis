@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 """Fused MoE kernel."""
+
 import functools
 import json
 import os
