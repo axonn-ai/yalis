@@ -127,10 +127,11 @@ def yalis_engine(model_id, dtype, attn_backend):
         model_config=model_config, inference_config=inference_config
     )
 
+
 @pytest.fixture(scope="module")
 def hf_model(model_id, dtype, attn_backend, device):
     """Create a HuggingFace model for comparison testing.
-    
+
     In distributed mode, HF model only loads on rank 0 to avoid conflicts
     with other YALIS processes owning their GPUs. Uses CPU offload if needed.
     """
@@ -143,7 +144,6 @@ def hf_model(model_id, dtype, attn_backend, device):
     )
     model.eval()
     return model
-
 
 
 @pytest.fixture(scope="module")

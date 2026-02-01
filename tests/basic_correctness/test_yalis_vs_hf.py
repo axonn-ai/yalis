@@ -54,8 +54,9 @@ def _get_hf_output(tokenizer, model, prompts, num_tokens):
     # In distributed mode, only rank 0 has the HF model loaded
     if model is None:
         return None, None
-    
-    # For device_map="auto", use "cuda:0" for inputs - HF handles cross-GPU movement
+
+    # For device_map="auto", use "cuda:0" for inputs
+    # - HF handles cross-GPU movement
     inputs = tokenizer(prompts, return_tensors="pt", padding=True).to("cuda:0")
     with torch.no_grad():
         output = model.generate(
@@ -201,7 +202,10 @@ def test_01_prefill(
         alpaca_dataset, tokenizer, prompt_length, batch_size
     )
     hf_tokens, hf_logits = _get_hf_output(
-        tokenizer, hf_model, prompts, num_tokens=1,
+        tokenizer,
+        hf_model,
+        prompts,
+        num_tokens=1,
     )
     yalis_tokens, yalis_logits = _get_yalis_output(
         yalis_engine, prompts, num_tokens=1
