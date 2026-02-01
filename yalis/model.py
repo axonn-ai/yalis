@@ -41,6 +41,7 @@ def get_model(
     config.use_paged_kv_caching = use_paged_kv_caching
     config.prestore_kv_cache = prestore_kv_cache
     config.init_device = device if random_init else "meta"
+    config.dtype = model_dtype
 
     with _EmptyInit(enabled=(not random_init)):
         model = GPT(config).to(model_dtype)

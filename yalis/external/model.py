@@ -20,13 +20,12 @@ from axonn.intra_layer.communication import Drop, Gather
 
 from yalis.attention import attention_wrapper
 from yalis.external.config import Config
-from yalis.tensor_parallel import TPLinear
+from yalis.tensor_parallel import TPLinear, TPMoE
 from yalis.constants import EnginePhase
 from kvcache_manager import KVCacheManager
 from yalis.attention.flash import flash_apply_rotary as apply_rotary
 from yalis.attention.backends import AttentionBackend
 from yalis.attention.masking import create_causal_block_mask_for_flex_attention
-
 
 # TODO: these should be dynamically set during engine initialization
 NUM_BLOCKS, PAGE_BLOCK_SIZE = 512, 256
@@ -752,24 +751,27 @@ class GptNeoxMLP(nn.Module):
 
 
 class LLaMAMLP(nn.Module):
-    def __init__(self, config: Config) -> None:
+    def __init__(
+        self, config: Config, intermediate_size: Optional[int] = None
+    ) -> None:
         super().__init__()
+        self.intermediate_size = intermediate_size or config.intermediate_size
         if not config.tensor_parallel:
             self.gate_up_proj = nn.Linear(
-                config.n_embd, 2 * config.intermediate_size, bias=config.bias
+                config.n_embd, 2 * self.intermediate_size, bias=config.bias
             )
             self.proj = nn.Linear(
-                config.intermediate_size, config.n_embd, bias=config.bias
+                self.intermediate_size, config.n_embd, bias=config.bias
             )
         else:
             self.gate_up_proj = TPLinear(
                 config.n_embd,
-                2 * config.intermediate_size,
+                2 * self.intermediate_size,
                 bias=config.bias,
                 init_device=config.init_device,
             )
             self.proj = TPLinear(
-                config.intermediate_size,
+                self.intermediate_size,
                 config.n_embd,
                 bias=config.bias,
                 transpose=True,
@@ -796,44 +798,6 @@ class GemmaMLP(LLaMAMLP):
             * x_fc_2
         )
         return self.proj(x)
-
-
-class LLaMAMoE(nn.Module):
-    def __init__(self, config: Config) -> None:
-        super().__init__()
-        assert not config.tensor_parallel
-        self.gate = nn.Linear(config.n_embd, config.n_expert, bias=False)
-        self.experts = nn.ModuleList(
-            LLaMAMLP(config) for _ in range(config.n_expert)
-        )
-
-        self.config = config
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Derived from: https://github.com/mistralai/mistral-src/blob/b46d6/moe_one_file_ref.py#L203-L219  # noqa: E501
-        See also figure 1 in https://arxiv.org/abs/2211.15841
-        """
-        B, T, C = (
-            x.size()
-        )  # batch size, sequence length, embedding dimensionality (n_embd)
-        x = x.view(-1, C)  # (B*T, C)
-        router = self.gate(x)  # (B*T, n_expert)
-        probs, indices = torch.topk(
-            router, self.config.n_expert_per_token
-        )  # (B*T, n_expert_per_token)
-        probs = probs.softmax(dim=1, dtype=torch.float).to(dtype=x.dtype)
-        masks = indices.unsqueeze(-1) == torch.arange(
-            self.config.n_expert, device=x.device
-        )
-        masks = masks.permute(2, 0, 1)  # (n_expert, B*T, n_expert_per_token)
-        y = torch.zeros_like(x)  # (B*T, C)
-        for mask, expert in zip(masks, self.experts):
-            token_idx, expert_idx = torch.where(mask)
-            y[token_idx] += probs[token_idx, expert_idx, None] * expert(
-                x[token_idx]
-            )
-        return y.view(B, T, C)
 
 
 def build_rope_cache(
@@ -1066,3 +1030,32 @@ class RMSNorm(torch.nn.Module):
 
     def reset_parameters(self) -> None:
         torch.nn.init.ones_(self.weight)
+
+
+class LLaMAMoE(nn.Module):
+    def __init__(self, config: Config) -> None:
+        super().__init__()
+        self.gate = nn.Linear(config.n_embd, config.n_expert, bias=False)
+        if config.moe_intermediate_size is None:
+            self.moe_intermediate_size = config.intermediate_size
+        else:
+            self.moe_intermediate_size = config.moe_intermediate_size
+        self.experts = TPMoE(
+            config.n_embd,
+            config.moe_intermediate_size,
+            config.n_expert,
+            config.n_expert_per_token,
+            init_device=config.init_device,
+            dtype=config.dtype,
+        )
+        self.config = config
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, T, C = (
+            x.size()
+        )  # batch size, sequence length, embedding dimensionality (n_embd)
+        x = x.view(-1, C)  # (B*T, C)
+        router = self.gate(x)  # (B*T, n_expert)
+
+        y = self.experts(x, router)
+        return y.view(B, T, C)
