@@ -179,8 +179,6 @@ def copy_weights_gpt_neox(
     hf_weights: Dict[str, Union[torch.Tensor, NotYetLoadedTensor]],
     saver: Optional[incremental_save] = None,
     dtype: Optional[torch.dtype] = None,
-    pbar: Optional[tqdm] = None,
-    progress_per_file: Optional[float] = None,
     debug_mode: Optional[bool] = False,
 ) -> None:
     weight_map = {
@@ -205,9 +203,6 @@ def copy_weights_gpt_neox(
         "embed_out.weight": "lm_head.weight",
     }
 
-    if progress_per_file is not None:
-        progress_per_file = progress_per_file / max(1, len(hf_weights))
-
     for name, param in hf_weights.items():
         if "gpt_neox.layers" in name:
             from_name, number = layer_template(name, 2)
@@ -222,9 +217,6 @@ def copy_weights_gpt_neox(
             param = saver.store_early(to_name, param)
         state_dict[to_name] = param
 
-        if progress_per_file is not None:
-            pbar.update(progress_per_file)
-
 
 def copy_weights_falcon(
     model_name: str,
@@ -232,8 +224,6 @@ def copy_weights_falcon(
     hf_weights: Dict[str, Union[torch.Tensor, NotYetLoadedTensor]],
     saver: Optional[incremental_save] = None,
     dtype: Optional[torch.dtype] = None,
-    pbar: Optional[tqdm] = None,
-    progress_per_file: Optional[float] = None,
     debug_mode: Optional[bool] = False,
 ) -> None:
     weight_map = {
@@ -266,9 +256,6 @@ def copy_weights_falcon(
     else:
         raise NotImplementedError
 
-    if progress_per_file is not None:
-        progress_per_file = progress_per_file / max(1, len(hf_weights))
-
     for name, param in hf_weights.items():
         if "transformer.h" in name:
             from_name, number = layer_template(name, 2)
@@ -279,8 +266,6 @@ def copy_weights_falcon(
         if saver is not None:
             param = saver.store_early(to_name, param)
         state_dict[to_name] = param
-        if progress_per_file is not None:
-            pbar.update(progress_per_file)
 
 
 def copy_weights_qwen_3(
@@ -292,8 +277,6 @@ def copy_weights_qwen_3(
     hf_weights: Dict[str, Union[torch.Tensor, NotYetLoadedTensor]],
     saver: Optional[incremental_save] = None,
     dtype: Optional[torch.dtype] = None,
-    pbar: Optional[tqdm] = None,
-    progress_per_file: Optional[float] = None,
     debug_mode: Optional[bool] = False,
 ) -> None:
     weight_map = {
@@ -329,11 +312,6 @@ def copy_weights_qwen_3(
         )
     else:
         raise NotImplementedError
-
-    if progress_per_file is not None:
-        progress_per_file = progress_per_file / max(
-            1, len(hf_weights) + len(qkv_weights)
-        )
 
     transformer_wte_weight = None
 
@@ -393,9 +371,6 @@ def copy_weights_qwen_3(
             param = saver.store_early(to_name, param)
         state_dict[to_name] = param
 
-        if progress_per_file is not None:
-            pbar.update(progress_per_file)
-
     if "lm_head.weight" not in state_dict:
         if transformer_wte_weight is not None:
             param_saved = saver.store_early(
@@ -437,9 +412,6 @@ def copy_weights_qwen_3(
 
             state_dict[f"transformer.h.{i}.attn.attn.{weight_type}"] = qkv
             del qkv_weights[i][weight_type]
-
-            if progress_per_file is not None:
-                pbar.update(progress_per_file)
 
     for i in list(gate_up_proj_weights):
         for weight_type in list(gate_up_proj_weights[i]):
@@ -542,9 +514,6 @@ def copy_weights_qwen_3(
                 state_dict[state_name] = gate_up_proj
                 del gate_up_proj_weights[i][weight_type]
 
-            if progress_per_file is not None:
-                pbar.update(progress_per_file)
-
     for i in list(down_proj_weights):
         for weight_type in list(down_proj_weights[i]):
             down_proj = down_proj_weights[i][weight_type]["down_proj"]
@@ -594,9 +563,6 @@ def copy_weights_qwen_3(
             del down_proj_combined
             del down_proj_weights[i]
 
-            if progress_per_file is not None:
-                pbar.update(progress_per_file)
-
 
 def copy_weights_qwen_2_5(
     config: Config,
@@ -606,8 +572,6 @@ def copy_weights_qwen_2_5(
     hf_weights: Dict[str, Union[torch.Tensor, NotYetLoadedTensor]],
     saver: Optional[incremental_save] = None,
     dtype: Optional[torch.dtype] = None,
-    pbar: Optional[tqdm] = None,
-    progress_per_file: Optional[float] = None,
     debug_mode: Optional[bool] = False,
 ) -> None:
     weight_map = {
@@ -629,11 +593,6 @@ def copy_weights_qwen_2_5(
     }
 
     transformer_wte_weight = None
-
-    if progress_per_file is not None:
-        progress_per_file = progress_per_file / max(
-            1, len(hf_weights) + len(qkv_weights)
-        )
 
     for from_name, param in hf_weights.items():
         if "model.layers" in from_name:
@@ -665,9 +624,6 @@ def copy_weights_qwen_2_5(
         if saver is not None:
             param = saver.store_early(to_name, param)
         state_dict[to_name] = param
-
-        if progress_per_file is not None:
-            pbar.update(progress_per_file)
 
     if "lm_head.weight" not in state_dict:
         if transformer_wte_weight is not None:
@@ -710,9 +666,6 @@ def copy_weights_qwen_2_5(
             state_dict[f"transformer.h.{i}.attn.attn.{weight_type}"] = qkv
             del qkv_weights[i][weight_type]
 
-            if progress_per_file is not None:
-                pbar.update(progress_per_file)
-
     for i in list(gate_up_proj_weights):
         for weight_type in list(gate_up_proj_weights[i]):
             gate_up_proj = gate_up_proj_weights[i][weight_type]
@@ -736,8 +689,6 @@ def copy_weights_qwen_2_5(
                 gate_up_proj
             )
             del gate_up_proj_weights[i]
-            if progress_per_file is not None:
-                pbar.update(progress_per_file)
 
 
 def copy_weights_hf_llama(
@@ -749,8 +700,6 @@ def copy_weights_hf_llama(
     hf_weights: Dict[str, Union[torch.Tensor, NotYetLoadedTensor]],
     saver: Optional[incremental_save] = None,
     dtype: Optional[torch.dtype] = None,
-    pbar: Optional[tqdm] = None,
-    progress_per_file: Optional[float] = None,
     debug_mode: Optional[bool] = False,
 ) -> None:
     weight_map = {
@@ -787,11 +736,6 @@ def copy_weights_hf_llama(
         )
     else:
         raise NotImplementedError
-
-    if progress_per_file is not None:
-        progress_per_file = progress_per_file / max(
-            1, len(hf_weights) + len(qkv_weights)
-        )
 
     transformer_wte_weight = None
     for name, param in hf_weights.items():
@@ -860,8 +804,6 @@ def copy_weights_hf_llama(
 
                 qkv_weights[l] = None
                 del qkv_weights[l]
-                if progress_per_file is not None:
-                    pbar.update(progress_per_file)
 
             # Now doing proj reshaping with the same principle of incremental QKV reshaping
             # Similarly doing the same check for the gate projection layers
@@ -903,9 +845,6 @@ def copy_weights_hf_llama(
 
                 del gate_up_proj_weights[l]
 
-                if progress_per_file is not None:
-                    pbar.update(progress_per_file)
-
             to_name = weight_map[from_name]
             if to_name is None:
                 continue
@@ -926,9 +865,6 @@ def copy_weights_hf_llama(
 
         else:
             state_dict[to_name] = param
-
-        if progress_per_file is not None:
-            pbar.update(progress_per_file)
 
     if "lm_head.weight" not in state_dict:
         if transformer_wte_weight is not None:
@@ -1034,9 +970,6 @@ def copy_weights_hf_llama(
             del gate_up_proj_combined
             del gate_up_proj_weights[i]
 
-        if progress_per_file is not None:
-            pbar.update(progress_per_file)
-
     for i, proj in list(down_proj_weights.items()):
         assert isinstance(
             proj, dict
@@ -1095,9 +1028,6 @@ def copy_weights_hf_llama(
         del down_proj_combined
         del down_proj_weights[i]
 
-        if progress_per_file is not None:
-            pbar.update(progress_per_file)
-
     # convert separate q, k, v matrices into an interleaved qkv
     for i, (q, k, v) in list(qkv_weights.items()):
         if q is None or k is None or v is None:
@@ -1116,8 +1046,6 @@ def copy_weights_hf_llama(
         state_dict[f"transformer.h.{i}.attn.attn.weight"] = qkv
 
         del qkv_weights[i]
-        if progress_per_file is not None:
-            pbar.update(progress_per_file)
 
 
 def copy_weights_gemma_2(
@@ -1128,8 +1056,6 @@ def copy_weights_gemma_2(
     hf_weights: Dict[str, Union[torch.Tensor, NotYetLoadedTensor]],
     saver: Optional[incremental_save] = None,
     dtype: Optional[torch.dtype] = None,
-    pbar: Optional[tqdm] = None,
-    progress_per_file: Optional[float] = None,
     debug_mode: Optional[bool] = False,
 ) -> None:
     weight_map = {
@@ -1148,11 +1074,6 @@ def copy_weights_gemma_2(
         "model.norm.weight": "transformer.ln_f.weight",
         "lm_head.weight": "lm_head.weight",
     }
-
-    if progress_per_file is not None:
-        progress_per_file = progress_per_file / max(
-            1, len(hf_weights) + len(qkv_weights)
-        )
 
     transformer_wte_weight = None
     for name, param in hf_weights.items():
@@ -1182,9 +1103,6 @@ def copy_weights_gemma_2(
             param = saver.store_early(to_name, param)
         state_dict[to_name] = param
 
-        if progress_per_file is not None:
-            pbar.update(progress_per_file)
-
     if "lm_head.weight" not in state_dict:
         if transformer_wte_weight is not None:
             param_saved = saver.store_early(
@@ -1211,8 +1129,6 @@ def copy_weights_gemma_2(
             qkv = torch.cat(cycled)
             state_dict[f"transformer.h.{i}.attn.attn.{weight_type}"] = qkv
             del qkv_weights[i][weight_type]
-            if progress_per_file is not None:
-                pbar.update(progress_per_file)
 
     # convert separate gate proj and up proj into one tensor
     for i, (gate_proj, up_proj) in list(gate_up_proj_weights.items()):
@@ -1246,9 +1162,6 @@ def copy_weights_gemma_2(
         state_dict[f"transformer.h.{i}.mlp.gate_up_proj.weight"] = gate_up_proj
         del gate_up_proj_weights[i]
 
-        if progress_per_file is not None:
-            pbar.update(progress_per_file)
-
 
 def copy_weights_phi(
     config: Config,
@@ -1257,8 +1170,6 @@ def copy_weights_phi(
     hf_weights: Dict[str, Union[torch.Tensor, NotYetLoadedTensor]],
     saver: Optional[incremental_save] = None,
     dtype: Optional[torch.dtype] = None,
-    pbar: Optional[tqdm] = None,
-    progress_per_file: Optional[float] = None,
     debug_mode: Optional[bool] = False,
 ) -> None:
     if any(
@@ -1307,11 +1218,6 @@ def copy_weights_phi(
             }
         )
 
-    if progress_per_file is not None:
-        progress_per_file = progress_per_file / max(
-            1, len(hf_weights) + len(qkv_weights)
-        )
-
     for name, param in hf_weights.items():
         if name.startswith("model.layers."):
             from_name, l = layer_template(name, 2)
@@ -1341,8 +1247,6 @@ def copy_weights_phi(
         if saver is not None:
             param = saver.store_early(to_name, param)
         state_dict[to_name] = param
-        if progress_per_file is not None:
-            pbar.update(progress_per_file)
 
     for i in list(qkv_weights):
         for weight_type in list(qkv_weights[i]):
@@ -1376,8 +1280,6 @@ def copy_weights_phi(
             qkv = torch.cat(cycled)
             state_dict[f"transformer.h.{i}.attn.attn.{weight_type}"] = qkv
             del qkv_weights[i][weight_type]
-            if progress_per_file is not None:
-                pbar.update(progress_per_file)
 
 
 def qkv_reassemble(
@@ -1567,17 +1469,15 @@ def convert_hf_checkpoint(
             state_dict=sd,
         )
 
-        if not debug_mode:
-            # Using tqdm progress bar when not in debug mode
-            total_size = max(
-                1, sum(os.path.getsize(bin_file) for bin_file in bin_files)
-            )
-            total_progress = 100
+        num_shards = len(sorted_bin_files)
 
+        if not debug_mode:
+            # Phase 1: Load and process shards
+            print(f"Phase 1: Loading {num_shards} shards...")
             with tqdm(
-                total=total_progress,
-                desc="Initializing",
-                bar_format="{desc}{percentage:3.0f}%|{bar}| {elapsed}<{remaining}, {rate_fmt}",
+                total=num_shards,
+                desc="Loading shards",
+                bar_format="{desc}: {n}/{total}|{bar}| {elapsed}",
             ) as pbar:
                 # Use prefetch pipeline: load next shard while processing current
                 with ThreadPoolExecutor(max_workers=1) as prefetch_executor:
@@ -1587,11 +1487,7 @@ def convert_hf_checkpoint(
                     )
 
                     for i, bin_file in enumerate(sorted_bin_files):
-                        pbar.set_description(f"Processing: {bin_file.name}")
-                        current_file_size = os.path.getsize(bin_file)
-                        progress_per_file = (
-                            current_file_size / total_size
-                        ) * total_progress
+                        pbar.set_description(f"Loading: {bin_file.name}")
 
                         # Get current shard (already loading or loaded)
                         hf_weights = next_future.result()
@@ -1608,8 +1504,6 @@ def convert_hf_checkpoint(
                             hf_weights,
                             saver=saver,
                             dtype=dtype,
-                            pbar=pbar,
-                            progress_per_file=progress_per_file,
                             debug_mode=debug_mode,
                         )
 
@@ -1617,30 +1511,35 @@ def convert_hf_checkpoint(
                         del hf_weights
                         gc.collect()
 
+                        # Update progress after shard is processed
+                        pbar.update(1)
+
                         # Profile after each shard
                         profiler.snapshot(
-                            f"After shard {i+1}/{len(sorted_bin_files)}: {bin_file.name}",
+                            f"After shard {i+1}/{num_shards}: {bin_file.name}",
                             qkv_weights=qkv_weights,
                             gate_up_proj_weights=gate_up_proj_weights,
                             down_proj_weights=down_proj_weights,
                             state_dict=sd,
                         )
 
-                if pbar.n < total_progress:
-                    pbar.update(total_progress - pbar.n)
-                pbar.close()
+            # Phase 2: Finalization message
+            print("Phase 2: Finalizing weights...")
         else:
             # Debug mode: also use prefetch for consistency
+            print(f"Phase 1: Loading {num_shards} shards (debug mode)...")
             with ThreadPoolExecutor(max_workers=1) as prefetch_executor:
                 next_future = prefetch_executor.submit(
                     _load_shard, sorted_bin_files[0]
                 )
 
                 for i, bin_file in enumerate(sorted_bin_files):
-                    print(f"Processing: {bin_file.name}")
+                    print(
+                        f"  [{i+1}/{num_shards}] Processing: {bin_file.name}"
+                    )
                     hf_weights = next_future.result()
 
-                    if i + 1 < len(sorted_bin_files):
+                    if i + 1 < num_shards:
                         next_future = prefetch_executor.submit(
                             _load_shard, sorted_bin_files[i + 1]
                         )
@@ -1658,12 +1557,14 @@ def convert_hf_checkpoint(
 
                     # Profile after each shard (debug mode)
                     profiler.snapshot(
-                        f"After shard {i+1}/{len(sorted_bin_files)}: {bin_file.name}",
+                        f"After shard {i+1}/{num_shards}: {bin_file.name}",
                         qkv_weights=qkv_weights,
                         gate_up_proj_weights=gate_up_proj_weights,
                         down_proj_weights=down_proj_weights,
                         state_dict=sd,
                     )
+
+            print("Phase 2: Finalizing weights...")
 
         profiler.snapshot(
             "After all shards processed",
