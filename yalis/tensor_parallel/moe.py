@@ -228,7 +228,7 @@ class TPMoE(torch.nn.Module):
         self._load_from_state_dict = self._modified_load_from_state_dict
 
         # Load MoE kernel configs once during init (not in forward pass)
-        # This avoids file I/O and CUDA calls during torch.compile/graph capture
+        # This avoids file I/O and CUDA calls during torch.compile/CUDA graph
         device_name = torch.cuda.get_device_name()
         dtype_str = get_config_dtype_str(dtype=torch.bfloat16)
         self._moe_configs = get_moe_configs(
