@@ -109,6 +109,7 @@ class TPMoE(torch.nn.Module):
         init_device="cuda",
         bias=False,
         skip_bias_add=True,
+        dtype=None,
         **kwargs,
     ):
         super(TPMoE, self).__init__()
@@ -230,7 +231,7 @@ class TPMoE(torch.nn.Module):
         # Load MoE kernel configs once during init (not in forward pass)
         # This avoids file I/O and CUDA calls during torch.compile/CUDA graph
         device_name = torch.cuda.get_device_name()
-        dtype_str = get_config_dtype_str(dtype=torch.bfloat16)
+        dtype_str = get_config_dtype_str(dtype=dtype)
         self._moe_configs = get_moe_configs(
             E=n_experts,
             N=2 * self.local_intermediate_size,  # N for w1 (gate_up_proj)

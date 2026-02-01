@@ -1046,6 +1046,7 @@ class LLaMAMoE(nn.Module):
             config.n_expert,
             config.n_expert_per_token,
             init_device=config.init_device,
+            dtype=config.dtype,
         )
         self.config = config
 
