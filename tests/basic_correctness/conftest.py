@@ -115,7 +115,7 @@ def yalis_engine(model_id, dtype, attn_backend):
     """Create a standard Yalis LLMEngine."""
     model_config = ModelConfig(model_name=model_id, precision=dtype.yalis)
     inference_config = InferenceConfig(
-        max_batch_size=8,
+        max_batch_size=4,
         max_length_of_generated_sequences=2048,
         top_p=0.0,
         temperature=0.0,
@@ -135,6 +135,13 @@ def hf_model(model_id, dtype, attn_backend, device):
     In distributed mode, HF model only loads on rank 0 to avoid conflicts
     with other YALIS processes owning their GPUs. Uses CPU offload if needed.
     """
+
+    if dist.is_initialized():
+        rank = dist.get_rank()
+        if rank != 0:
+            # Only rank 0 loads the HF model; other ranks return None
+            return None
+
     model = AutoModelForCausalLM.from_pretrained(
         model_id,
         attn_implementation=attn_backend.hf,
