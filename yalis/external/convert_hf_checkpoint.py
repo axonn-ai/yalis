@@ -367,7 +367,7 @@ def copy_weights_qwen_3(
                     weight_name, weight_type = from_name.split(".")[-2:]
                     gate_up_proj[weight_type][weight_name] = param
 
-            if any(w in from_name for w in ("down_proj")) and e is not None:
+            if any(w in from_name for w in ("down_proj",)) and e is not None:
                 # Down projections need to be combined for all experts in MoE case
                 down_proj = down_proj_weights.setdefault(
                     l, defaultdict(lambda: defaultdict(dict))
