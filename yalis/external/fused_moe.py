@@ -313,15 +313,45 @@ def invoke_fused_moe_kernel(
     )
 
 
-def get_config_file_name(E: int, N: int, dtype: Optional[str]) -> str:
-    device_name = torch.cuda.current_device().replace(" ", "_")
+def get_config_file_name(
+    E: int, N: int, dtype: Optional[str], device_name: Optional[str] = None
+) -> str:
+    """Generate config file name for MoE kernel.
+
+    Args:
+        E: Number of experts
+        N: Intermediate size
+        dtype: Data type string
+        device_name: Optional device name. If None, uses current device.
+    """
+    if device_name is None:
+        device_name = torch.cuda.get_device_name()
+    device_name_safe = device_name.replace(" ", "_")
     dtype_selector = "" if not dtype else f",dtype={dtype}"
-    return f"E={E},N={N},device_name={device_name}{dtype_selector}.json"
+    return f"E{E}_N{N}_D{device_name_safe}{dtype_selector}.json"
+
+
+def get_moe_config_dir(create: bool = False) -> str:
+    """Get the directory for MoE kernel configs.
+
+    Uses $YALIS_CACHE/configs if set, otherwise ~/.cache/yalis/configs.
+
+    Args:
+        create: If True, create the directory if it doesn't exist.
+
+    Returns:
+        Path to the configs directory.
+    """
+    cache_dir = os.environ.get("YALIS_CACHE", "~/.cache/yalis")
+    config_dir = os.path.join(os.path.expanduser(cache_dir), "configs")
+    if create:
+        os.makedirs(config_dir, exist_ok=True)
+    return config_dir
 
 
 @functools.lru_cache
 def get_moe_configs(
-    E: int, N: int, dtype: Optional[str]
+    E: int, N: int, dtype: Optional[str], _device_name: Optional[str] = None
 ) -> Optional[Dict[int, Any]]:
     """
     Return optimized configurations for the fused MoE kernel.
@@ -330,32 +360,42 @@ def get_moe_configs(
     batch sizes to configurations of the fused_moe kernel. To evaluate the
     kernel on a given batch size bs, the closest batch size in the grid should
     be picked and the associated configuration chosen to invoke the kernel.
+
+    Configs are loaded from $YALIS_CACHE/configs/ (or ~/.cache/yalis/configs/).
+    Run benchmarks/benchmark_moe.py to generate configs for your hardware.
+
+    Args:
+        E: Number of experts
+        N: Intermediate size
+        dtype: Data type string
+        _device_name: Optional device name (for cache key). If None, uses
+            current device. Pass explicitly to avoid CUDA calls during
+            graph capture.
     """
+    # Use provided device name or get current device
+    # This allows pre-warming the cache before graph capture
+    if _device_name is None:
+        _device_name = torch.cuda.get_device_name()
 
-    # First look up if an optimized configuration is available in the configs
-    # directory
-    json_file_name = get_config_file_name(E, N, dtype)
+    config_dir = get_moe_config_dir()
+    json_file_name = get_config_file_name(E, N, dtype, _device_name)
+    config_file_path = os.path.join(config_dir, json_file_name)
 
-    config_file_path = os.path.join(
-        os.path.dirname(os.path.realpath(__file__)), "configs", json_file_name
-    )
     if os.path.exists(config_file_path):
         with open(config_file_path) as f:
-            print(
-                f"Using configuration from {config_file_path} for MoE layer."
-            )
-            # If a configuration has been found, return it
+            if not torch.cuda.is_current_stream_capturing():
+                print(
+                    f"Using configuration from {config_file_path} "
+                    f"for MoE layer."
+                )
             return {int(key): val for key, val in json.load(f).items()}
 
-    # If no optimized configuration is available, we will use the default
-    # configuration
-    print(
-        (
-            "Using default MoE config. Performance might be sub-optimal! "
-            "Config file not found at %s"
-        ),
-        config_file_path,
-    )
+    if not torch.cuda.is_current_stream_capturing():
+        print(
+            f"Using default MoE config. Performance might be sub-optimal! "
+            f"Config file not found at {config_file_path}. "
+            f"Run benchmarks/benchmark_moe.py to generate configs."
+        )
     return None
 
 
@@ -393,17 +433,27 @@ def try_get_optimal_moe_config(
     M: int,
     override_config: Optional[Dict[str, Any]] = None,
     is_marlin: bool = False,
+    moe_configs: Optional[Dict[int, Any]] = None,
 ):
     if override_config:
-        config = override_config
-    else:
-        # First try to load optimal config from the file
-        E, _, N = w2_shape
+        return override_config
 
-        config = get_default_config(
-            M, E, N, w1_shape[2], top_k, dtype, is_marlin
-        )
-    return config
+    E, _, N = w2_shape
+
+    # Use pre-loaded configs if provided
+    # Find closest M without min(..., key=lambda) which breaks dynamo
+    if moe_configs is not None:
+        config_M = None
+        min_diff = float("inf")
+        for k in moe_configs.keys():
+            diff = abs(k - M)
+            if diff < min_diff:
+                min_diff = diff
+                config_M = k
+        return moe_configs[config_M]
+
+    # Fallback to heuristics
+    return get_default_config(M, E, N, w1_shape[2], top_k, dtype, is_marlin)
 
 
 def fused_topk(
@@ -514,6 +564,7 @@ def fused_experts(
     w2_scale: Optional[torch.Tensor] = None,
     a1_scale: Optional[torch.Tensor] = None,
     a2_scale: Optional[torch.Tensor] = None,
+    moe_configs: Optional[Dict[int, Any]] = None,
 ):
     # Check constraints.
     assert hidden_states.shape[1] == w1.shape[2], "Hidden size mismatch"
@@ -547,6 +598,7 @@ def fused_experts(
         topk_ids.shape[1],
         config_dtype,
         override_config=override_config,
+        moe_configs=moe_configs,
     )
 
     config = get_config_func(M)
@@ -673,6 +725,7 @@ def fused_moe(
     w2_scale: Optional[torch.Tensor] = None,
     a1_scale: Optional[torch.Tensor] = None,
     a2_scale: Optional[torch.Tensor] = None,
+    moe_configs: Optional[Dict[int, Any]] = None,
 ) -> torch.Tensor:
     """
     This function computes a Mixture of Experts (MoE) layer using two sets of
@@ -742,4 +795,5 @@ def fused_moe(
         w2_scale=w2_scale,
         a1_scale=a1_scale,
         a2_scale=a2_scale,
+        moe_configs=moe_configs,
     )

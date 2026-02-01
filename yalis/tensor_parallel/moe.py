@@ -11,7 +11,11 @@ import math
 from axonn import axonn as ax
 from axonn.intra_layer.communication import Drop
 from yalis.external.nccl_comm import CommHandler
-from yalis.external.fused_moe import fused_moe
+from yalis.external.fused_moe import (
+    fused_moe,
+    get_moe_configs,
+    get_config_dtype_str,
+)
 
 
 from typing import Optional, Sequence
@@ -223,6 +227,17 @@ class TPMoE(torch.nn.Module):
         self._old_load_from_state_dict = self._load_from_state_dict
         self._load_from_state_dict = self._modified_load_from_state_dict
 
+        # Load MoE kernel configs once during init (not in forward pass)
+        # This avoids file I/O and CUDA calls during torch.compile/graph capture
+        device_name = torch.cuda.get_device_name()
+        dtype_str = get_config_dtype_str(dtype=torch.bfloat16)
+        self._moe_configs = get_moe_configs(
+            E=n_experts,
+            N=2 * self.local_intermediate_size,  # N for w1 (gate_up_proj)
+            dtype=dtype_str,
+            _device_name=device_name,
+        )
+
     def all_reduce(self, x):
         dist.all_reduce(
             x, op=torch.distributed.ReduceOp.SUM, group=self.outer_group
@@ -262,6 +277,7 @@ class TPMoE(torch.nn.Module):
             self.n_expert_per_token,
             True,
             inplace=False,
+            moe_configs=self._moe_configs,  # Pass pre-loaded configs
         ).to(x.dtype)
         y = self.all_reduce(y)
         return y
