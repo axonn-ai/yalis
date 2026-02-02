@@ -23,6 +23,7 @@ from axonn.intra_layer.communication import Drop, Gather
 from yalis.attention import attention_wrapper
 from yalis.external.config import Config
 from yalis.tensor_parallel import TPLinear, TPMoE
+from yalis.tensor_parallel.linear import shard_tensor_along_dim
 from yalis.constants import EnginePhase
 from kvcache_manager import KVCacheManager
 from yalis.attention.flash import flash_apply_rotary as apply_rotary
@@ -1229,6 +1230,71 @@ class GptOssMoE(nn.Module):
             torch.empty((self.num_experts, config.n_embd, per_rank_intermediate))
         )
         self.mlp2_bias = nn.Parameter(torch.empty((self.num_experts, config.n_embd)))
+
+        # Store world_size for checkpoint loading
+        self.world_size = world_size
+        self._old_load_from_state_dict = self._load_from_state_dict
+        self._load_from_state_dict = self._modified_load_from_state_dict
+
+    @torch.no_grad()
+    def _modified_load_from_state_dict(
+        self, state_dict, prefix, *args, **kwargs
+    ):
+        """
+        Custom state dict loader for GptOssMoE.
+        
+        Handles sharding of MLP weights when loading full (unsharded) checkpoints:
+        - mlp1_weight: [num_experts, 2*intermediate_size, hidden_size] -> shard dim 1
+        - mlp1_bias: [num_experts, 2*intermediate_size] -> shard dim 1
+        - mlp2_weight: [num_experts, hidden_size, intermediate_size] -> shard dim 2
+        - mlp2_bias: [num_experts, hidden_size] -> no sharding (output dimension)
+        """
+        assert self.config.intermediate_size is not None
+        
+        rank = (
+            dist.get_rank()
+            if dist.is_available() and dist.is_initialized()
+            else 0
+        )
+        
+        # Process mlp1_weight
+        mlp1_weight_key = prefix + "mlp1_weight"
+        if mlp1_weight_key in state_dict:
+            weight = state_dict[mlp1_weight_key]
+            # Expect full unsharded: [num_experts, 2*intermediate_size, hidden_size]
+            if weight.size(1) == 2 * self.config.intermediate_size:
+                weight = shard_tensor_along_dim(
+                    weight, dim=1, world_size=self.world_size, rank=rank
+                )
+                state_dict[mlp1_weight_key] = weight.contiguous()
+        
+        # Process mlp1_bias
+        mlp1_bias_key = prefix + "mlp1_bias"
+        if mlp1_bias_key in state_dict:
+            bias = state_dict[mlp1_bias_key]
+            # Expect full unsharded: [num_experts, 2*intermediate_size]
+            if bias.size(1) == 2 * self.config.intermediate_size:
+                bias = shard_tensor_along_dim(
+                    bias, dim=1, world_size=self.world_size, rank=rank
+                )
+                state_dict[mlp1_bias_key] = bias.contiguous()
+        
+        # Process mlp2_weight
+        mlp2_weight_key = prefix + "mlp2_weight"
+        if mlp2_weight_key in state_dict:
+            weight = state_dict[mlp2_weight_key]
+            # Expect full unsharded: [num_experts, hidden_size, intermediate_size]
+            if weight.size(2) == self.config.intermediate_size:
+                weight = shard_tensor_along_dim(
+                    weight, dim=2, world_size=self.world_size, rank=rank
+                )
+                state_dict[mlp2_weight_key] = weight.contiguous()
+        
+        # mlp2_bias does not need sharding: [num_experts, hidden_size]
+        # It's replicated across all ranks for the all-reduce aggregation.
+        
+        # Delegate to the original load_from_state_dict
+        self._old_load_from_state_dict(state_dict, prefix, *args, **kwargs)
 
     def _swiglu(self, x: torch.Tensor) -> torch.Tensor:
         # x shape: (..., 2 * hidden)
