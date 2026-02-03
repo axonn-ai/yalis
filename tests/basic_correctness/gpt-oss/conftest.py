@@ -5,6 +5,7 @@ import pytest
 import torch.distributed as dist
 import torch
 import logging
+import gc
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from yalis import ModelConfig, InferenceConfig, LLMEngine, SpeculativeLLMEngine
 from types import SimpleNamespace
@@ -174,9 +175,16 @@ def yalis_engine(model_id, dtype, attn_backend):
         attention_backend=attn_backend.yalis,
         use_paged_kv_caching=False,
     )
-    return LLMEngine(
+    engine = LLMEngine(
         model_config=model_config, inference_config=inference_config
     )
+    
+    yield engine
+    
+    # Free GPU memory after test completes
+    del engine
+    torch.cuda.empty_cache()
+    gc.collect()
 
 
 @pytest.fixture(scope="function")
