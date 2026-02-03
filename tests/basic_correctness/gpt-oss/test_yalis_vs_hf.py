@@ -213,8 +213,8 @@ def _compare_logprobs(hf_logits, hf_tokens, yalis_logits, yalis_tokens):
 @pytest.mark.filterwarnings("ignore:.*co_lnotab.*:DeprecationWarning")
 def test_01_prefill(
     tokenizer,
-    hf_model,
-    yalis_engine,
+    hf_model_loader,
+    yalis_engine_loader,
     batch_size,
     prompt_length,
     dtype,
@@ -230,7 +230,11 @@ def test_01_prefill(
         alpaca_dataset, tokenizer, prompt_length, batch_size
     )
     
-    # Run HF inference
+    # Load and run HF inference
+    logger.info("Loading HF model...")
+    hf_model = hf_model_loader()
+    log_gpu_memory("After HF load")
+    
     logger.info("Starting HF model inference...")
     hf_tokens, hf_logits = _get_hf_output(
         tokenizer, hf_model, prompts, num_tokens=1
@@ -240,12 +244,16 @@ def test_01_prefill(
     # Move HF logits to CPU immediately and cleanup GPU memory
     logger.info("Moving HF logits to CPU and clearing GPU memory...")
     hf_logits = [logit.cpu() for logit in hf_logits]
-    del hf_model  # Explicitly delete HF model to free GPU memory
+    del hf_model
     torch.cuda.empty_cache()
     gc.collect()
     log_gpu_memory("After HF cleanup")
     
-    # Run YALIS inference
+    # Load and run YALIS inference
+    logger.info("Loading YALIS engine...")
+    yalis_engine = yalis_engine_loader()
+    log_gpu_memory("After YALIS load")
+    
     logger.info("Starting YALIS engine inference...")
     yalis_tokens, yalis_logits = _get_yalis_output(
         yalis_engine, prompts, num_tokens=1
@@ -264,8 +272,8 @@ def test_01_prefill(
 @pytest.mark.filterwarnings("ignore:.*co_lnotab.*:DeprecationWarning")
 def test_02_decode(
     tokenizer,
-    hf_model,
-    yalis_engine,
+    hf_model_loader,
+    yalis_engine_loader,
     batch_size,
     prompt_length,
     dtype,
@@ -281,7 +289,11 @@ def test_02_decode(
         alpaca_dataset, tokenizer, prompt_length, batch_size
     )
     
-    # Run HF inference
+    # Load and run HF inference
+    logger.info("Loading HF model...")
+    hf_model = hf_model_loader()
+    log_gpu_memory("After HF load")
+    
     logger.info("Starting HF model inference...")
     hf_tokens, hf_logits = _get_hf_output(
         tokenizer, hf_model, prompts, num_tokens=32
@@ -291,12 +303,16 @@ def test_02_decode(
     # Move HF logits to CPU immediately and cleanup GPU memory
     logger.info("Moving HF logits to CPU and clearing GPU memory...")
     hf_logits = [logit.cpu() for logit in hf_logits]
-    del hf_model  # Explicitly delete HF model to free GPU memory
+    del hf_model
     torch.cuda.empty_cache()
     gc.collect()
     log_gpu_memory("After HF cleanup")
     
-    # Run YALIS inference
+    # Load and run YALIS inference
+    logger.info("Loading YALIS engine...")
+    yalis_engine = yalis_engine_loader()
+    log_gpu_memory("After YALIS load")
+    
     logger.info("Starting YALIS engine inference...")
     yalis_tokens, yalis_logits = _get_yalis_output(
         yalis_engine, prompts, num_tokens=32

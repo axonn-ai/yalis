@@ -131,60 +131,58 @@ def alpaca_dataset():
     return dataset
 
 
-# Model fixtures
+# Model fixtures - return lazy loaders, not pre-loaded models
 @pytest.fixture(scope="function")
-def hf_model(model_id, dtype, attn_backend, device):
-    """Create a HuggingFace model for comparison testing."""
-    # Disable MXFP4 CUDA kernels to prevent GPU-side dequantization attempts.
-    os.environ["MXFP4_DISABLE_CUDA_KERNELS"] = "1"
-    # Dequantize on CPU where memory is abundant, then move to rank-specific GPU.
-    logger.info("Loading HF model on CPU for safe MXFP4 dequantization...")
-    model = AutoModelForCausalLM.from_pretrained(
-        model_id,
-        attn_implementation=attn_backend.hf,
-        dtype=dtype.hf,
-        device_map="cpu",
-        local_files_only=HF_DATASETS_OFFLINE,
-        trust_remote_code=True,
-    )
-    # Move dequantized model to rank-specific GPU for inference.
-    local_rank = int(os.environ.get("LOCAL_RANK", 0))
-    target_device = f"cuda:{local_rank}"
-    logger.info(f"Moving model to {target_device} for inference...")
-    model = model.to(target_device)
-    model.eval()
-    return model
+def hf_model_loader(model_id, dtype, attn_backend, device):
+    """Return a callable that loads HF model on demand (not during fixture setup)."""
+    def load_hf():
+        # Disable MXFP4 CUDA kernels to prevent GPU-side dequantization attempts.
+        os.environ["MXFP4_DISABLE_CUDA_KERNELS"] = "1"
+        logger.info("Loading HF model on CPU for safe MXFP4 dequantization...")
+        model = AutoModelForCausalLM.from_pretrained(
+            model_id,
+            attn_implementation=attn_backend.hf,
+            dtype=dtype.hf,
+            device_map="cpu",
+            local_files_only=HF_DATASETS_OFFLINE,
+            trust_remote_code=True,
+        )
+        # Move to rank-specific GPU
+        local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        target_device = f"cuda:{local_rank}"
+        logger.info(f"Moving model to {target_device}...")
+        model = model.to(target_device)
+        model.eval()
+        return model
+    return load_hf
 
 
 @pytest.fixture(scope="function")
-def yalis_engine(model_id, dtype, attn_backend):
-    """Create a standard Yalis LLMEngine."""
-    # Resolve model_path: if model_id is a relative path, make it absolute relative to repo root
-    if not os.path.isabs(model_id):
-        model_path = os.path.abspath(model_id)
-    else:
-        model_path = model_id
-    model_name_for_config = os.path.basename(model_path)
-    model_config = ModelConfig(model_name_for_config, model_path=model_path, precision=dtype.yalis)
-    inference_config = InferenceConfig(
-        max_batch_size=2,
-        max_length_of_generated_sequences=2048,
-        top_p=0.0,
-        temperature=0.0,
-        tp_dims=None,
-        attention_backend=attn_backend.yalis,
-        use_paged_kv_caching=False,
-    )
-    engine = LLMEngine(
-        model_config=model_config, inference_config=inference_config
-    )
-    
-    yield engine
-    
-    # Free GPU memory after test completes
-    del engine
-    torch.cuda.empty_cache()
-    gc.collect()
+def yalis_engine_loader(model_id, dtype, attn_backend):
+    """Return a callable that loads YALIS engine on demand (not during fixture setup)."""
+    def load_yalis():
+        # Resolve model_path: if model_id is a relative path, make it absolute relative to repo root
+        if not os.path.isabs(model_id):
+            model_path = os.path.abspath(model_id)
+        else:
+            model_path = model_id
+        model_name_for_config = os.path.basename(model_path)
+        model_config = ModelConfig(model_name_for_config, model_path=model_path, precision=dtype.yalis)
+        inference_config = InferenceConfig(
+            max_batch_size=2,
+            max_length_of_generated_sequences=2048,
+            top_p=0.0,
+            temperature=0.0,
+            tp_dims=None,
+            attention_backend=attn_backend.yalis,
+            use_paged_kv_caching=False,
+        )
+        logger.info("Loading YALIS engine...")
+        engine = LLMEngine(
+            model_config=model_config, inference_config=inference_config
+        )
+        return engine
+    return load_yalis
 
 
 @pytest.fixture(scope="function")
