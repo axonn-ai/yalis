@@ -19,6 +19,8 @@ logging.basicConfig(
     format='[%(levelname)s] %(message)s'
 )
 
+logger = logging.getLogger(__name__)
+
 # Add parent test directory to sys.path so imports like 'from utils import ...' work
 parent_test_dir = Path(__file__).parent.parent
 if str(parent_test_dir) not in sys.path:
