@@ -10,7 +10,8 @@ def init_distributed(tp_dims=None):
     # - around 1GB This causes OOMs for some runs. For now, we are not passing
     # device_id which leads to a warning but it works fine. Ideally, we need to
     # find a way to do this to avoid the warning without OOMs.
-    dist.init_process_group(backend="nccl")
+    if not dist.is_initialized():
+        dist.init_process_group(backend="nccl")
     torch.cuda.set_device(dist.get_rank() % torch.cuda.device_count())
     print(
         f"[{dist.get_rank()}] Current Device - {torch.cuda.get_device_properties(torch.cuda.current_device())}"  # noqa: E501

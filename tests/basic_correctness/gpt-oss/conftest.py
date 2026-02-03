@@ -134,7 +134,7 @@ def alpaca_dataset():
 # Model fixtures - return lazy loaders, not pre-loaded models
 @pytest.fixture(scope="function")
 def hf_model_loader(model_id, dtype, attn_backend, device):
-    """Return a callable that loads HF model on demand (not during fixture setup)."""
+    """Return a callable that loads HF model on demand."""
     def load_hf():
         # Disable MXFP4 CUDA kernels to prevent GPU-side dequantization attempts.
         os.environ["MXFP4_DISABLE_CUDA_KERNELS"] = "1"
@@ -159,7 +159,7 @@ def hf_model_loader(model_id, dtype, attn_backend, device):
 
 @pytest.fixture(scope="function")
 def yalis_engine_loader(model_id, dtype, attn_backend):
-    """Return a callable that loads YALIS engine on demand (not during fixture setup)."""
+    """Return a callable that loads YALIS engine on demand."""
     def load_yalis():
         # Resolve model_path: if model_id is a relative path, make it absolute relative to repo root
         if not os.path.isabs(model_id):
@@ -182,7 +182,14 @@ def yalis_engine_loader(model_id, dtype, attn_backend):
             model_config=model_config, inference_config=inference_config
         )
         return engine
-    return load_yalis
+    
+    yield load_yalis
+    
+    # Destroy process group after test completes to allow re-initialization
+    if dist.is_initialized():
+        logger.info("Destroying process group...")
+        dist.barrier()
+        dist.destroy_process_group()
 
 
 @pytest.fixture(scope="function")
