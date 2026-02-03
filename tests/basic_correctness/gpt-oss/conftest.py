@@ -111,14 +111,11 @@ def attn_backend(request):
 @pytest.fixture(scope="function")
 def tokenizer(model_id):
     """Create a tokenizer for the test model."""
-    # If running in offline mode, force local-only loading to avoid online requests
     tokenizer = AutoTokenizer.from_pretrained(model_id, local_files_only=HF_DATASETS_OFFLINE)
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
     
-    # Set default chat_template if not present
     if tokenizer.chat_template is None:
-        # Default chat template for models without explicit template
         tokenizer.chat_template = "{% for message in messages %}{% if message['role'] == 'user' %}{{ message['content'] }}{% endif %}{% endfor %}"
     
     return tokenizer
@@ -135,19 +132,22 @@ def alpaca_dataset():
 @pytest.fixture(scope="function")
 def hf_model(model_id, dtype, attn_backend, device):
     """Create a HuggingFace model for comparison testing."""
-    # Use max_memory with CPU offload to prevent MXFP4 dequantization OOM
-    # This forces HF to offload weights to CPU and dequantize them sequentially
-    max_memory = {0: "40GB"}  # Adjust based on your GPU VRAM
-    
+    # Disable MXFP4 CUDA kernels to prevent GPU-side dequantization attempts.
+    # Dequantize on CPU, then move the model to GPU.
+    os.environ["MXFP4_DISABLE_CUDA_KERNELS"] = "1"
+
+    logger.info("Loading HF model on CPU for MXFP4 dequantization...")
     model = AutoModelForCausalLM.from_pretrained(
         model_id,
         attn_implementation=attn_backend.hf,
-        dtype=dtype.hf,
-        device_map="auto",
-        max_memory=max_memory,
+        torch_dtype=dtype.hf,
+        device_map="cpu",
         local_files_only=HF_DATASETS_OFFLINE,
         trust_remote_code=True,
     )
+    
+    logger.info("Moving model to GPU...")
+    model = model.to(device)
     model.eval()
     return model
 
