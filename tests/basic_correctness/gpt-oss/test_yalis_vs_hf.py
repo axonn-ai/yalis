@@ -5,6 +5,7 @@ import warnings
 import gc
 import logging
 from utils import alpaca_prompt
+import torch.distributed as dist
 from transformers import StoppingCriteriaList, StoppingCriteria
 
 # Get logger instance (logging configured in conftest.py)
