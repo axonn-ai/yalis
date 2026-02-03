@@ -135,21 +135,22 @@ def alpaca_dataset():
 def hf_model(model_id, dtype, attn_backend, device):
     """Create a HuggingFace model for comparison testing."""
     # Disable MXFP4 CUDA kernels to prevent GPU-side dequantization attempts.
-    # Dequantize on CPU, then move the model to GPU.
     os.environ["MXFP4_DISABLE_CUDA_KERNELS"] = "1"
-
-    logger.info("Loading HF model on CPU for MXFP4 dequantization...")
+    # Dequantize on CPU where memory is abundant, then move to rank-specific GPU.
+    logger.info("Loading HF model on CPU for safe MXFP4 dequantization...")
     model = AutoModelForCausalLM.from_pretrained(
         model_id,
         attn_implementation=attn_backend.hf,
-        torch_dtype=dtype.hf,
+        dtype=dtype.hf,
         device_map="cpu",
         local_files_only=HF_DATASETS_OFFLINE,
         trust_remote_code=True,
     )
-    
-    logger.info("Moving model to GPU...")
-    model = model.to(device)
+    # Move dequantized model to rank-specific GPU for inference.
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    target_device = f"cuda:{local_rank}"
+    logger.info(f"Moving model to {target_device} for inference...")
+    model = model.to(target_device)
     model.eval()
     return model
 
