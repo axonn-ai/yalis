@@ -1,5 +1,6 @@
 import pytest
 import torch
+import os
 import warnings
 import gc
 import logging
@@ -12,6 +13,9 @@ logger = logging.getLogger(__name__)
 NUM_LOGPROBS = 5
 BATCH_SIZES = [1, 2]
 PROMPT_LENGTHS = [128]
+
+# Local rank for per-rank logging
+LOCAL_RANK = int(os.environ.get("LOCAL_RANK", 0))
 
 
 def log_gpu_memory(phase: str):
@@ -26,7 +30,7 @@ def log_gpu_memory(phase: str):
         reserved = torch.cuda.memory_reserved() / 1024**3    # GB
         max_allocated = torch.cuda.max_memory_allocated() / 1024**3  # GB
         logger.info(
-            f"[GPU Memory] {phase:.<50} "
+            f"[rank {LOCAL_RANK}] [GPU Memory] {phase:.<50} "
             f"Allocated: {allocated:.2f}GB | Reserved: {reserved:.2f}GB | "
             f"Peak: {max_allocated:.2f}GB"
         )
@@ -218,7 +222,7 @@ def test_01_prefill(
     alpaca_dataset,
 ):
     logger.info(
-        f"Starting test_01_prefill with batch_size={batch_size}, "
+        f"[rank {LOCAL_RANK}] Starting test_01_prefill with batch_size={batch_size}, "
         f"prompt_length={prompt_length}"
     )
     log_gpu_memory("Test start")
@@ -228,42 +232,53 @@ def test_01_prefill(
     )
 
     # Load and run HF inference
-    logger.info("Loading HF model...")
+    logger.info(f"[rank {LOCAL_RANK}] Loading HF model...")
     hf_model = hf_model_loader()
     log_gpu_memory("After HF load")
 
-    logger.info("Starting HF model inference...")
-    hf_tokens, hf_logits = _get_hf_output(
-        tokenizer, hf_model, prompts, num_tokens=1
-    )
-    log_gpu_memory("After HF inference")
-
-
-    # Move HF logits to CPU immediately and cleanup GPU memory
-    logger.info("Moving HF logits to CPU and clearing GPU memory...")
-    hf_logits = [logit.cpu() for logit in hf_logits]
-    del hf_model
+    logger.info(f"[rank {LOCAL_RANK}] Starting HF model inference...")
+    if hf_model is not None:
+        hf_tokens, hf_logits = _get_hf_output(
+            tokenizer, hf_model, prompts, num_tokens=1
+        )
+        log_gpu_memory("After HF inference")
+        
+        # Move HF logits to CPU immediately and cleanup GPU memory
+        logger.info(f"[rank {LOCAL_RANK}] Moving HF logits to CPU and clearing GPU memory...")
+        hf_logits = [logit.cpu() for logit in hf_logits]
+        del hf_model
+    else:
+        # Rank 1: Dummy outputs for compatibility
+        hf_tokens = [torch.zeros(1, dtype=torch.long) for _ in prompts]
+        hf_logits = [torch.zeros(1, 50257) for _ in range(1)]  # num_tokens=1
+        logger.info("(Rank 1: Using dummy HF outputs)")
+    
     torch.cuda.empty_cache()
     gc.collect()
     log_gpu_memory("After HF cleanup")
 
     # Load and run YALIS inference
-    logger.info("Loading YALIS engine...")
+    logger.info(f"[rank {LOCAL_RANK}] Loading YALIS engine...")
     yalis_engine = yalis_engine_loader()
     log_gpu_memory("After YALIS load")
+    
+    # Synchronize all ranks before starting inference to avoid collective op mismatches
+    if dist.is_initialized():
+        dist.barrier()
+        if LOCAL_RANK == 0:
+            logger.info("All ranks synchronized, starting YALIS inference...")
 
-
-    logger.info("Starting YALIS engine inference...")
+    logger.info(f"[rank {LOCAL_RANK}] Starting YALIS engine inference...")
     yalis_tokens, yalis_logits = _get_yalis_output(
         yalis_engine, prompts, num_tokens=1
     )
     log_gpu_memory("After YALIS inference")
 
 
-    logger.info("Comparing logprobs...")
+    logger.info(f"[rank {LOCAL_RANK}] Comparing logprobs...")
     _compare_logprobs(hf_logits, hf_tokens, yalis_logits, yalis_tokens)
     log_gpu_memory("After comparison")
-    logger.info("test_01_prefill completed successfully")
+    logger.info(f"[rank {LOCAL_RANK}] test_01_prefill completed successfully")
 
 
 @pytest.mark.parametrize("batch_size", BATCH_SIZES)
@@ -280,7 +295,7 @@ def test_02_decode(
     alpaca_dataset,
 ):
     logger.info(
-        f"Starting test_02_decode with batch_size={batch_size}, "
+        f"[rank {LOCAL_RANK}] Starting test_02_decode with batch_size={batch_size}, "
         f"prompt_length={prompt_length}"
     )
     log_gpu_memory("Test start")
@@ -290,42 +305,53 @@ def test_02_decode(
     )
 
     # Load and run HF inference
-    logger.info("Loading HF model...")
+    logger.info(f"[rank {LOCAL_RANK}] Loading HF model...")
     hf_model = hf_model_loader()
     log_gpu_memory("After HF load")
 
-    logger.info("Starting HF model inference...")
-    hf_tokens, hf_logits = _get_hf_output(
-        tokenizer, hf_model, prompts, num_tokens=32
-    )
-    log_gpu_memory("After HF inference")
-
-
-    # Move HF logits to CPU immediately and cleanup GPU memory
-    logger.info("Moving HF logits to CPU and clearing GPU memory...")
-    hf_logits = [logit.cpu() for logit in hf_logits]
-    del hf_model
+    logger.info(f"[rank {LOCAL_RANK}] Starting HF model inference...")
+    if hf_model is not None:
+        hf_tokens, hf_logits = _get_hf_output(
+            tokenizer, hf_model, prompts, num_tokens=32
+        )
+        log_gpu_memory("After HF inference")
+        
+        # Move HF logits to CPU immediately and cleanup GPU memory
+        logger.info(f"[rank {LOCAL_RANK}] Moving HF logits to CPU and clearing GPU memory...")
+        hf_logits = [logit.cpu() for logit in hf_logits]
+        del hf_model
+    else:
+        # Rank 1: Dummy outputs for compatibility
+        hf_tokens = [torch.zeros(1, dtype=torch.long) for _ in prompts]
+        hf_logits = [torch.zeros(1, 50257) for _ in range(32)]  # num_tokens=32
+        logger.info("(Rank 1: Using dummy HF outputs)")
+    
     torch.cuda.empty_cache()
     gc.collect()
     log_gpu_memory("After HF cleanup")
-
+    
     # Load and run YALIS inference
-    logger.info("Loading YALIS engine...")
+    logger.info(f"[rank {LOCAL_RANK}] Loading YALIS engine...")
     yalis_engine = yalis_engine_loader()
     log_gpu_memory("After YALIS load")
+    
+    # Synchronize all ranks before starting inference to avoid collective op mismatches
+    if dist.is_initialized():
+        dist.barrier()
+        if LOCAL_RANK == 0:
+            logger.info("All ranks synchronized, starting YALIS inference...")
 
-
-    logger.info("Starting YALIS engine inference...")
+    logger.info(f"[rank {LOCAL_RANK}] Starting YALIS engine inference...")
     yalis_tokens, yalis_logits = _get_yalis_output(
         yalis_engine, prompts, num_tokens=32
     )
     log_gpu_memory("After YALIS inference")
 
 
-    logger.info("Comparing logprobs...")
+    logger.info(f"[rank {LOCAL_RANK}] Comparing logprobs...")
     _compare_logprobs(hf_logits, hf_tokens, yalis_logits, yalis_tokens)
     log_gpu_memory("After comparison")
-    logger.info("test_02_decode completed successfully")
+    logger.info(f"[rank {LOCAL_RANK}] test_02_decode completed successfully")
 
 
 # TODO: Add perplexity test

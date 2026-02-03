@@ -134,8 +134,15 @@ def alpaca_dataset():
 # Model fixtures - return lazy loaders, not pre-loaded models
 @pytest.fixture(scope="function")
 def hf_model_loader(model_id, dtype, attn_backend, device):
-    """Return a callable that loads HF model on demand."""
+    """Return a callable that loads HF model on demand (rank 0 only)."""
     def load_hf():
+        local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        
+        # Only load HF model on rank 0 to avoid duplicate loading
+        if local_rank != 0:
+            logger.info(f"Rank {local_rank}: Skipping HF model load (rank 0 only)")
+            return None
+        
         # Disable MXFP4 CUDA kernels to prevent GPU-side dequantization attempts.
         os.environ["MXFP4_DISABLE_CUDA_KERNELS"] = "1"
         logger.info("Loading HF model on CPU for safe MXFP4 dequantization...")
@@ -147,9 +154,8 @@ def hf_model_loader(model_id, dtype, attn_backend, device):
             local_files_only=HF_DATASETS_OFFLINE,
             trust_remote_code=True,
         )
-        # Move to rank-specific GPU
-        local_rank = int(os.environ.get("LOCAL_RANK", 0))
-        target_device = f"cuda:{local_rank}"
+        # Move to GPU
+        target_device = "cuda:0"
         logger.info(f"Moving model to {target_device}...")
         model = model.to(target_device)
         model.eval()
