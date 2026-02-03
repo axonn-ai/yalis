@@ -32,6 +32,79 @@ def log_gpu_memory(phase: str):
         )
 
 
+def log_model_state(engine, prefix: str):
+    """Log model weight statistics to detect NaN or initialization issues.
+    
+    Args:
+        engine: YALIS LLMEngine
+        prefix: Prefix for log messages
+    """
+    try:
+        model = engine.model
+        # Check first and last layer weights
+        first_layer = model.transformer.h[0]
+        last_layer = model.transformer.h[-1]
+        
+        # Check embedding weights
+        embed_w = model.transformer.wte.weight
+        logger.info(
+            f"[{prefix}] Embedding: shape={embed_w.shape}, "
+            f"mean={embed_w.mean().item():.6f}, std={embed_w.std().item():.6f}, "
+            f"min={embed_w.min().item():.6f}, max={embed_w.max().item():.6f}"
+        )
+        
+        # Check first layer attention weights
+        attn_qkv = first_layer.attn.c_attn.weight
+        logger.info(
+            f"[{prefix}] Layer 0 Attn QKV: shape={attn_qkv.shape}, "
+            f"mean={attn_qkv.mean().item():.6f}, std={attn_qkv.std().item():.6f}, "
+            f"has_nan={torch.isnan(attn_qkv).any().item()}"
+        )
+        
+        # Check last layer weights
+        last_attn_qkv = last_layer.attn.c_attn.weight
+        logger.info(
+            f"[{prefix}] Layer {len(model.transformer.h)-1} Attn QKV: shape={last_attn_qkv.shape}, "
+            f"mean={last_attn_qkv.mean().item():.6f}, std={last_attn_qkv.std().item():.6f}, "
+            f"has_nan={torch.isnan(last_attn_qkv).any().item()}"
+        )
+        
+        # Check LM head
+        lm_head = model.lm_head.weight
+        logger.info(
+            f"[{prefix}] LM Head: shape={lm_head.shape}, "
+            f"mean={lm_head.mean().item():.6f}, std={lm_head.std().item():.6f}, "
+            f"has_nan={torch.isnan(lm_head).any().item()}"
+        )
+    except Exception as e:
+        logger.warning(f"[{prefix}] Failed to log model state: {e}")
+
+
+def log_logits_stats(logits, prefix: str, limit: int = 3):
+    """Log statistics about logits to detect NaN/Inf issues.
+    
+    Args:
+        logits: List of [batch_size, vocab_size] logit tensors
+        prefix: Prefix for log messages
+        limit: Number of logits to show stats for
+    """
+    logger.info(f"[{prefix}] Total logits tensors: {len(logits)}")
+    for i in range(min(limit, len(logits))):
+        logit = logits[i]
+        has_nan = torch.isnan(logit).any().item()
+        has_inf = torch.isinf(logit).any().item()
+        logger.info(
+            f"[{prefix}] Logit {i}: shape={logit.shape}, dtype={logit.dtype}, "
+            f"mean={logit.mean().item():.6f}, std={logit.std().item():.6f}, "
+            f"min={logit.min().item():.6f}, max={logit.max().item():.6f}, "
+            f"has_nan={has_nan}, has_inf={has_inf}"
+        )
+        if has_nan:
+            logger.warning(f"[{prefix}] Logit {i} contains NaN values!")
+        if has_inf:
+            logger.warning(f"[{prefix}] Logit {i} contains Inf values!")
+
+
 class NeverStop(StoppingCriteria):
     def __call__(self, input_ids, scores, **kwargs):
         return False
@@ -240,6 +313,7 @@ def test_01_prefill(
         tokenizer, hf_model, prompts, num_tokens=1
     )
     log_gpu_memory("After HF inference")
+    log_logits_stats(hf_logits, "HF logits")
     
     # Move HF logits to CPU immediately and cleanup GPU memory
     logger.info("Moving HF logits to CPU and clearing GPU memory...")
@@ -253,12 +327,14 @@ def test_01_prefill(
     logger.info("Loading YALIS engine...")
     yalis_engine = yalis_engine_loader()
     log_gpu_memory("After YALIS load")
+    log_model_state(yalis_engine, "YALIS after load")
     
     logger.info("Starting YALIS engine inference...")
     yalis_tokens, yalis_logits = _get_yalis_output(
         yalis_engine, prompts, num_tokens=1
     )
     log_gpu_memory("After YALIS inference")
+    log_logits_stats(yalis_logits, "YALIS logits")
     
     logger.info("Comparing logprobs...")
     _compare_logprobs(hf_logits, hf_tokens, yalis_logits, yalis_tokens)
@@ -299,6 +375,7 @@ def test_02_decode(
         tokenizer, hf_model, prompts, num_tokens=32
     )
     log_gpu_memory("After HF inference")
+    log_logits_stats(hf_logits, "HF logits")
     
     # Move HF logits to CPU immediately and cleanup GPU memory
     logger.info("Moving HF logits to CPU and clearing GPU memory...")
@@ -312,12 +389,14 @@ def test_02_decode(
     logger.info("Loading YALIS engine...")
     yalis_engine = yalis_engine_loader()
     log_gpu_memory("After YALIS load")
+    log_model_state(yalis_engine, "YALIS after load")
     
     logger.info("Starting YALIS engine inference...")
     yalis_tokens, yalis_logits = _get_yalis_output(
         yalis_engine, prompts, num_tokens=32
     )
     log_gpu_memory("After YALIS inference")
+    log_logits_stats(yalis_logits, "YALIS logits")
     
     logger.info("Comparing logprobs...")
     _compare_logprobs(hf_logits, hf_tokens, yalis_logits, yalis_tokens)
