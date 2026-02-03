@@ -4,6 +4,7 @@ Compare HuggingFace vs YALIS logits for GPT-OSS-20B.
 Tests generation quality and consistency across both implementations.
 """
 import gc
+import os
 import torch
 import torch.distributed as dist
 from transformers import AutoTokenizer, AutoModelForCausalLM
@@ -65,48 +66,55 @@ for prompt_idx, raw_prompt in enumerate(prompts_to_test):
     print("\nPHASE 1: 20-Token Generation (HuggingFace)")
     print("-" * 40)
     
-    # Aggressive cleanup before loading HF
-    torch.cuda.empty_cache()
-    torch.cuda.reset_peak_memory_stats()
-    gc.collect()
+    # Only load HF model on rank 0 to avoid OOM when running on multiple GPUs
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    hf_generated_text = None
     
-    hf_model = AutoModelForCausalLM.from_pretrained(
-        model_id, 
-        device_map="cuda", 
-        dtype=torch.bfloat16, 
-        trust_remote_code=True
-    )
-    hf_model.eval()
-    # Use HF model's vocab size when needed
-    hf_vocab_size = getattr(hf_model.config, "vocab_size", None)
-    
-    hf_generated_ids = inputs.input_ids.clone()
-    with torch.no_grad():
-        # HF PREFILL (compute once, return past_key_values)
-        hf_prefill = hf_model(input_ids=inputs.input_ids.to("cuda"), use_cache=True)
-        hf_prefill_logits = hf_prefill.logits[0, -1, :hf_vocab_size].cpu()
-        next_token = sample_token(hf_prefill_logits, temperature=sample_temperature, top_p=0.9)
-        hf_generated_ids = torch.cat([hf_generated_ids, torch.tensor([[next_token]])], dim=1)
-        past = hf_prefill.past_key_values
-        torch.cuda.synchronize()
-
-        # HF incremental decoding using cached past_key_values to match YALIS DECODE_SINGLE
-        for gen_step in range(19):
-            next_input = torch.tensor([[next_token]], device="cuda")
-            hf_out = hf_model(input_ids=next_input, past_key_values=past, use_cache=True)
-            hf_logits = hf_out.logits[0, -1, :hf_vocab_size].cpu()
-            next_token = sample_token(hf_logits, temperature=sample_temperature, top_p=0.9)
+    if local_rank == 0:
+        # Aggressive cleanup before loading HF
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
+        gc.collect()
+        
+        hf_model = AutoModelForCausalLM.from_pretrained(
+            model_id, 
+            device_map="cuda", 
+            dtype=torch.bfloat16, 
+            trust_remote_code=True
+        )
+        hf_model.eval()
+        # Use HF model's vocab size when needed
+        hf_vocab_size = getattr(hf_model.config, "vocab_size", None)
+        
+        hf_generated_ids = inputs.input_ids.clone()
+        with torch.no_grad():
+            # HF PREFILL (compute once, return past_key_values)
+            hf_prefill = hf_model(input_ids=inputs.input_ids.to("cuda"), use_cache=True)
+            hf_prefill_logits = hf_prefill.logits[0, -1, :hf_vocab_size].cpu()
+            next_token = sample_token(hf_prefill_logits, temperature=sample_temperature, top_p=0.9)
             hf_generated_ids = torch.cat([hf_generated_ids, torch.tensor([[next_token]])], dim=1)
-            past = hf_out.past_key_values
-            if gen_step % 5 == 4:
-                torch.cuda.synchronize()
-    
-    hf_generated_text = tokenizer.decode(hf_generated_ids[0], skip_special_tokens=False)
-    print(f"HF Generated (20 tokens): {hf_generated_text}")
-    
-    del hf_model
-    torch.cuda.empty_cache()
-    gc.collect()
+            past = hf_prefill.past_key_values
+            torch.cuda.synchronize()
+
+            # HF incremental decoding using cached past_key_values to match YALIS DECODE_SINGLE
+            for gen_step in range(19):
+                next_input = torch.tensor([[next_token]], device="cuda")
+                hf_out = hf_model(input_ids=next_input, past_key_values=past, use_cache=True)
+                hf_logits = hf_out.logits[0, -1, :hf_vocab_size].cpu()
+                next_token = sample_token(hf_logits, temperature=sample_temperature, top_p=0.9)
+                hf_generated_ids = torch.cat([hf_generated_ids, torch.tensor([[next_token]])], dim=1)
+                past = hf_out.past_key_values
+                if gen_step % 5 == 4:
+                    torch.cuda.synchronize()
+        
+        hf_generated_text = tokenizer.decode(hf_generated_ids[0], skip_special_tokens=False)
+        print(f"HF Generated (20 tokens): {hf_generated_text}")
+        
+        del hf_model
+        torch.cuda.empty_cache()
+        gc.collect()
+    else:
+        print("(Rank 1: Skipping HF inference, only running YALIS)")
 
     # ============================================================================
     # PHASE 2: 20-Token Generation (YALIS)
