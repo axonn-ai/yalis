@@ -189,13 +189,7 @@ def yalis_engine_loader(model_id, dtype, attn_backend):
         )
         return engine
     
-    yield load_yalis
-    
-    # Destroy process group after test completes to allow re-initialization
-    if dist.is_initialized():
-        logger.info("Destroying process group...")
-        dist.barrier()
-        dist.destroy_process_group()
+    return load_yalis
 
 
 @pytest.fixture(scope="function")
