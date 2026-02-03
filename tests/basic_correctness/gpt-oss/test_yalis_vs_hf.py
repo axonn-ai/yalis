@@ -240,6 +240,7 @@ def test_01_prefill(
     # Move HF logits to CPU immediately and cleanup GPU memory
     logger.info("Moving HF logits to CPU and clearing GPU memory...")
     hf_logits = [logit.cpu() for logit in hf_logits]
+    del hf_model  # Explicitly delete HF model to free GPU memory
     torch.cuda.empty_cache()
     gc.collect()
     log_gpu_memory("After HF cleanup")
@@ -290,6 +291,7 @@ def test_02_decode(
     # Move HF logits to CPU immediately and cleanup GPU memory
     logger.info("Moving HF logits to CPU and clearing GPU memory...")
     hf_logits = [logit.cpu() for logit in hf_logits]
+    del hf_model  # Explicitly delete HF model to free GPU memory
     torch.cuda.empty_cache()
     gc.collect()
     log_gpu_memory("After HF cleanup")
