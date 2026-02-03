@@ -1,5 +1,6 @@
 import pytest
 import torch
+import torch.distributed as dist
 import warnings
 import gc
 import logging
@@ -35,16 +36,20 @@ def log_gpu_memory(phase: str):
 def log_model_state(engine, prefix: str):
     """Log model weight statistics to detect NaN or initialization issues.
     
+    Note: Skips TP-sharded weights to avoid collective operation issues.
+    
     Args:
         engine: YALIS LLMEngine
         prefix: Prefix for log messages
     """
+    # Skip model state logging if distributed (TP is active)
+    # Accessing TP-sharded weights can cause AllReduce hangs
+    if dist.is_initialized():
+        logger.info(f"[{prefix}] Skipping model state check (TP-distributed run)")
+        return
+    
     try:
         model = engine.model
-        # Check first and last layer weights
-        first_layer = model.transformer.h[0]
-        last_layer = model.transformer.h[-1]
-        
         # Check embedding weights
         embed_w = model.transformer.wte.weight
         logger.info(
@@ -54,19 +59,12 @@ def log_model_state(engine, prefix: str):
         )
         
         # Check first layer attention weights
+        first_layer = model.transformer.h[0]
         attn_qkv = first_layer.attn.c_attn.weight
         logger.info(
             f"[{prefix}] Layer 0 Attn QKV: shape={attn_qkv.shape}, "
             f"mean={attn_qkv.mean().item():.6f}, std={attn_qkv.std().item():.6f}, "
             f"has_nan={torch.isnan(attn_qkv).any().item()}"
-        )
-        
-        # Check last layer weights
-        last_attn_qkv = last_layer.attn.c_attn.weight
-        logger.info(
-            f"[{prefix}] Layer {len(model.transformer.h)-1} Attn QKV: shape={last_attn_qkv.shape}, "
-            f"mean={last_attn_qkv.mean().item():.6f}, std={last_attn_qkv.std().item():.6f}, "
-            f"has_nan={torch.isnan(last_attn_qkv).any().item()}"
         )
         
         # Check LM head
@@ -83,6 +81,9 @@ def log_model_state(engine, prefix: str):
 def log_logits_stats(logits, prefix: str, limit: int = 3):
     """Log statistics about logits to detect NaN/Inf issues.
     
+    Note: Moves logits to CPU before computing statistics to avoid 
+    synchronization issues in distributed runs.
+    
     Args:
         logits: List of [batch_size, vocab_size] logit tensors
         prefix: Prefix for log messages
@@ -91,12 +92,14 @@ def log_logits_stats(logits, prefix: str, limit: int = 3):
     logger.info(f"[{prefix}] Total logits tensors: {len(logits)}")
     for i in range(min(limit, len(logits))):
         logit = logits[i]
-        has_nan = torch.isnan(logit).any().item()
-        has_inf = torch.isinf(logit).any().item()
+        # Move to CPU first to avoid GPU sync issues in distributed setting
+        logit_cpu = logit.cpu() if logit.is_cuda else logit
+        has_nan = torch.isnan(logit_cpu).any().item()
+        has_inf = torch.isinf(logit_cpu).any().item()
         logger.info(
-            f"[{prefix}] Logit {i}: shape={logit.shape}, dtype={logit.dtype}, "
-            f"mean={logit.mean().item():.6f}, std={logit.std().item():.6f}, "
-            f"min={logit.min().item():.6f}, max={logit.max().item():.6f}, "
+            f"[{prefix}] Logit {i}: shape={logit_cpu.shape}, dtype={logit_cpu.dtype}, "
+            f"mean={logit_cpu.mean().item():.6f}, std={logit_cpu.std().item():.6f}, "
+            f"min={logit_cpu.min().item():.6f}, max={logit_cpu.max().item():.6f}, "
             f"has_nan={has_nan}, has_inf={has_inf}"
         )
         if has_nan:
