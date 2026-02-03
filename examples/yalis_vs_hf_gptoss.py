@@ -130,7 +130,6 @@ for prompt_idx, raw_prompt in enumerate(prompts_to_test):
         attention_backend=AttentionBackend.SDPA,
         use_paged_kv_caching=False,
         prestore_kv_cache=True,
-        disable_tp=True,
     ).to("cuda")
     yalis_model_gen.eval()
     # Use YALIS model's vocab size for slicing logits
