@@ -1,6 +1,5 @@
 import pytest
 import torch
-import torch.distributed as dist
 import warnings
 import gc
 import logging
@@ -32,87 +31,9 @@ def log_gpu_memory(phase: str):
             f"Peak: {max_allocated:.2f}GB"
         )
 
-
-def log_model_state(engine, prefix: str):
-    """Log model weight statistics to detect NaN or initialization issues.
-    
-    Note: Skips TP-sharded weights to avoid collective operation issues.
-    
-    Args:
-        engine: YALIS LLMEngine
-        prefix: Prefix for log messages
-    """
-    # Skip model state logging if distributed (TP is active)
-    # Accessing TP-sharded weights can cause AllReduce hangs
-    if dist.is_initialized():
-        logger.info(f"[{prefix}] Skipping model state check (TP-distributed run)")
-        return
-    
-    try:
-        model = engine.model
-        # Check embedding weights
-        embed_w = model.transformer.wte.weight
-        logger.info(
-            f"[{prefix}] Embedding: shape={embed_w.shape}, "
-            f"mean={embed_w.mean().item():.6f}, std={embed_w.std().item():.6f}, "
-            f"min={embed_w.min().item():.6f}, max={embed_w.max().item():.6f}"
-        )
-        
-        # Check first layer attention weights
-        first_layer = model.transformer.h[0]
-        attn_qkv = first_layer.attn.c_attn.weight
-        logger.info(
-            f"[{prefix}] Layer 0 Attn QKV: shape={attn_qkv.shape}, "
-            f"mean={attn_qkv.mean().item():.6f}, std={attn_qkv.std().item():.6f}, "
-            f"has_nan={torch.isnan(attn_qkv).any().item()}"
-        )
-        
-        # Check LM head
-        lm_head = model.lm_head.weight
-        logger.info(
-            f"[{prefix}] LM Head: shape={lm_head.shape}, "
-            f"mean={lm_head.mean().item():.6f}, std={lm_head.std().item():.6f}, "
-            f"has_nan={torch.isnan(lm_head).any().item()}"
-        )
-    except Exception as e:
-        logger.warning(f"[{prefix}] Failed to log model state: {e}")
-
-
-def log_logits_stats(logits, prefix: str, limit: int = 3):
-    """Log statistics about logits to detect NaN/Inf issues.
-    
-    Note: Moves logits to CPU before computing statistics to avoid 
-    synchronization issues in distributed runs.
-    
-    Args:
-        logits: List of [batch_size, vocab_size] logit tensors
-        prefix: Prefix for log messages
-        limit: Number of logits to show stats for
-    """
-    logger.info(f"[{prefix}] Total logits tensors: {len(logits)}")
-    for i in range(min(limit, len(logits))):
-        logit = logits[i]
-        # Move to CPU first to avoid GPU sync issues in distributed setting
-        logit_cpu = logit.cpu() if logit.is_cuda else logit
-        has_nan = torch.isnan(logit_cpu).any().item()
-        has_inf = torch.isinf(logit_cpu).any().item()
-        logger.info(
-            f"[{prefix}] Logit {i}: shape={logit_cpu.shape}, dtype={logit_cpu.dtype}, "
-            f"mean={logit_cpu.mean().item():.6f}, std={logit_cpu.std().item():.6f}, "
-            f"min={logit_cpu.min().item():.6f}, max={logit_cpu.max().item():.6f}, "
-            f"has_nan={has_nan}, has_inf={has_inf}"
-        )
-        if has_nan:
-            logger.warning(f"[{prefix}] Logit {i} contains NaN values!")
-        if has_inf:
-            logger.warning(f"[{prefix}] Logit {i} contains Inf values!")
-
-
 class NeverStop(StoppingCriteria):
     def __call__(self, input_ids, scores, **kwargs):
         return False
-
-
 
 def _get_logprobs(logits):
     # logits: list of [batch_size, vocab_size] tensors of length num_tokens
@@ -301,23 +222,23 @@ def test_01_prefill(
         f"prompt_length={prompt_length}"
     )
     log_gpu_memory("Test start")
-    
+
     prompts = alpaca_prompt(
         alpaca_dataset, tokenizer, prompt_length, batch_size
     )
-    
+
     # Load and run HF inference
     logger.info("Loading HF model...")
     hf_model = hf_model_loader()
     log_gpu_memory("After HF load")
-    
+
     logger.info("Starting HF model inference...")
     hf_tokens, hf_logits = _get_hf_output(
         tokenizer, hf_model, prompts, num_tokens=1
     )
     log_gpu_memory("After HF inference")
-    log_logits_stats(hf_logits, "HF logits")
-    
+
+
     # Move HF logits to CPU immediately and cleanup GPU memory
     logger.info("Moving HF logits to CPU and clearing GPU memory...")
     hf_logits = [logit.cpu() for logit in hf_logits]
@@ -325,20 +246,20 @@ def test_01_prefill(
     torch.cuda.empty_cache()
     gc.collect()
     log_gpu_memory("After HF cleanup")
-    
+
     # Load and run YALIS inference
     logger.info("Loading YALIS engine...")
     yalis_engine = yalis_engine_loader()
     log_gpu_memory("After YALIS load")
-    log_model_state(yalis_engine, "YALIS after load")
-    
+
+
     logger.info("Starting YALIS engine inference...")
     yalis_tokens, yalis_logits = _get_yalis_output(
         yalis_engine, prompts, num_tokens=1
     )
     log_gpu_memory("After YALIS inference")
-    log_logits_stats(yalis_logits, "YALIS logits")
-    
+
+
     logger.info("Comparing logprobs...")
     _compare_logprobs(hf_logits, hf_tokens, yalis_logits, yalis_tokens)
     log_gpu_memory("After comparison")
@@ -363,23 +284,23 @@ def test_02_decode(
         f"prompt_length={prompt_length}"
     )
     log_gpu_memory("Test start")
-    
+
     prompts = alpaca_prompt(
         alpaca_dataset, tokenizer, prompt_length, batch_size
     )
-    
+
     # Load and run HF inference
     logger.info("Loading HF model...")
     hf_model = hf_model_loader()
     log_gpu_memory("After HF load")
-    
+
     logger.info("Starting HF model inference...")
     hf_tokens, hf_logits = _get_hf_output(
         tokenizer, hf_model, prompts, num_tokens=32
     )
     log_gpu_memory("After HF inference")
-    log_logits_stats(hf_logits, "HF logits")
-    
+
+
     # Move HF logits to CPU immediately and cleanup GPU memory
     logger.info("Moving HF logits to CPU and clearing GPU memory...")
     hf_logits = [logit.cpu() for logit in hf_logits]
@@ -387,20 +308,20 @@ def test_02_decode(
     torch.cuda.empty_cache()
     gc.collect()
     log_gpu_memory("After HF cleanup")
-    
+
     # Load and run YALIS inference
     logger.info("Loading YALIS engine...")
     yalis_engine = yalis_engine_loader()
     log_gpu_memory("After YALIS load")
-    log_model_state(yalis_engine, "YALIS after load")
-    
+
+
     logger.info("Starting YALIS engine inference...")
     yalis_tokens, yalis_logits = _get_yalis_output(
         yalis_engine, prompts, num_tokens=32
     )
     log_gpu_memory("After YALIS inference")
-    log_logits_stats(yalis_logits, "YALIS logits")
-    
+
+
     logger.info("Comparing logprobs...")
     _compare_logprobs(hf_logits, hf_tokens, yalis_logits, yalis_tokens)
     log_gpu_memory("After comparison")
