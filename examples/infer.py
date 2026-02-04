@@ -35,7 +35,7 @@ if __name__ == "__main__":
     ]
 
     # take 16 prompts from this dataset
-    user_prompts = user_prompts[:16]
+    user_prompts = user_prompts[:8]
     print(f"Number of prompts = {len(user_prompts)}")
 
     system_prompt = (
@@ -66,7 +66,7 @@ if __name__ == "__main__":
     tokens_to_gen = 512
 
     # Max batch size
-    MAX_BATCH_SIZE = 16
+    MAX_BATCH_SIZE = 8
 
     if len(input_prompts) > MAX_BATCH_SIZE:
         raise ValueError(
@@ -94,7 +94,7 @@ if __name__ == "__main__":
     # # NOTE: WARMUP CODE
     prefill_batch_sizes = [1, MAX_BATCH_SIZE]
     prefill_seq_lengths = [1, 1024]
-    decode_batch_sizes = [1, 2, 4, 8, MAX_BATCH_SIZE]
+    decode_batch_sizes = [1, 2, 4, MAX_BATCH_SIZE]
 
     warmup_start = time.perf_counter()
     engine.warmup(
