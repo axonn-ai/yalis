@@ -204,7 +204,23 @@ class GPT(nn.Module):
                 x, ax.comm_handle.inner_intra_layer_parallel_group
             )
         x = self.transformer.ln_f(x)
+        
+        # DEBUG: Check x before lm_head
+        import os
+        local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        if local_rank == 0:
+            has_nan_before = torch.isnan(x).any().item()
+            if has_nan_before:
+                print(f"[DEBUG-MODEL] NaN detected in x BEFORE lm_head! Shape: {x.shape}, Count: {torch.isnan(x).sum()}")
+        
         x = self.lm_head(x)  # (b, t, vocab_size)
+        
+        # DEBUG: Check x after lm_head
+        if local_rank == 0:
+            has_nan_after = torch.isnan(x).any().item()
+            if has_nan_after:
+                print(f"[DEBUG-MODEL] NaN detected in x AFTER lm_head! Shape: {x.shape}, Count: {torch.isnan(x).sum()}")
+        
         if self.config.final_logit_softcapping is not None:
             x = (
                 torch.tanh(x / self.config.final_logit_softcapping)
@@ -1250,7 +1266,7 @@ class GptOssMoE(nn.Module):
         - mlp2_bias: [num_experts, hidden_size] -> no sharding (output dimension)
         """
         assert self.config.intermediate_size is not None
-        
+
         rank = (
             dist.get_rank()
             if dist.is_available() and dist.is_initialized()

@@ -84,7 +84,18 @@ def prefill(
     logits = model(tokens, phase, unpadded_prompt_lengths)["logits"].to(
         torch.float32
     )
+    
+    # DEBUG: Check logits immediately after model forward pass
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    if local_rank == 0 and torch.isnan(logits).any():
+        print(f"[DEBUG-PREFILL] NaN detected right after model forward! logits shape: {logits.shape}, NaN count: {torch.isnan(logits).sum()}, Sample: {logits.flatten()[:5]}")
+    
     logits = logits[torch.arange(logits.size(0)), unpadded_prompt_lengths - 1]
+    
+    # DEBUG: Check logits after indexing
+    if local_rank == 0 and torch.isnan(logits).any():
+        print(f"[DEBUG-PREFILL] NaN detected after indexing! logits shape: {logits.shape}, NaN count: {torch.isnan(logits).sum()}, Sample: {logits.flatten()[:5]}")
+    
     token_id = sample(
         logits=logits, temperature=temperature, top_k=top_k, top_p=top_p
     )
@@ -120,6 +131,12 @@ def generate(
         logits: (Optional) The raw logits from the model.
     """
     logits = model(tokens, phase)["logits"].to(torch.float32)
+    
+    # DEBUG: Check logits from model forward pass
+    local_rank = int(os.environ.get("LOCAL_RANK", 0))
+    if local_rank == 0 and torch.isnan(logits).any():
+        print(f"[DEBUG-GENERATE] NaN detected in model output! logits shape: {logits.shape}, NaN count: {torch.isnan(logits).sum()}")
+    
     token_id = sample(
         logits=logits[:, -1], temperature=temperature, top_k=top_k, top_p=top_p
     )
