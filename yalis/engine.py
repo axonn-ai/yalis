@@ -342,13 +342,13 @@ class LLMEngine:
     def _reset_warmup_states(self, batch_size):
         """Per-warmup request, reset token_counter and for paged kv cache, reset the manager."""
         # NOTE: doesn't account for spec dec
-        if self.model.token_counter is not None:
-            if batch_size is None:
-                self.model.token_counter.zero_()
-            else:
-                self.model.token_counter[:batch_size].zero_()
+        if self.model.token_counter is None:
+            raise ValueError("Token counter is None.")
+
+        if batch_size is None:
+            self.model.token_counter.zero_()
         else:
-            raise ValueError("Token counter is none.")
+            self.model.token_counter[:batch_size].zero_()
 
         if self.inference_config.use_paged_kv_caching:
             self.model.kv_cache_manager.reset()
@@ -368,7 +368,7 @@ class LLMEngine:
         ):
             for bs in batch_sizes:
                 for sl in seq_lengths:
-                    print(f"Warmup prefill for batch size {bs} and sequence length {sl}")
+                    print_rank0(f"Warmup prefill for batch size {bs} and sequence length {sl}")
                     for _ in range(iterations):
                         self._reset_warmup_states(bs)
 
@@ -387,7 +387,7 @@ class LLMEngine:
                             top_k=self.inference_config.top_k,
                             top_p=self.inference_config.top_p,
                         )
-                        print(f"Warmup prefill for batch size {bs} and sequence length {sl} completed")
+                        print_rank0(f"Warmup prefill for batch size {bs} and sequence length {sl} completed")
         torch.cuda.synchronize()
 
     def warmup_decode(
@@ -401,7 +401,7 @@ class LLMEngine:
             self.device, dtype=self.dtype, cache_enabled=False
         ):
             for bs in batch_sizes:
-                print(f"Warmup decode for batch size {bs} and prompt length {prompt_length}")
+                print_rank0(f"Warmup decode for batch size {bs} and prompt length {prompt_length}")
                 self._reset_warmup_states(bs)
 
                 # Tiny prefill
@@ -434,7 +434,7 @@ class LLMEngine:
                             top_p=self.inference_config.top_p,
                         )
                     current_input_to_model.copy_(next_token)
-                print(f"Warmup decode for batch size {bs} and prompt length {prompt_length} completed")
+                print_rank0(f"Warmup decode for batch size {bs} and prompt length {prompt_length} completed")
         torch.cuda.synchronize()
 
     def warmup(
