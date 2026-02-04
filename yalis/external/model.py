@@ -189,7 +189,10 @@ class GPT(nn.Module):
             else None
         )
 
-        for block in self.transformer.h:
+        import os
+        local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        
+        for block_idx, block in enumerate(self.transformer.h):
             x = block(
                 x,
                 self.cos,
@@ -199,6 +202,13 @@ class GPT(nn.Module):
                 block_table,
                 flex_attention_block_mask,
             )
+            # DEBUG: Check for NaNs after each block
+            if torch.isnan(x).any().item():
+                nan_count = torch.isnan(x).sum().item()
+                if local_rank == 0:
+                    print(f"[DEBUG-BLOCK] Block {block_idx} produced NaNs! Shape: {x.shape}, Count: {nan_count}")
+                break  # Stop processing once we find NaNs
+        
         if self.config.tensor_parallel:
             x = Gather.apply(
                 x, ax.comm_handle.inner_intra_layer_parallel_group
