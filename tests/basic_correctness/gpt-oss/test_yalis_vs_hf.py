@@ -7,6 +7,7 @@ import logging
 from utils import alpaca_prompt
 import torch.distributed as dist
 from transformers import StoppingCriteriaList, StoppingCriteria
+import random as random_module
 
 # Get logger instance (logging configured in conftest.py)
 logger = logging.getLogger(__name__)
@@ -253,9 +254,27 @@ def test_01_prefill(
     )
     log_gpu_memory("Test start")
 
+    # Ensure consistent random sampling across all ranks for TP tests
+    # All ranks must generate identical prompts for distributed inference
+    random_seed = 42
+    random_module.seed(random_seed)
+    
     prompts = alpaca_prompt(
         alpaca_dataset, tokenizer, prompt_length, batch_size
     )
+
+    # DEBUG: Tokenize locally and verify sequence lengths across ranks
+    import torch.distributed as dist
+    tokenized = tokenizer(prompts, return_tensors="pt", padding=True)
+    seq_lengths = tokenized.attention_mask.sum(dim=1)
+    logger.info(f"[rank {LOCAL_RANK}] Local tokenized shape={tokenized.input_ids.shape}, seq_lengths={seq_lengths.tolist()}")
+    if dist.is_initialized():
+        world_size = dist.get_world_size()
+        local_len = torch.tensor([int(seq_lengths[0].item())], dtype=torch.long)
+        gather_list = [torch.zeros_like(local_len) for _ in range(world_size)]
+        dist.all_gather(gather_list, local_len)
+        gathered = [int(x.item()) for x in gather_list]
+        logger.info(f"[rank {LOCAL_RANK}] Tokenized seq lengths across ranks: {gathered}")
 
     # Load and run YALIS inference
     logger.info(f"[rank {LOCAL_RANK}] Loading YALIS engine...")
@@ -350,6 +369,11 @@ def test_02_decode(
     )
     log_gpu_memory("Test start")
 
+    # Ensure consistent random sampling across all ranks for TP tests
+    # All ranks must generate identical prompts for distributed inference
+    random_seed = 42
+    random_module.seed(random_seed)
+    
     prompts = alpaca_prompt(
         alpaca_dataset, tokenizer, prompt_length, batch_size
     )
