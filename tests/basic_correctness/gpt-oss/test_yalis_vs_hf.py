@@ -283,6 +283,10 @@ def test_01_prefill(
     gc.collect()
     log_gpu_memory("After HF cleanup")
 
+    # Destroy process group before comparison to avoid NCCL collectives during CPU-only ops
+    if dist.is_initialized():
+        dist.destroy_process_group()
+
     # Only compare on rank 0 since HF only runs on rank 0
     if LOCAL_RANK == 0:
         logger.info(f"[rank {LOCAL_RANK}] Comparing logprobs...")
@@ -361,6 +365,10 @@ def test_02_decode(
     torch.cuda.empty_cache()
     gc.collect()
     log_gpu_memory("After HF cleanup")
+
+    # Destroy process group before comparison to avoid NCCL collectives during CPU-only ops
+    if dist.is_initialized():
+        dist.destroy_process_group()
 
     # Only compare on rank 0 since HF only runs on rank 0
     if LOCAL_RANK == 0:
