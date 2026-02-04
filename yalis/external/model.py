@@ -13,6 +13,7 @@ from typing_extensions import Self
 from copy import deepcopy
 import warnings
 import sys
+import os
 
 import torch
 import torch.nn as nn
@@ -189,7 +190,6 @@ class GPT(nn.Module):
             else None
         )
 
-        import os
         local_rank = int(os.environ.get("LOCAL_RANK", 0))
         
         for block_idx, block in enumerate(self.transformer.h):
@@ -216,7 +216,6 @@ class GPT(nn.Module):
         x = self.transformer.ln_f(x)
         
         # DEBUG: Check x before lm_head
-        import os
         local_rank = int(os.environ.get("LOCAL_RANK", 0))
         if local_rank == 0:
             has_nan_before = torch.isnan(x).any().item()
@@ -549,6 +548,15 @@ class Block(nn.Module):
             flex_attention_block_mask,
             sinks=effective_sinks,
         )
+        
+        # DEBUG: Check attention output for NaNs
+        import os
+        local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        if torch.isnan(attention_output).any().item():
+            nan_count = torch.isnan(attention_output).sum().item()
+            if local_rank == 0:
+                print(f"[DEBUG-ATTN] Attention output has NaNs! Shape: {attention_output.shape}, Count: {nan_count}")
+        
         attention_output = self.post_attention_norm(attention_output)
 
         # Currently, MLP does not need to be phase-aware
@@ -559,10 +567,33 @@ class Block(nn.Module):
                 if self.config.shared_attention_norm
                 else self.norm_2(x)
             )
-            x = self.mlp(x_normed) + attention_output + x
+            mlp_output = self.mlp(x_normed)
+            
+            # DEBUG: Check MLP output for NaNs
+            if torch.isnan(mlp_output).any().item():
+                nan_count = torch.isnan(mlp_output).sum().item()
+                if local_rank == 0:
+                    print(f"[DEBUG-MLP] MLP output has NaNs! Shape: {mlp_output.shape}, Count: {nan_count}")
+            
+            x = mlp_output + attention_output + x
         else:
             x = attention_output + x
-            x = self.post_mlp_norm(self.mlp(self.norm_2(x))) + x
+            mlp_out = self.mlp(self.norm_2(x))
+            
+            # DEBUG: Check MLP output for NaNs
+            if torch.isnan(mlp_out).any().item():
+                nan_count = torch.isnan(mlp_out).sum().item()
+                if local_rank == 0:
+                    print(f"[DEBUG-MLP] MLP output has NaNs! Shape: {mlp_out.shape}, Count: {nan_count}")
+            
+            x = self.post_mlp_norm(mlp_out) + x
+        
+        # DEBUG: Check final block output for NaNs
+        if torch.isnan(x).any().item():
+            nan_count = torch.isnan(x).sum().item()
+            if local_rank == 0:
+                print(f"[DEBUG-BLOCK-OUT] Block output has NaNs! Shape: {x.shape}, Count: {nan_count}")
+        
         return x
 
 
@@ -677,6 +708,14 @@ class CausalSelfAttention(nn.Module):
         )  # batch size, sequence length, embedding dimensionality (n_embd)
 
         qkv = self.attn(x)
+        
+        # DEBUG: Check QKV projection output
+        import os
+        local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        if torch.isnan(qkv).any().item():
+            nan_count = torch.isnan(qkv).sum().item()
+            if local_rank == 0:
+                print(f"[DEBUG-QKV] QKV projection has NaNs! Shape: {qkv.shape}, Count: {nan_count}")
 
         # assemble into a number of query groups to support
         # MHA, MQA and GQA together (see `config.n_query_groups`)
@@ -737,6 +776,14 @@ class CausalSelfAttention(nn.Module):
             sliding_window_mode=getattr(self.config, "sliding_window_mode", None),
             sinks=sinks,
         )
+        
+        # DEBUG: Check attention wrapper output
+        import os
+        local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        if torch.isnan(y).any().item():
+            nan_count = torch.isnan(y).sum().item()
+            if local_rank == 0:
+                print(f"[DEBUG-ATTN-OUT] Attention wrapper output has NaNs! Shape: {y.shape}, Count: {nan_count}")
 
         if not self.config.attention_backend == AttentionBackend.FLASH:
             y = y.transpose(1, 2).contiguous()
@@ -744,9 +791,23 @@ class CausalSelfAttention(nn.Module):
         y = y.reshape(
             B, T, self.config.head_size * self.config.n_head
         )  # re-assemble all head outputs side by side
+        
+        # DEBUG: Check reshaped attention output before projection
+        if torch.isnan(y).any().item():
+            nan_count = torch.isnan(y).sum().item()
+            if local_rank == 0:
+                print(f"[DEBUG-ATTN-RESHAPE] Reshaped attention output has NaNs! Shape: {y.shape}, Count: {nan_count}")
 
         # output projection
-        return self.proj(y)
+        proj_output = self.proj(y)
+        
+        # DEBUG: Check projection output
+        if torch.isnan(proj_output).any().item():
+            nan_count = torch.isnan(proj_output).sum().item()
+            if local_rank == 0:
+                print(f"[DEBUG-PROJ] Output projection has NaNs! Shape: {proj_output.shape}, Count: {nan_count}")
+        
+        return proj_output
 
     def build_kv_cache(
         self,
