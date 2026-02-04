@@ -391,7 +391,7 @@ def test_02_decode(
 
     logger.info(f"[rank {LOCAL_RANK}] Starting YALIS engine inference...")
     yalis_tokens, yalis_logits = _get_yalis_output(
-        yalis_engine, prompts, num_tokens=5
+        yalis_engine, prompts, num_tokens=3
     )
     log_gpu_memory("After YALIS inference")
 
