@@ -232,6 +232,28 @@ def test_01_prefill(
         alpaca_dataset, tokenizer, prompt_length, batch_size
     )
 
+    # Load and run YALIS inference
+    logger.info(f"[rank {LOCAL_RANK}] Loading YALIS engine...")
+    yalis_engine = yalis_engine_loader()
+    log_gpu_memory("After YALIS load")
+    
+    # Synchronize all ranks before starting inference to avoid collective op mismatches
+    if dist.is_initialized():
+        dist.barrier()
+        if LOCAL_RANK == 0:
+            logger.info("All ranks synchronized, starting YALIS inference...")
+
+    logger.info(f"[rank {LOCAL_RANK}] Starting YALIS engine inference...")
+    yalis_tokens, yalis_logits = _get_yalis_output(
+        yalis_engine, prompts, num_tokens=1
+    )
+    log_gpu_memory("After YALIS inference")
+
+    # Cleanup YALIS to free GPU memory
+    torch.cuda.empty_cache()
+    gc.collect()
+    log_gpu_memory("After YALIS cleanup")
+
     # Load and run HF inference
     logger.info(f"[rank {LOCAL_RANK}] Loading HF model...")
     hf_model = hf_model_loader()
@@ -257,24 +279,6 @@ def test_01_prefill(
     torch.cuda.empty_cache()
     gc.collect()
     log_gpu_memory("After HF cleanup")
-
-    # Load and run YALIS inference
-    logger.info(f"[rank {LOCAL_RANK}] Loading YALIS engine...")
-    yalis_engine = yalis_engine_loader()
-    log_gpu_memory("After YALIS load")
-    
-    # Synchronize all ranks before starting inference to avoid collective op mismatches
-    if dist.is_initialized():
-        dist.barrier()
-        if LOCAL_RANK == 0:
-            logger.info("All ranks synchronized, starting YALIS inference...")
-
-    logger.info(f"[rank {LOCAL_RANK}] Starting YALIS engine inference...")
-    yalis_tokens, yalis_logits = _get_yalis_output(
-        yalis_engine, prompts, num_tokens=1
-    )
-    log_gpu_memory("After YALIS inference")
-
 
     logger.info(f"[rank {LOCAL_RANK}] Comparing logprobs...")
     _compare_logprobs(hf_logits, hf_tokens, yalis_logits, yalis_tokens)
@@ -305,6 +309,28 @@ def test_02_decode(
         alpaca_dataset, tokenizer, prompt_length, batch_size
     )
 
+    # Load and run YALIS inference
+    logger.info(f"[rank {LOCAL_RANK}] Loading YALIS engine...")
+    yalis_engine = yalis_engine_loader()
+    log_gpu_memory("After YALIS load")
+    
+    # Synchronize all ranks before starting inference to avoid collective op mismatches
+    if dist.is_initialized():
+        dist.barrier()
+        if LOCAL_RANK == 0:
+            logger.info("All ranks synchronized, starting YALIS inference...")
+
+    logger.info(f"[rank {LOCAL_RANK}] Starting YALIS engine inference...")
+    yalis_tokens, yalis_logits = _get_yalis_output(
+        yalis_engine, prompts, num_tokens=32
+    )
+    log_gpu_memory("After YALIS inference")
+
+    # Cleanup YALIS to free GPU memory
+    torch.cuda.empty_cache()
+    gc.collect()
+    log_gpu_memory("After YALIS cleanup")
+    
     # Load and run HF inference
     logger.info(f"[rank {LOCAL_RANK}] Loading HF model...")
     hf_model = hf_model_loader()
@@ -330,24 +356,6 @@ def test_02_decode(
     torch.cuda.empty_cache()
     gc.collect()
     log_gpu_memory("After HF cleanup")
-    
-    # Load and run YALIS inference
-    logger.info(f"[rank {LOCAL_RANK}] Loading YALIS engine...")
-    yalis_engine = yalis_engine_loader()
-    log_gpu_memory("After YALIS load")
-    
-    # Synchronize all ranks before starting inference to avoid collective op mismatches
-    if dist.is_initialized():
-        dist.barrier()
-        if LOCAL_RANK == 0:
-            logger.info("All ranks synchronized, starting YALIS inference...")
-
-    logger.info(f"[rank {LOCAL_RANK}] Starting YALIS engine inference...")
-    yalis_tokens, yalis_logits = _get_yalis_output(
-        yalis_engine, prompts, num_tokens=32
-    )
-    log_gpu_memory("After YALIS inference")
-
 
     logger.info(f"[rank {LOCAL_RANK}] Comparing logprobs...")
     _compare_logprobs(hf_logits, hf_tokens, yalis_logits, yalis_tokens)
