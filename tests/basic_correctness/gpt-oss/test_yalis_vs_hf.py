@@ -280,9 +280,11 @@ def test_01_prefill(
     gc.collect()
     log_gpu_memory("After HF cleanup")
 
-    logger.info(f"[rank {LOCAL_RANK}] Comparing logprobs...")
-    _compare_logprobs(hf_logits, hf_tokens, yalis_logits, yalis_tokens)
-    log_gpu_memory("After comparison")
+    # Only compare on rank 0 since HF only runs on rank 0
+    if LOCAL_RANK == 0:
+        logger.info(f"[rank {LOCAL_RANK}] Comparing logprobs...")
+        _compare_logprobs(hf_logits, hf_tokens, yalis_logits, yalis_tokens)
+        log_gpu_memory("After comparison")
     logger.info(f"[rank {LOCAL_RANK}] test_01_prefill completed successfully")
 
 
@@ -357,9 +359,11 @@ def test_02_decode(
     gc.collect()
     log_gpu_memory("After HF cleanup")
 
-    logger.info(f"[rank {LOCAL_RANK}] Comparing logprobs...")
-    _compare_logprobs(hf_logits, hf_tokens, yalis_logits, yalis_tokens)
-    log_gpu_memory("After comparison")
+    # Only compare on rank 0 since HF only runs on rank 0
+    if LOCAL_RANK == 0:
+        logger.info(f"[rank {LOCAL_RANK}] Comparing logprobs...")
+        _compare_logprobs(hf_logits, hf_tokens, yalis_logits, yalis_tokens)
+        log_gpu_memory("After comparison")
     logger.info(f"[rank {LOCAL_RANK}] test_02_decode completed successfully")
 
 
