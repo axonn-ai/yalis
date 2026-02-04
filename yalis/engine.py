@@ -84,18 +84,7 @@ def prefill(
     logits = model(tokens, phase, unpadded_prompt_lengths)["logits"].to(
         torch.float32
     )
-    
-    # DEBUG: Check logits immediately after model forward pass
-    local_rank = int(os.environ.get("LOCAL_RANK", 0))
-    if local_rank == 0 and torch.isnan(logits).any():
-        print(f"[DEBUG-PREFILL] NaN detected right after model forward! logits shape: {logits.shape}, NaN count: {torch.isnan(logits).sum()}, Sample: {logits.flatten()[:5]}")
-    
     logits = logits[torch.arange(logits.size(0)), unpadded_prompt_lengths - 1]
-    
-    # DEBUG: Check logits after indexing
-    if local_rank == 0 and torch.isnan(logits).any():
-        print(f"[DEBUG-PREFILL] NaN detected after indexing! logits shape: {logits.shape}, NaN count: {torch.isnan(logits).sum()}, Sample: {logits.flatten()[:5]}")
-    
     token_id = sample(
         logits=logits, temperature=temperature, top_k=top_k, top_p=top_p
     )
@@ -131,12 +120,6 @@ def generate(
         logits: (Optional) The raw logits from the model.
     """
     logits = model(tokens, phase)["logits"].to(torch.float32)
-    
-    # DEBUG: Check logits from model forward pass
-    local_rank = int(os.environ.get("LOCAL_RANK", 0))
-    if local_rank == 0 and torch.isnan(logits).any():
-        print(f"[DEBUG-GENERATE] NaN detected in model output! logits shape: {logits.shape}, NaN count: {torch.isnan(logits).sum()}")
-    
     token_id = sample(
         logits=logits[:, -1], temperature=temperature, top_k=top_k, top_p=top_p
     )
@@ -462,10 +445,6 @@ class LLMEngine:
             )  # Move prompt tokens to the device
 
             prompt_sequence_lengths = prompt_sequence_lengths.to(self.device)
-            # Timing helpers for per-step debug logs
-            import torch.distributed as dist
-            loop_start_time = time.time()
-            prev_step_time = loop_start_time
             for step in range(tokens_to_generate):
                 timer_key = None
                 if step == 0:  # Prefill step
@@ -518,26 +497,6 @@ class LLMEngine:
                 if get_logits:
                     output_logits.append(logits.clone())
                 timers.stop(timer_key)
-
-                # Per-step debug log: report token completion and timing
-                try:
-                    local_rank = (
-                        dist.get_rank() if dist.is_initialized() else 0
-                    )
-                except Exception:
-                    local_rank = 0
-                now = time.time()
-                step_latency = now - prev_step_time
-                total_elapsed = now - loop_start_time
-                prev_step_time = now
-                # Convert produced token(s) to cpu list for logging
-                try:
-                    token_list = next_token.view(-1).cpu().tolist()
-                except Exception:
-                    token_list = str(next_token)
-                logger.info(
-                    f"[DEBUG-DECODE] Rank {local_rank} - Step {step} completed: tokens={token_list}, step_latency={step_latency:.4f}s, total_elapsed={total_elapsed:.4f}s"
-                )
 
                 # Break if every sequence is done
                 if not ignore_eos and done_mask.all():
@@ -814,18 +773,6 @@ class SpeculativeLLMEngine(LLMEngine):
                             top_p=self.inference_config.top_p,
                         )
                         timers.stop("verify")
-
-                        # Per-step debug log for speculative decode
-                        try:
-                            import torch.distributed as dist
-                            local_rank = dist.get_rank() if dist.is_initialized() else 0
-                        except Exception:
-                            local_rank = 0
-                        try:
-                            token_list = next_token.view(-1).cpu().tolist()
-                        except Exception:
-                            token_list = str(next_token)
-                        logger.info(f"[DEBUG-SPEC-DECODE] Rank {local_rank} - Step {step} completed (speculative): tokens={token_list}")
 
                     output_with_bonus_tokens = self.sampler(
                         draft_probs,
