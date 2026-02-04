@@ -12,7 +12,7 @@ from transformers import StoppingCriteriaList, StoppingCriteria
 logger = logging.getLogger(__name__)
 
 NUM_LOGPROBS = 5
-BATCH_SIZES = [2]
+BATCH_SIZES = [1]
 PROMPT_LENGTHS = [128]
 
 # Local rank for per-rank logging
