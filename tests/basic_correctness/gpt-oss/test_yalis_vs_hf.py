@@ -108,7 +108,8 @@ def _get_hf_output(tokenizer, model, prompts, num_tokens):
 
     # new_tokens: list of [num_tokens] tensors of length batch_size
     # output.logits: list of [batch_size, vocab_size] tensors of length num_tokens  # noqa: E501
-    return new_tokens, output.logits
+    logits_cpu = [logit.cpu() for logit in output.logits]
+    return new_tokens, logits_cpu
 
 
 def _get_yalis_output(engine, prompts, num_tokens):
@@ -119,9 +120,11 @@ def _get_yalis_output(engine, prompts, num_tokens):
         get_logits=True,
     )
     # output_tokens: (batch, num_tokens)
-    return [
+    tokens_cpu = [
         output_tokens[i][:num_tokens].cpu() for i in range(len(prompts))
-    ], logits
+    ]
+    logits_cpu = [logit.cpu() for logit in logits]
+    return tokens_cpu, logits_cpu
 
 
 # This test does not mean a failure
@@ -249,6 +252,10 @@ def test_01_prefill(
     )
     log_gpu_memory("After YALIS inference")
 
+    # Ensure all ranks finish inference before moving to comparison
+    if dist.is_initialized():
+        dist.barrier()
+
     # Cleanup YALIS to free GPU memory
     torch.cuda.empty_cache()
     gc.collect()
@@ -265,16 +272,12 @@ def test_01_prefill(
             tokenizer, hf_model, prompts, num_tokens=1
         )
         log_gpu_memory("After HF inference")
-        
-        # Move HF logits to CPU immediately and cleanup GPU memory
-        logger.info(f"[rank {LOCAL_RANK}] Moving HF logits to CPU and clearing GPU memory...")
-        hf_logits = [logit.cpu() for logit in hf_logits]
         del hf_model
     else:
         # Rank 1: Dummy outputs for compatibility
+        logger.info("(Rank 1: Using dummy HF outputs)")
         hf_tokens = [torch.zeros(1, dtype=torch.long) for _ in prompts]
         hf_logits = [torch.zeros(1, 50257) for _ in range(1)]  # num_tokens=1
-        logger.info("(Rank 1: Using dummy HF outputs)")
     
     torch.cuda.empty_cache()
     gc.collect()
@@ -328,6 +331,10 @@ def test_02_decode(
     )
     log_gpu_memory("After YALIS inference")
 
+    # Ensure all ranks finish inference before moving to comparison
+    if dist.is_initialized():
+        dist.barrier()
+
     # Cleanup YALIS to free GPU memory
     torch.cuda.empty_cache()
     gc.collect()
@@ -344,16 +351,12 @@ def test_02_decode(
             tokenizer, hf_model, prompts, num_tokens=32
         )
         log_gpu_memory("After HF inference")
-        
-        # Move HF logits to CPU immediately and cleanup GPU memory
-        logger.info(f"[rank {LOCAL_RANK}] Moving HF logits to CPU and clearing GPU memory...")
-        hf_logits = [logit.cpu() for logit in hf_logits]
         del hf_model
     else:
         # Rank 1: Dummy outputs for compatibility
+        logger.info("(Rank 1: Using dummy HF outputs)")
         hf_tokens = [torch.zeros(1, dtype=torch.long) for _ in prompts]
         hf_logits = [torch.zeros(1, 50257) for _ in range(32)]  # num_tokens=32
-        logger.info("(Rank 1: Using dummy HF outputs)")
     
     torch.cuda.empty_cache()
     gc.collect()
