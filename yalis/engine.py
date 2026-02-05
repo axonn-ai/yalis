@@ -294,9 +294,6 @@ class LLMEngine:
             prompt_tokens_and_mask = self.tokenizer(
                 prompts, return_tensors="pt", padding=True
             )
-            prompt_tokens_and_mask = self.tokenizer(
-                prompts, return_tensors="pt", padding=True
-            )
             prompt_tokens = prompt_tokens_and_mask.input_ids
             prompt_sequence_lengths = (
                 prompt_tokens_and_mask.attention_mask.sum(dim=1)

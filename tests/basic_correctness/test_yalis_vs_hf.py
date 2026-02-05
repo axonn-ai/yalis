@@ -51,12 +51,14 @@ def _get_logprobs(logits):
 
 
 def _get_hf_output(tokenizer, model, prompts, num_tokens):
-    inputs = tokenizer(prompts, return_tensors="pt", padding=True).to(
-        model.device
-    )
-    with torch.no_grad(), torch.autocast(
-        "cuda", dtype=torch.float16, cache_enabled=False
-    ):
+    # In distributed mode, only rank 0 has the HF model loaded
+    if model is None:
+        return None, None
+
+    # For device_map="auto", use "cuda:0" for inputs
+    # - HF handles cross-GPU movement
+    inputs = tokenizer(prompts, return_tensors="pt", padding=True).to("cuda:0")
+    with torch.no_grad():
         output = model.generate(
             **inputs,
             max_new_tokens=num_tokens,
@@ -68,7 +70,7 @@ def _get_hf_output(tokenizer, model, prompts, num_tokens):
             temperature=0.0,
             top_p=0.0,
             output_logits=True,
-            output_hidden_states=True,
+            output_hidden_states=False,
             return_dict_in_generate=True,
         )
 
@@ -189,8 +191,8 @@ def _compare_logprobs(hf_logits, hf_tokens, yalis_logits, yalis_tokens):
 @pytest.mark.filterwarnings("ignore:.*co_lnotab.*:DeprecationWarning")
 def test_01_prefill(
     tokenizer,
-    hf_model,
     yalis_engine,
+    hf_model,
     batch_size,
     prompt_length,
     dtype,
@@ -200,12 +202,17 @@ def test_01_prefill(
         alpaca_dataset, tokenizer, prompt_length, batch_size
     )
     hf_tokens, hf_logits = _get_hf_output(
-        tokenizer, hf_model, prompts, num_tokens=1
+        tokenizer,
+        hf_model,
+        prompts,
+        num_tokens=1,
     )
     yalis_tokens, yalis_logits = _get_yalis_output(
         yalis_engine, prompts, num_tokens=1
     )
-    _compare_logprobs(hf_logits, hf_tokens, yalis_logits, yalis_tokens)
+    # Only compare on rank 0 where HF model is loaded
+    if hf_tokens is not None:
+        _compare_logprobs(hf_logits, hf_tokens, yalis_logits, yalis_tokens)
 
 
 @pytest.mark.parametrize("batch_size", BATCH_SIZES)
@@ -214,8 +221,8 @@ def test_01_prefill(
 @pytest.mark.filterwarnings("ignore:.*co_lnotab.*:DeprecationWarning")
 def test_02_decode(
     tokenizer,
-    hf_model,
     yalis_engine,
+    hf_model,
     batch_size,
     prompt_length,
     dtype,
@@ -230,7 +237,9 @@ def test_02_decode(
     yalis_tokens, yalis_logits = _get_yalis_output(
         yalis_engine, prompts, num_tokens=32
     )
-    _compare_logprobs(hf_logits, hf_tokens, yalis_logits, yalis_tokens)
+    # Only compare on rank 0 where HF model is loaded
+    if hf_tokens is not None:
+        _compare_logprobs(hf_logits, hf_tokens, yalis_logits, yalis_tokens)
 
 
 # TODO: Add perplexity test

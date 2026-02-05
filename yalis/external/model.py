@@ -13,7 +13,6 @@ from typing_extensions import Self
 from copy import deepcopy
 import warnings
 import sys
-import os
 
 import torch
 import torch.nn as nn
@@ -30,7 +29,6 @@ from kvcache_manager import KVCacheManager
 from yalis.attention.flash import flash_apply_rotary as apply_rotary
 from yalis.attention.backends import AttentionBackend
 from yalis.attention.masking import create_causal_block_mask_for_flex_attention
-
 
 # TODO: these should be dynamically set during engine initialization
 NUM_BLOCKS, PAGE_BLOCK_SIZE = 512, 256
@@ -1156,13 +1154,16 @@ class LLaMAMoE(nn.Module):
         super().__init__()
         self.gate = nn.Linear(config.n_embd, config.n_expert, bias=False)
         if config.moe_intermediate_size is None:
-            config.moe_intermediate_size = config.intermediate_size
+            self.moe_intermediate_size = config.intermediate_size
+        else:
+            self.moe_intermediate_size = config.moe_intermediate_size
         self.experts = TPMoE(
             config.n_embd,
             config.moe_intermediate_size,
             config.n_expert,
             config.n_expert_per_token,
             init_device=config.init_device,
+            dtype=config.dtype,
         )
         self.config = config
 

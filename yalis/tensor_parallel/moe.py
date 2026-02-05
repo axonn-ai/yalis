@@ -11,7 +11,11 @@ import math
 from axonn import axonn as ax
 from axonn.intra_layer.communication import Drop
 from yalis.external.nccl_comm import CommHandler
-from yalis.external.fused_moe import fused_moe
+from yalis.external.fused_moe import (
+    fused_moe,
+    get_moe_configs,
+    get_config_dtype_str,
+)
 
 
 from typing import Optional, Sequence
@@ -105,6 +109,7 @@ class TPMoE(torch.nn.Module):
         init_device="cuda",
         bias=False,
         skip_bias_add=True,
+        dtype=None,
         **kwargs,
     ):
         super(TPMoE, self).__init__()
@@ -138,11 +143,6 @@ class TPMoE(torch.nn.Module):
                 self.outer_group
             )
         )
-        # We do not need NCCL communicators for the inner and depth group
-        # as no collective is performed on them during the forward pass
-
-        # depth_group is the Z tensor parallel group (akin to FSDP)
-        self.depth_group = ax.comm_handle.depth_intra_layer_parallel_group
 
         # calculating the sizes of each tensor parallel process group
         self.inner_group_size = dist.get_world_size(self.inner_group)
@@ -228,6 +228,17 @@ class TPMoE(torch.nn.Module):
         self._old_load_from_state_dict = self._load_from_state_dict
         self._load_from_state_dict = self._modified_load_from_state_dict
 
+        # Load MoE kernel configs once during init (not in forward pass)
+        # This avoids file I/O and CUDA calls during torch.compile/CUDA graph
+        device_name = torch.cuda.get_device_name()
+        dtype_str = get_config_dtype_str(dtype=dtype)
+        self._moe_configs = get_moe_configs(
+            E=n_experts,
+            N=2 * self.local_intermediate_size,  # N for w1 (gate_up_proj)
+            dtype=dtype_str,
+            _device_name=device_name,
+        )
+
     def all_reduce(self, x):
         dist.all_reduce(
             x, op=torch.distributed.ReduceOp.SUM, group=self.outer_group
@@ -244,7 +255,7 @@ class TPMoE(torch.nn.Module):
         algorithm,
     ):
         """
-        This function is used to set the symmmetric memory
+        This function is used to set the symmetric memory
         output tensor for the layer. We check if the
         pool already has a tensor for the current cache key.
         If it does, we use that tensor.
@@ -267,6 +278,7 @@ class TPMoE(torch.nn.Module):
             self.n_expert_per_token,
             True,
             inplace=False,
+            moe_configs=self._moe_configs,  # Pass pre-loaded configs
         ).to(x.dtype)
         y = self.all_reduce(y)
         return y

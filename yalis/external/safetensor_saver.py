@@ -4,6 +4,9 @@ from typing import Dict, Iterable, Tuple, Optional, Any
 import torch
 from safetensors.torch import save_file as save_safetensors
 from dataclasses import dataclass
+import time
+from concurrent.futures import ThreadPoolExecutor, Future
+import threading
 
 
 @dataclass(frozen=True)
@@ -11,7 +14,22 @@ class _AlreadyStored:
     name: str
 
 
-# SafeTensor Shard Writer
+def _write_shard(
+    buf: Dict[str, torch.Tensor],
+    shard_path: str,
+    metadata: Dict[str, str],
+) -> Tuple[float, str]:
+    """
+    Write a shard to disk. Called from background thread.
+    Returns (elapsed_time, shard_path) for logging.
+    """
+    start = time.time()
+    save_safetensors(buf, shard_path, metadata=metadata)
+    elapsed = time.time() - start
+    return elapsed, shard_path
+
+
+# SafeTensor Shard Writer with Async Flush
 class _SafeTensorShardWriter:
     def __init__(
         self,
@@ -20,6 +38,8 @@ class _SafeTensorShardWriter:
         max_shard_size_bytes: int = 4 * (1024**3),  # 4 GB default
         per_shard_metadata: Optional[Dict[str, str]] = None,
         make_contiguous: bool = True,
+        async_write: bool = True,
+        max_pending_writes: int = 2,
     ):
         os.makedirs(out_dir, exist_ok=True)
         self.out_dir = out_dir
@@ -27,6 +47,7 @@ class _SafeTensorShardWriter:
         self.max_shard = max_shard_size_bytes
         self.meta = per_shard_metadata or {}
         self.make_contiguous = make_contiguous
+        self.async_write = async_write
 
         self.buf: Dict[str, torch.Tensor] = {}
         self.buf_size = 0
@@ -36,21 +57,118 @@ class _SafeTensorShardWriter:
         self.closed = False
         self.per_tensor_overhead = 1024  # ~1KB JSON/name fudge
 
+        # Async write infrastructure
+        self._pending_futures: list[Future] = []
+        self._pending_weight_maps: list[Tuple[Future, Dict[str, str]]] = []
+        self._write_executor: Optional[ThreadPoolExecutor] = None
+        self._max_pending = max_pending_writes
+        self._write_errors: list[Exception] = []
+        self._lock = threading.Lock()
+
+        if self.async_write:
+            # Single worker to serialize writes (avoid overwhelming I/O)
+            self._write_executor = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="shard_writer"
+            )
+
     def _next_shard_name(self) -> str:
         self.shard_idx += 1
         return f"{self.prefix}-{self.shard_idx:05d}.safetensors"
 
+    def _check_pending_writes(self, wait_all: bool = False):
+        """
+        Check status of pending async writes.
+        If wait_all=True, block until all complete.
+        Otherwise, just collect completed ones and check for errors.
+        """
+        if not self._pending_weight_maps:
+            return
+
+        still_pending = []
+        for future, wmap in self._pending_weight_maps:
+            if wait_all:
+                # Block until this write completes
+                try:
+                    elapsed, shard_path = future.result()
+                    with self._lock:
+                        self.weight_map.update(wmap)
+                except Exception as e:
+                    self._write_errors.append(e)
+            elif future.done():
+                # Collect completed write
+                try:
+                    elapsed, shard_path = future.result()
+                    with self._lock:
+                        self.weight_map.update(wmap)
+                except Exception as e:
+                    self._write_errors.append(e)
+            else:
+                still_pending.append((future, wmap))
+
+        self._pending_weight_maps = still_pending
+
+        # Raise if any errors occurred
+        if self._write_errors:
+            errors = self._write_errors
+            self._write_errors = []
+            raise RuntimeError(
+                f"Async shard write failed: {errors[0]}"
+            ) from errors[0]
+
+    def _wait_if_too_many_pending(self):
+        """Block if we have too many pending writes (backpressure)."""
+        while len(self._pending_weight_maps) >= self._max_pending:
+            # Wait for at least one to complete
+            if self._pending_weight_maps:
+                future, wmap = self._pending_weight_maps[0]
+                try:
+                    elapsed, shard_path = future.result()
+                    with self._lock:
+                        self.weight_map.update(wmap)
+                except Exception as e:
+                    self._write_errors.append(e)
+                self._pending_weight_maps.pop(0)
+
+        # Check for errors
+        if self._write_errors:
+            errors = self._write_errors
+            self._write_errors = []
+            raise RuntimeError(
+                f"Async shard write failed: {errors[0]}"
+            ) from errors[0]
+
     def _flush(self):
         if not self.buf:
             return
+
         shard_name = self._next_shard_name()
         shard_path = os.path.join(self.out_dir, shard_name)
-        # write atomically
-        save_safetensors(self.buf, shard_path, metadata=self.meta)
-        for k in self.buf.keys():
-            self.weight_map[k] = shard_name
-        self.buf.clear()
-        self.buf_size = 0
+
+        # Build weight map for this shard
+        shard_weight_map = {k: shard_name for k in self.buf.keys()}
+
+        if self.async_write and self._write_executor is not None:
+            # Check/collect completed writes and apply backpressure
+            self._check_pending_writes(wait_all=False)
+            self._wait_if_too_many_pending()
+
+            # Hand off buffer to background thread
+            # We must give the thread its own copy since we'll clear self.buf
+            buf_to_write = self.buf
+            self.buf = {}  # Create new buffer for main thread
+            self.buf_size = 0
+
+            future = self._write_executor.submit(
+                _write_shard, buf_to_write, shard_path, self.meta
+            )
+            self._pending_weight_maps.append((future, shard_weight_map))
+        else:
+            # Synchronous write
+            save_safetensors(self.buf, shard_path, metadata=self.meta)
+            for k in self.buf.keys():
+                self.weight_map[k] = shard_name
+            self.buf.clear()
+            self.buf_size = 0
 
     def add(self, name: str, t: torch.Tensor):
         if self.closed:
@@ -75,8 +193,22 @@ class _SafeTensorShardWriter:
     def close(self):
         if self.closed:
             return
+
+        # Flush any remaining buffer
         self._flush()
+
+        # Wait for all pending async writes to complete
+        if self.async_write:
+            self._check_pending_writes(wait_all=True)
+
+        # Shutdown executor
+        if self._write_executor is not None:
+            self._write_executor.shutdown(wait=True)
+            self._write_executor = None
+
         self.closed = True
+
+        # Write index file
         index = {
             "metadata": {},
             "weight_map": self.weight_map,
@@ -103,6 +235,17 @@ class incremental_save:
             for name, b in model.named_buffers():
                 saver.store_early(name, b)
             saver.save()  # finalize (writes index); `obj` is optional
+
+    Args:
+        name: Output directory or file path.
+        max_shard_size_bytes: Maximum size per shard file (default 4GB).
+        per_shard_metadata: Optional metadata dict to include in each shard.
+        filename_prefix: Prefix for shard filenames (default "model").
+        make_contiguous: Whether to make tensors contiguous before saving.
+        async_write: If True (default), write shards in background thread.
+            This allows processing to continue while I/O happens.
+        max_pending_writes: Maximum number of pending async writes before
+            blocking (backpressure). Default is 2.
     """
 
     def __init__(
@@ -113,6 +256,8 @@ class incremental_save:
         per_shard_metadata: Optional[Dict[str, str]] = None,
         filename_prefix: str = "model",
         make_contiguous: bool = True,
+        async_write: bool = True,
+        max_pending_writes: int = 2,
     ):
         out_dir = (
             name
@@ -125,6 +270,8 @@ class incremental_save:
             max_shard_size_bytes=max_shard_size_bytes,
             per_shard_metadata=per_shard_metadata,
             make_contiguous=make_contiguous,
+            async_write=async_write,
+            max_pending_writes=max_pending_writes,
         )
         self.has_saved = False
         self._committed_names: set[str] = set()

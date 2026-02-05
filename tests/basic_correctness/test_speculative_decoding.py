@@ -5,7 +5,6 @@ import numpy as np
 import warnings
 from utils import alpaca_prompt
 
-
 IGNORE_EOS = True
 
 # Test parameters
