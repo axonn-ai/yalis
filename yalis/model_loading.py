@@ -175,19 +175,6 @@ class LazySafeTensorDict(MutableMapping):
             # non-blocking move if CUDA target
             non_blocking = dev.type == "cuda"
             t = t.to(device=dev, non_blocking=non_blocking)
-        try:
-            _rank = torch.distributed.get_rank()
-        except Exception:
-            _rank = -1
-        try:
-            shard_info = f"{shard}"
-        except Exception:
-            shard_info = shard
-        print_rank0(
-            f"[rank {_rank}] Loaded key '{name}' from shard '{shard_info}' -> "
-            f"shape={tuple(t.shape)}, dtype={t.dtype}, target_dev={dev}, "
-            f"target_dtype={dt}"
-        )
         return t
 
     def close(self):

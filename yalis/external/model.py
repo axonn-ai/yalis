@@ -1289,7 +1289,12 @@ class GptOssMoE(nn.Module):
         """
         Custom state dict loader for GptOssMoE.
 
-        Handles sharding of MLP weights when loading full (unsharded)
+        GptOssMoE uses different gating and activation mechanisms from LLaMA, 
+        and stores per-expert weights as 3D tensors. TPMoE uses Axonn's
+        built-in tensor parallel sharding logic, which expects 2D matrices
+        per expert and therefore not compatible with GPT-OSS MoE.
+        
+        Handles sharding of MLP weights when loading full
         checkpoints:
         - mlp1_weight: [num_experts, 2*intermediate_size, hidden_size] ->
           shard dim 1
