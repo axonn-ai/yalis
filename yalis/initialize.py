@@ -21,7 +21,9 @@ def init_distributed(tp_dims=None):
                 UserWarning,
             )
         else:
-            print(f"Reusing existing distributed process group with backend '{current_backend}'.")
+            print(
+                f"Reusing existing distributed process group with backend '{current_backend}'."
+            )
     torch.cuda.set_device(dist.get_rank() % torch.cuda.device_count())
     print(
         f"[{dist.get_rank()}] Current Device - {torch.cuda.get_device_properties(torch.cuda.current_device())}"  # noqa: E501

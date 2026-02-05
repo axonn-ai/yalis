@@ -1642,7 +1642,9 @@ def copy_weights_gpt_oss(
             down_weight = torch.ldexp(down_decoded, down_scales_adj.unsqueeze(-1))
 
             # Reshape to final dimensions: (n_experts, hidden_size, intermediate_size)
-            in_features = in_blocks_d * block_size_d * 2  # blocks * block_size_d * 2 nibbles per uint8
+            in_features = (
+                in_blocks_d * block_size_d * 2
+            )  # blocks * block_size_d * 2 nibbles per uint8
             down_weight = down_weight.view(n_experts_d, out_features_d, in_features)
 
             # Save with correct names for GptOssMoE (mlp2 = down projection)
