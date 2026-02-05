@@ -390,80 +390,19 @@ class LLMEngine:
                         print_rank0(f"Warmup prefill for batch size {bs} and sequence length {sl} completed")
         torch.cuda.synchronize()
 
-    def warmup_decode(
-        self,
-        batch_sizes,
-        prompt_length,
-        iterations,
-    ) -> None:
-        """Warmup decode by calling module level generate path"""
-        with torch.inference_mode(), torch.autocast(
-            self.device, dtype=self.dtype, cache_enabled=False
-        ):
-            for bs in batch_sizes:
-                print_rank0(f"Warmup decode for batch size {bs} and prompt length {prompt_length}")
-                self._reset_warmup_states(bs)
-
-                # Tiny prefill
-                tokens = self._fake_tokens(bs, int(prompt_length))
-                lens = torch.full(
-                    (bs,),
-                    fill_value=int(prompt_length),
-                    dtype=torch.long,
-                    device=self.device,
-                )
-                next_token, _ = prefill(
-                    self.model,
-                    tokens,
-                    lens,
-                    temperature=self.inference_config.temperature,
-                    top_k=self.inference_config.top_k,
-                    top_p=self.inference_config.top_p,
-                )
-
-                current_input_to_model = next_token.clone()
-
-                # Decode steps
-                for _ in range(int(iterations)):
-                    with sdpa_kernel(SDPBackend.MATH):
-                        next_token, _ = generate(
-                            self.model,
-                            current_input_to_model,
-                            temperature=self.inference_config.temperature,
-                            top_k=self.inference_config.top_k,
-                            top_p=self.inference_config.top_p,
-                        )
-                    current_input_to_model.copy_(next_token)
-                print_rank0(f"Warmup decode for batch size {bs} and prompt length {prompt_length} completed")
-        torch.cuda.synchronize()
-
     def warmup(
         self,
         prefill_batch_sizes,
         prefill_seq_lengths,
-        decode_batch_sizes,
-        decode_prompt_length=8,
-        decode_iterations=2,
     ) -> None:
         """Warmup by calling prefill and decode"""
         print("Prefill warmup start.")
-        prefill_start = time.perf_counter()
         self.warmup_prefill(
             batch_sizes=prefill_batch_sizes,
             seq_lengths=prefill_seq_lengths,
             iterations=1,
         )
-        prefill_elapsed = time.perf_counter() - prefill_start
-        print(f"Prefill warmup end. Elapsed {prefill_elapsed:.2f}s")
-        print("Decode warmup start.")
-        decode_start = time.perf_counter()
-        self.warmup_decode(
-            batch_sizes=decode_batch_sizes,
-            prompt_length=decode_prompt_length,
-            iterations=decode_iterations,
-        )
-        decode_elapsed = time.perf_counter() - decode_start
-        print(f"Decode warmup end. Elapsed {decode_elapsed:.2f}s")
+        print(f"Prefill warmup end.")
     
     def generate(
         self,
