@@ -238,11 +238,12 @@ class LLMEngine:
         )
         # Try loading tokenizer from model_path first for local checkpoints, 
         # then fall back to model_name for HF models
-        tokenizer_path = model_config.model_path if os.path.isdir(model_config.model_path) else model_config.model_name
+        is_local_model_path = os.path.isdir(model_config.model_path)
+        tokenizer_path = model_config.model_path if is_local_model_path else model_config.model_name
         tokenizer = AutoTokenizer.from_pretrained(
             tokenizer_path, 
             trust_remote_code=True, 
-            local_files_only=True if os.path.isdir(model_config.model_path) else False
+            local_files_only=is_local_model_path,
         )
         # Check if the tokenizer has a pad token, otherwise use eos_token
         if tokenizer.pad_token is None:
