@@ -38,7 +38,9 @@ if __name__ == "__main__":
     user_prompts = user_prompts[:16]
     print(f"Number of prompts = {len(user_prompts)}")
 
-    system_prompt = "You are a helpful chatbot. Answer the following question.\n"
+    system_prompt = (
+        "You are a helpful chatbot. Answer the following question.\n"
+    )
 
     # profile the run or not
     enable_profiling = False
@@ -85,7 +87,9 @@ if __name__ == "__main__":
         prestore_kv_cache=True,
     )
 
-    engine = LLMEngine(model_config=model_config, inference_config=inference_config)
+    engine = LLMEngine(
+        model_config=model_config, inference_config=inference_config
+    )
 
     if enable_profiling:
         profiler_context = torch.profiler.profile(
@@ -109,7 +113,9 @@ if __name__ == "__main__":
     output_tokens = output_tokens.cpu()
 
     # Decode the token IDs into text
-    detokenized_text = tokenizer.batch_decode(output_tokens, skip_special_tokens=True)
+    detokenized_text = tokenizer.batch_decode(
+        output_tokens, skip_special_tokens=True
+    )
 
     for prompt, output in zip(user_prompts, detokenized_text):
         print_rank0("==========================\n\n")
@@ -119,5 +125,7 @@ if __name__ == "__main__":
 
     if enable_profiling:
         print_rank0(
-            prof.key_averages().table(sort_by="self_cuda_time_total", row_limit=10)
+            prof.key_averages().table(
+                sort_by="self_cuda_time_total", row_limit=10
+            )
         )

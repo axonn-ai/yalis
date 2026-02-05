@@ -136,7 +136,10 @@ class Config:
 
         self.rope_n_elem = int(self.rotary_percentage * self.head_size)
 
-        if self.sliding_window_size is not None and self.sliding_window_indices is None:
+        if (
+            self.sliding_window_size is not None
+            and self.sliding_window_indices is None
+        ):
             self.sliding_window_indices = [1] * self.n_layer
 
         if self.rope_local_base_freq is not None and self.rope_indices is None:
@@ -145,8 +148,12 @@ class Config:
         if self.latent_attention is not None:
             self.q_lora_rank = self.latent_attention.get("q_lora_rank")
             self.kv_lora_rank = self.latent_attention.get("kv_lora_rank")
-            self.qk_rope_head_dim = self.latent_attention.get("qk_rope_head_dim")
-            self.qk_nope_head_dim = self.latent_attention.get("qk_nope_head_dim")
+            self.qk_rope_head_dim = self.latent_attention.get(
+                "qk_rope_head_dim"
+            )
+            self.qk_nope_head_dim = self.latent_attention.get(
+                "qk_nope_head_dim"
+            )
             self.v_head_dim = self.latent_attention.get("v_head_dim")
             assert (
                 self.q_lora_rank
@@ -182,7 +189,9 @@ class Config:
                     config
                     for config in configs
                     if name == config["hf_config"]["name"]
-                    or config["hf_config"]["org"] + "/" + config["hf_config"]["name"]
+                    or config["hf_config"]["org"]
+                    + "/"
+                    + config["hf_config"]["name"]
                     == name
                 )
             except StopIteration:
@@ -200,7 +209,9 @@ class Config:
         with open(path, encoding="utf-8") as fp:
             file_kwargs = yaml.safe_load(fp)
             if file_kwargs is None:
-                raise ValueError(f"{path} is empty which is likely unexpected.")
+                raise ValueError(
+                    f"{path} is empty which is likely unexpected."
+                )
         file_kwargs.update(kwargs)
         cls.remove_unsupported_fields(file_kwargs)
 
@@ -313,7 +324,9 @@ stablecode = [
     # https://huggingface.co/stabilityai/stablecode-completion-alpha-3b/blob/main/config.json
     dict(
         name="stablecode-completion-alpha-3b",
-        hf_config=dict(org="stabilityai", name="stablecode-completion-alpha-3b"),
+        hf_config=dict(
+            org="stabilityai", name="stablecode-completion-alpha-3b"
+        ),
         block_size=16384,
         vocab_size=49152,
         n_layer=32,
@@ -322,7 +335,9 @@ stablecode = [
     # https://huggingface.co/stabilityai/stablecode-completion-alpha-3b-4k/blob/main/config.json
     dict(
         name="stablecode-completion-alpha-3b-4k",
-        hf_config=dict(org="stabilityai", name="stablecode-completion-alpha-3b-4k"),
+        hf_config=dict(
+            org="stabilityai", name="stablecode-completion-alpha-3b-4k"
+        ),
         vocab_size=49152,
         n_layer=32,
         n_embd=2560,
@@ -941,7 +956,9 @@ for c in llama_3:
 configs.append(
     dict(
         name="Llama-3.1-Nemotron-70B-Instruct-HF",
-        hf_config=dict(org="nvidia", name="Llama-3.1-Nemotron-70B-Instruct-HF"),
+        hf_config=dict(
+            org="nvidia", name="Llama-3.1-Nemotron-70B-Instruct-HF"
+        ),
         block_size=131072,
         vocab_size=128000,
         padded_vocab_size=128256,
@@ -1234,7 +1251,9 @@ gemma3 = [
         block_size=131072,
         sliding_window_size=512,
         # 5 local layers for every global layer
-        sliding_window_indices=[0 if (i + 1) % 6 == 0 else 1 for i in range(26)],
+        sliding_window_indices=[
+            0 if (i + 1) % 6 == 0 else 1 for i in range(26)
+        ],
         intermediate_size=6912,
         n_embd=1152,
         n_layer=26,
@@ -1266,7 +1285,9 @@ gemma3 = [
         block_size=131072,
         sliding_window_size=1024,
         # 5 local layers for every global layer
-        sliding_window_indices=[0 if (i + 1) % 6 == 0 else 1 for i in range(34)],
+        sliding_window_indices=[
+            0 if (i + 1) % 6 == 0 else 1 for i in range(34)
+        ],
         intermediate_size=10240,
         n_embd=2560,
         n_layer=34,
@@ -1298,7 +1319,9 @@ gemma3 = [
         block_size=131072,
         sliding_window_size=1024,
         # 5 local layers for every global layer
-        sliding_window_indices=[0 if (i + 1) % 6 == 0 else 1 for i in range(48)],
+        sliding_window_indices=[
+            0 if (i + 1) % 6 == 0 else 1 for i in range(48)
+        ],
         intermediate_size=15360,
         n_embd=3840,
         n_layer=48,
@@ -1330,7 +1353,9 @@ gemma3 = [
         block_size=131072,
         sliding_window_size=1024,
         # 5 local layers for every global layer
-        sliding_window_indices=[0 if (i + 1) % 6 == 0 else 1 for i in range(62)],
+        sliding_window_indices=[
+            0 if (i + 1) % 6 == 0 else 1 for i in range(62)
+        ],
         intermediate_size=21504,
         n_embd=5376,
         n_layer=62,
@@ -2251,7 +2276,9 @@ llama_2_function_calling = [
     # https://huggingface.co/Trelis/Llama-2-7b-chat-hf-function-calling-v2/blob/main/config.json
     dict(
         name="Llama-2-7b-chat-hf-function-calling-v2",
-        hf_config=dict(org="Trelis", name="Llama-2-7b-chat-hf-function-calling-v2"),
+        hf_config=dict(
+            org="Trelis", name="Llama-2-7b-chat-hf-function-calling-v2"
+        ),
         padding_multiple=64,
         n_layer=32,
         rotary_percentage=1.0,
@@ -3191,7 +3218,9 @@ r1_distill_llama = [
     # https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Llama-70B/blob/main/config.json
     dict(
         name="R1-Distill-Llama-70B",
-        hf_config=dict(org="deepseek-ai", name="DeepSeek-R1-Distill-Llama-70B"),
+        hf_config=dict(
+            org="deepseek-ai", name="DeepSeek-R1-Distill-Llama-70B"
+        ),
         block_size=131072,
         vocab_size=128000,
         padded_vocab_size=128256,

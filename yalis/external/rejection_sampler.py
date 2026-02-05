@@ -102,7 +102,9 @@ class RejectionSampler(nn.Module):
         )
 
         # Fill the recovered token ids.
-        output.mul_(~after_false_mask).add_(substitute_token_ids.mul(after_false_mask))
+        output.mul_(~after_false_mask).add_(
+            substitute_token_ids.mul(after_false_mask)
+        )
 
         return output_with_bonus_tokens
 
@@ -120,10 +122,12 @@ class RejectionSampler(nn.Module):
         # Assuming only one bonus token per batch
         bonus_tokens = bonus_tokens.view(batch_size, 1)
 
-        accepted, recovered_token_ids = self._batch_modified_rejection_sampling(
-            target_probs[:, :-1],
-            draft_probs,
-            draft_tokens,
+        accepted, recovered_token_ids = (
+            self._batch_modified_rejection_sampling(
+                target_probs[:, :-1],
+                draft_probs,
+                draft_tokens,
+            )
         )
 
         output_token_ids = self._create_output(
@@ -155,11 +159,13 @@ class RejectionSampler(nn.Module):
         batch_size, k, vocab_size = draft_probs.shape
 
         # shape [batch_size, k]
-        accepted = self._get_accepted(target_probs, draft_probs, draft_token_ids)
-
-        recovered_probs = self._get_recovered_probs(target_probs, draft_probs).reshape(
-            batch_size * k, vocab_size
+        accepted = self._get_accepted(
+            target_probs, draft_probs, draft_token_ids
         )
+
+        recovered_probs = self._get_recovered_probs(
+            target_probs, draft_probs
+        ).reshape(batch_size * k, vocab_size)
 
         # NOTE: the recovered_probs are overwritten by this method.
         recovered_token_ids = _multinomial(
@@ -202,7 +208,9 @@ class RejectionSampler(nn.Module):
         are accepted.
         """
         batch_size, k, _ = draft_probs.shape
-        batch_indices = torch.arange(batch_size, device=target_probs.device)[:, None]
+        batch_indices = torch.arange(batch_size, device=target_probs.device)[
+            :, None
+        ]
         probs_indicies = torch.arange(k, device=target_probs.device)
 
         # shape [batch_size, k]

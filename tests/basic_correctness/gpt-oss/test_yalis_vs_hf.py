@@ -54,9 +54,9 @@ def _get_logprobs(logits):
         logprobs = torch.log_softmax(logit, dim=-1, dtype=torch.float32)
         logprob_list.append(logprobs)
 
-        topk_indices = torch.argsort(logprobs, dim=-1, descending=True, stable=True)[
-            :, :NUM_LOGPROBS
-        ]
+        topk_indices = torch.argsort(
+            logprobs, dim=-1, descending=True, stable=True
+        )[:, :NUM_LOGPROBS]
         topk_list.append(topk_indices)
 
     # We need to convert this to a list of [num_tokens, -1] shaped
@@ -80,7 +80,9 @@ def _get_logprobs(logits):
 
 
 def _get_hf_output(tokenizer, model, prompts, num_tokens):
-    inputs = tokenizer(prompts, return_tensors="pt", padding=True).to(model.device)
+    inputs = tokenizer(prompts, return_tensors="pt", padding=True).to(
+        model.device
+    )
     with torch.no_grad(), torch.autocast(
         "cuda", dtype=torch.float16, cache_enabled=False
     ):
@@ -103,7 +105,9 @@ def _get_hf_output(tokenizer, model, prompts, num_tokens):
     new_tokens = []
     for i in range(len(prompts)):
         input_len = inputs["input_ids"][i].shape[0]
-        new_tokens.append(output.sequences[i][input_len : input_len + num_tokens].cpu())
+        new_tokens.append(
+            output.sequences[i][input_len : input_len + num_tokens].cpu()
+        )
 
     # new_tokens: list of [num_tokens] tensors of length batch_size
     # output.logits: list of [batch_size, vocab_size] tensors of length num_tokens  # noqa: E501
@@ -119,7 +123,9 @@ def _get_yalis_output(engine, prompts, num_tokens):
         get_logits=True,
     )
     # output_tokens: (batch, num_tokens)
-    tokens_cpu = [output_tokens[i][:num_tokens].cpu() for i in range(len(prompts))]
+    tokens_cpu = [
+        output_tokens[i][:num_tokens].cpu() for i in range(len(prompts))
+    ]
     logits_cpu = [logit.cpu() for logit in logits]
     return tokens_cpu, logits_cpu
 
@@ -132,7 +138,9 @@ def _compare_tokens_and_text(tokenizer, tokens1, tokens2):
         tokens2
     ), f"Batch size mismatch: {len(tokens1)} vs {len(tokens2)}"
     for t1, t2 in zip(tokens1, tokens2):
-        assert len(t1) == len(t2), f"Token length mismatch: {len(t1)} vs {len(t2)}"
+        assert len(t1) == len(
+            t2
+        ), f"Token length mismatch: {len(t1)} vs {len(t2)}"
         num_matches = sum(a == b for a, b in zip(t1, t2))
         if num_matches < len(t1) - 1:
             warnings.warn(f"Token mismatch: {t1} vs {t2}")
@@ -231,7 +239,9 @@ def test_01_prefill(
     random_seed = 42
     random_module.seed(random_seed)
 
-    prompts = alpaca_prompt(alpaca_dataset, tokenizer, prompt_length, batch_size)
+    prompts = alpaca_prompt(
+        alpaca_dataset, tokenizer, prompt_length, batch_size
+    )
 
     # Load and run YALIS inference
     logger.info(f"[rank {LOCAL_RANK}] Loading YALIS engine...")
@@ -245,7 +255,9 @@ def test_01_prefill(
             logger.info("All ranks synchronized, starting YALIS inference...")
 
     logger.info(f"[rank {LOCAL_RANK}] Starting YALIS engine inference...")
-    yalis_tokens, yalis_logits = _get_yalis_output(yalis_engine, prompts, num_tokens=1)
+    yalis_tokens, yalis_logits = _get_yalis_output(
+        yalis_engine, prompts, num_tokens=1
+    )
     log_gpu_memory("After YALIS inference")
 
     # Ensure all ranks finish inference before moving to comparison
@@ -315,7 +327,9 @@ def test_02_decode(
     random_seed = 42
     random_module.seed(random_seed)
 
-    prompts = alpaca_prompt(alpaca_dataset, tokenizer, prompt_length, batch_size)
+    prompts = alpaca_prompt(
+        alpaca_dataset, tokenizer, prompt_length, batch_size
+    )
 
     # Load and run YALIS inference
     logger.info(f"[rank {LOCAL_RANK}] Loading YALIS engine...")
@@ -329,7 +343,9 @@ def test_02_decode(
             logger.info("All ranks synchronized, starting YALIS inference...")
 
     logger.info(f"[rank {LOCAL_RANK}] Starting YALIS engine inference...")
-    yalis_tokens, yalis_logits = _get_yalis_output(yalis_engine, prompts, num_tokens=3)
+    yalis_tokens, yalis_logits = _get_yalis_output(
+        yalis_engine, prompts, num_tokens=3
+    )
     log_gpu_memory("After YALIS inference")
 
     # Ensure all ranks finish inference before moving to comparison

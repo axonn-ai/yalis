@@ -139,7 +139,9 @@ def hf_model_loader(model_id, dtype, attn_backend, device):
 
         # Only load HF model on rank 0 to avoid duplicate loading
         if local_rank != 0:
-            logger.info(f"Rank {local_rank}: Skipping HF model load (rank 0 only)")
+            logger.info(
+                f"Rank {local_rank}: Skipping HF model load (rank 0 only)"
+            )
             return None
 
         # Disable MXFP4 CUDA kernels to prevent GPU-side dequantization attempts.
@@ -187,7 +189,9 @@ def yalis_engine_loader(model_id, dtype, attn_backend):
             use_paged_kv_caching=False,
         )
         logger.info("Loading YALIS engine...")
-        engine = LLMEngine(model_config=model_config, inference_config=inference_config)
+        engine = LLMEngine(
+            model_config=model_config, inference_config=inference_config
+        )
         return engine
 
     return load_yalis

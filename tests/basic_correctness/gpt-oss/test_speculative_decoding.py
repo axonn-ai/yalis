@@ -78,7 +78,9 @@ def _compare_token_outputs(standard_tokens, speculative_tokens, tokenizer):
 
             # Find first mismatch position
             diff_positions = (std_tokens != spec_tokens).nonzero().flatten()
-            first_diff = diff_positions[0].item() if len(diff_positions) > 0 else -1
+            first_diff = (
+                diff_positions[0].item() if len(diff_positions) > 0 else -1
+            )
 
             warnings.warn(
                 f"Batch {i}: Token mismatch at position {first_diff}\n"
@@ -113,7 +115,9 @@ def test_speculative(
     """
 
     if attn_backend.yalis != "sdpa":
-        pytest.skip("Non-SDPA attention backends do not uphold greedy equality")
+        pytest.skip(
+            "Non-SDPA attention backends do not uphold greedy equality"
+        )
 
     # Ensure consistent random sampling across all ranks for TP tests
     # All ranks must generate identical prompts for distributed inference
@@ -123,7 +127,9 @@ def test_speculative(
     np.random.seed(random_seed)
 
     # Generate test prompts
-    prompts = alpaca_prompt(alpaca_dataset, tokenizer, prompt_length, batch_size)
+    prompts = alpaca_prompt(
+        alpaca_dataset, tokenizer, prompt_length, batch_size
+    )
 
     # Resolve model paths
     if not os.path.isabs(model_id):
@@ -157,7 +163,9 @@ def test_speculative(
     )
 
     # Load and run standard inference
-    logger.info(f"[rank {LOCAL_RANK}] Loading standard LLMEngine for inference...")
+    logger.info(
+        f"[rank {LOCAL_RANK}] Loading standard LLMEngine for inference..."
+    )
     standard_engine = LLMEngine(
         model_config=target_model_config, inference_config=inference_config
     )
@@ -175,7 +183,9 @@ def test_speculative(
         report_throughput=False,
         ignore_eos=IGNORE_EOS,
     )
-    standard_tokens = [output_tokens[i][:num_tokens].cpu() for i in range(len(prompts))]
+    standard_tokens = [
+        output_tokens[i][:num_tokens].cpu() for i in range(len(prompts))
+    ]
 
     # Synchronize after inference before cleanup
     if dist.is_initialized():
@@ -192,7 +202,9 @@ def test_speculative(
         dist.barrier()
 
     # Load and run speculative inference
-    logger.info(f"[rank {LOCAL_RANK}] Loading SpeculativeLLMEngine for inference...")
+    logger.info(
+        f"[rank {LOCAL_RANK}] Loading SpeculativeLLMEngine for inference..."
+    )
     speculative_engine = SpeculativeLLMEngine(
         target_model_config=target_model_config,
         draft_model_config=draft_model_config,

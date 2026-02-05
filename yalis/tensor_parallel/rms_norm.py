@@ -61,7 +61,10 @@ class TPRMSNorm(torch.nn.Module):
         tensor_parallel_dims: Optional[Sequence[int]] = None,
     ) -> None:
         super().__init__()
-        if tensor_parallel_dims is not None and torch.distributed.get_rank() == 0:
+        if (
+            tensor_parallel_dims is not None
+            and torch.distributed.get_rank() == 0
+        ):
             print(
                 "Manually setting TP dims for RMS Norm layer with shape",
                 f" - {(size,)} | tp-dims = {tensor_parallel_dims}",
@@ -75,8 +78,10 @@ class TPRMSNorm(torch.nn.Module):
                 self.inner_group,
             )
 
-        self.inner_nccl_comm_idx = CommHandler.create_communicator_from_process_group(
-            self.inner_group
+        self.inner_nccl_comm_idx = (
+            CommHandler.create_communicator_from_process_group(
+                self.inner_group
+            )
         )
 
         # calculating the sizes of each tensor parallel process group
@@ -120,9 +125,13 @@ class TPRMSNorm(torch.nn.Module):
         return weight.ndim == 1 and weight.size(0) == self.local_size
 
     @torch.no_grad()
-    def _modified_load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
+    def _modified_load_from_state_dict(
+        self, state_dict, prefix, *args, **kwargs
+    ):
         weight = (
-            state_dict[prefix + "weight"] if prefix + "weight" in state_dict else None
+            state_dict[prefix + "weight"]
+            if prefix + "weight" in state_dict
+            else None
         )
 
         if weight is not None:
@@ -134,7 +143,9 @@ class TPRMSNorm(torch.nn.Module):
             ), "This is neither a full checkpoint nor a sharded checkpoint"
 
             if is_full_weight:
-                weight = extract_local_params_from_full_params(weight, self.inner_group)
+                weight = extract_local_params_from_full_params(
+                    weight, self.inner_group
+                )
 
             state_dict[prefix + "weight"] = weight
 

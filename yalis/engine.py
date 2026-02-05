@@ -81,9 +81,13 @@ def prefill(
         logits: (Optional) The raw logits from the model.
     """
 
-    logits = model(tokens, phase, unpadded_prompt_lengths)["logits"].to(torch.float32)
+    logits = model(tokens, phase, unpadded_prompt_lengths)["logits"].to(
+        torch.float32
+    )
     logits = logits[torch.arange(logits.size(0)), unpadded_prompt_lengths - 1]
-    token_id = sample(logits=logits, temperature=temperature, top_k=top_k, top_p=top_p)
+    token_id = sample(
+        logits=logits, temperature=temperature, top_k=top_k, top_p=top_p
+    )
     # TODO: We should return a dict to support more return values in the future
     if get_logits:
         return token_id, logits
@@ -126,7 +130,9 @@ def generate(
 
 
 @torch.inference_mode()
-@torch.compile(mode=YALIS_DECODE_MODE, disable=YALIS_DISABLE_COMPILE, fullgraph=True)
+@torch.compile(
+    mode=YALIS_DECODE_MODE, disable=YALIS_DISABLE_COMPILE, fullgraph=True
+)
 def verify(
     model,
     tokens,
@@ -138,7 +144,9 @@ def verify(
     # Run the tokens through the model one-by-one
     logits = model(tokens, phase)["logits"].to(torch.float32)
 
-    token_ids = sample(logits=logits, temperature=temperature, top_k=top_k, top_p=top_p)
+    token_ids = sample(
+        logits=logits, temperature=temperature, top_k=top_k, top_p=top_p
+    )
 
     return token_ids, logits
 
@@ -178,7 +186,9 @@ class LLMEngine:
         torch.cuda.empty_cache()
         gc.collect()
 
-        print_rank0(f"Memory Stats after Initializing Model - {get_gpu_memory_info()} ")
+        print_rank0(
+            f"Memory Stats after Initializing Model - {get_gpu_memory_info()} "
+        )
 
     def _make_params_contiguous(self, model):
         if not model:
@@ -212,7 +222,9 @@ class LLMEngine:
             device=self.device,
             dtype=self.dtype,
         )
-        print_rank0(f"Memory Stats after KV Cache Init - {get_gpu_memory_info()} ")
+        print_rank0(
+            f"Memory Stats after KV Cache Init - {get_gpu_memory_info()} "
+        )
         if inference_config.symmetric_allreduce_strategy is not None:
             model.create_symmetric_memory_pool(
                 batch_size=inference_config.batch_size,
@@ -221,12 +233,16 @@ class LLMEngine:
                 dtype=self.dtype,
                 algorithm=inference_config.symmetric_allreduce_strategy,
             )
-        print_rank0(f"Memory Stats after Symm Pool Creation - {get_gpu_memory_info()} ")
+        print_rank0(
+            f"Memory Stats after Symm Pool Creation - {get_gpu_memory_info()} "
+        )
         # Try loading tokenizer from model_path first for local checkpoints,
         # then fall back to model_name for HF models
         is_local_model_path = os.path.isdir(model_config.model_path)
         tokenizer_path = (
-            model_config.model_path if is_local_model_path else model_config.model_name
+            model_config.model_path
+            if is_local_model_path
+            else model_config.model_name
         )
         tokenizer = AutoTokenizer.from_pretrained(
             tokenizer_path,
@@ -243,7 +259,8 @@ class LLMEngine:
             else:
                 tokenizer.pad_token = tokenizer.eos_token
             print_rank0(
-                "Pad token not found in the tokenizer." "Using eos_token as pad token."
+                "Pad token not found in the tokenizer."
+                "Using eos_token as pad token."
             )
         print_rank0(f"Initializing Model took {time.time() - t0} seconds")
         return model, tokenizer
@@ -274,17 +291,22 @@ class LLMEngine:
 
     def _tokenize_prompts(self, prompts):
         """Tokenize the input prompts and return tokens and seq lengths."""
-        if isinstance(prompts, list) and all(isinstance(p, str) for p in prompts):
+        if isinstance(prompts, list) and all(
+            isinstance(p, str) for p in prompts
+        ):
             old_padding = self.tokenizer.padding_side
             self.tokenizer.padding_side = "right"
             prompt_tokens_and_mask = self.tokenizer(
                 prompts, return_tensors="pt", padding=True
             )
             prompt_tokens = prompt_tokens_and_mask.input_ids
-            prompt_sequence_lengths = prompt_tokens_and_mask.attention_mask.sum(dim=1)
+            prompt_sequence_lengths = (
+                prompt_tokens_and_mask.attention_mask.sum(dim=1)
+            )
             self.tokenizer.padding_side = old_padding
         elif isinstance(prompts, list) and all(
-            isinstance(p, list) and all(isinstance(x, int) for x in p) for p in prompts
+            isinstance(p, list) and all(isinstance(x, int) for x in p)
+            for p in prompts
         ):
             max_length = max(len(p) for p in prompts)
             prompt_tokens = torch.tensor(
@@ -304,7 +326,9 @@ class LLMEngine:
             )
         return prompt_tokens, prompt_sequence_lengths
 
-    def _validate_sequence_lengths(self, prompt_sequence_lengths, tokens_to_generate):
+    def _validate_sequence_lengths(
+        self, prompt_sequence_lengths, tokens_to_generate
+    ):
         """Validate and adjust sequence lengths if necessary."""
         if prompt_sequence_lengths.max() > self.model.max_seq_length:
             raise ValueError(
@@ -319,7 +343,9 @@ class LLMEngine:
             tokens_to_generate = (
                 self.model.max_seq_length - prompt_sequence_lengths.max()
             )
-            print_rank0(f"tokens_to_generate has been adjusted to {tokens_to_generate}")
+            print_rank0(
+                f"tokens_to_generate has been adjusted to {tokens_to_generate}"
+            )
         return tokens_to_generate
 
     def generate(
@@ -363,16 +389,22 @@ class LLMEngine:
         """
         timers = Timers()
         timers.start("tokenize")
-        prompt_tokens, prompt_sequence_lengths = self._tokenize_prompts(prompts)
+        prompt_tokens, prompt_sequence_lengths = self._tokenize_prompts(
+            prompts
+        )
         tokens_to_generate = self._validate_sequence_lengths(
             prompt_sequence_lengths, tokens_to_generate
         )
         timers.stop("tokenize")
-        print_rank0(f"Tokenization took {timers.get_times()[0][('tokenize',)]} ms")
+        print_rank0(
+            f"Tokenization took {timers.get_times()[0][('tokenize',)]} ms"
+        )
 
         batch_size = prompt_tokens.size(0)
         if not ignore_eos:
-            done_mask = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
+            done_mask = torch.zeros(
+                batch_size, dtype=torch.bool, device=self.device
+            )
         finished_reason = "Max Token Length"
 
         nvtx_range_push, nvtx_range_pop = get_nvtx_funcs(enable_nvtx)
@@ -431,7 +463,9 @@ class LLMEngine:
                 # EOS Support:
                 # Flatten to shape (batch_size,) for element wise comparison
                 if not ignore_eos:
-                    done_mask |= next_token.view(-1) == self.tokenizer.eos_token_id
+                    done_mask |= (
+                        next_token.view(-1) == self.tokenizer.eos_token_id
+                    )
                     # Reshape to match next_token's shape for masked_fill()
                     mask = done_mask.view(-1, 1)
                     # Force EOS prompts to stay EOS
@@ -452,11 +486,15 @@ class LLMEngine:
         timers.stop("generate")
         times, events = timers.get_times()
         tput = (
-            prompt_tokens.shape[0] * tokens_to_generate / (times[("generate",)] / 1000)
+            prompt_tokens.shape[0]
+            * tokens_to_generate
+            / (times[("generate",)] / 1000)
         )
         ttft = times[("generate", "prefill")] / events[("generate", "prefill")]
         if events[("generate", "decode")] > 0:
-            tbt = times[("generate", "decode")] / events[("generate", "decode")]
+            tbt = (
+                times[("generate", "decode")] / events[("generate", "decode")]
+            )
         else:
             tbt = 0
 
@@ -504,7 +542,9 @@ class SpeculativeLLMEngine(LLMEngine):
                 "Paged KV Caching is not supported for SpeculativeLLMEngine"
             )
         if inference_config.attention_backend not in ["flash", "sdpa"]:
-            raise NotImplementedError("Attention backend must be either flash or sdpa")
+            raise NotImplementedError(
+                "Attention backend must be either flash or sdpa"
+            )
 
         super().__init__(target_model_config, inference_config, device)
         print(f"Draft model config: {draft_model_config}")
@@ -514,7 +554,8 @@ class SpeculativeLLMEngine(LLMEngine):
         self.draft_model_config = draft_model_config
 
         print_rank0(
-            f"Memory Stats after Initializing Draft Model - " f"{get_gpu_memory_info()}"
+            f"Memory Stats after Initializing Draft Model - "
+            f"{get_gpu_memory_info()}"
         )
 
         self.sampler = RejectionSampler()
@@ -549,20 +590,26 @@ class SpeculativeLLMEngine(LLMEngine):
         enable_nvtx: bool = False,
     ):
 
-        assert tokens_to_generate > 0, "Tokens to generate must be greater than 0"
+        assert (
+            tokens_to_generate > 0
+        ), "Tokens to generate must be greater than 0"
         assert gamma > 0, "Gamma must be greater than 0"
 
         timers = Timers()
 
         timers.start("tokenize")
-        prompt_tokens, prompt_sequence_lengths = self._tokenize_prompts(input_tokens)
+        prompt_tokens, prompt_sequence_lengths = self._tokenize_prompts(
+            input_tokens
+        )
         tokens_to_generate = self._validate_sequence_lengths(
             prompt_sequence_lengths, tokens_to_generate
         )
         timers.stop("tokenize")
 
         batch_size = prompt_tokens.size(0)
-        done_mask = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
+        done_mask = torch.zeros(
+            batch_size, dtype=torch.bool, device=self.device
+        )
         finished_reason = "Max Token Length"
 
         nvtx_range_push, nvtx_range_pop = get_nvtx_funcs(enable_nvtx)
@@ -633,13 +680,17 @@ class SpeculativeLLMEngine(LLMEngine):
                     nvtx_range_push("Decode")
 
                     # Draft tokens
-                    current_input_to_draft_model = current_input_to_model.clone()
+                    current_input_to_draft_model = (
+                        current_input_to_model.clone()
+                    )
                     draft_output_tokens = []
 
                     # Adding the input tokens to the draft output tokens
                     # This is needed in the Rejection Sampling step, we will
                     # ignore this token when we store the final output tokens
-                    draft_output_tokens.append(current_input_to_draft_model.clone())
+                    draft_output_tokens.append(
+                        current_input_to_draft_model.clone()
+                    )
                     draft_probs = []
 
                     with sdpa_kernel(SDPBackend.MATH):
@@ -679,7 +730,9 @@ class SpeculativeLLMEngine(LLMEngine):
                         )
 
                         draft_probs = torch.cat(draft_probs, dim=1)
-                        draft_output_tokens = torch.cat(draft_output_tokens, dim=1)
+                        draft_output_tokens = torch.cat(
+                            draft_output_tokens, dim=1
+                        )
                         timers.stop("draft_decode")
 
                         timers.start("verify")
@@ -727,12 +780,16 @@ class SpeculativeLLMEngine(LLMEngine):
                         torch.gather(
                             output_with_bonus_tokens,
                             -1,
-                            torch.clamp(num_accepted_tokens.unsqueeze(-1) - 1, min=0),
+                            torch.clamp(
+                                num_accepted_tokens.unsqueeze(-1) - 1, min=0
+                            ),
                         )
                     )
 
                     global_accepted_tokens += (
-                        torch.clamp(num_accepted_tokens - 1, min=0).sum().item()
+                        torch.clamp(num_accepted_tokens - 1, min=0)
+                        .sum()
+                        .item()
                     )
                     # Count draft tokens only for unfinished sequences
                     generated_draft_tokens += (gamma * ~done_mask).sum().item()
@@ -740,11 +797,13 @@ class SpeculativeLLMEngine(LLMEngine):
                 if not ignore_eos:
                     # If EOS is found or already done, replace subsequent
                     # tokens with EOS. Also mark the sequence as done
-                    eos_mask = (accepted_tokens == self.tokenizer.eos_token_id).cumsum(
-                        dim=-1
-                    ) > 0 | (done_mask.unsqueeze(-1))
+                    eos_mask = (
+                        accepted_tokens == self.tokenizer.eos_token_id
+                    ).cumsum(dim=-1) > 0 | (done_mask.unsqueeze(-1))
                     done_mask = done_mask | eos_mask.any(dim=-1)
-                    accepted_tokens.masked_fill_(eos_mask, self.tokenizer.eos_token_id)
+                    accepted_tokens.masked_fill_(
+                        eos_mask, self.tokenizer.eos_token_id
+                    )
 
                 # Limit the accepted tokens to tokens_to_generate
                 limit_mask = (
@@ -770,7 +829,9 @@ class SpeculativeLLMEngine(LLMEngine):
                     )
 
                 # Update done mask is sequence has finished generating
-                done_mask = done_mask | (generated_tokens >= tokens_to_generate)
+                done_mask = done_mask | (
+                    generated_tokens >= tokens_to_generate
+                )
 
                 nvtx_range_pop()
                 timers.stop(timer_key)
@@ -785,7 +846,9 @@ class SpeculativeLLMEngine(LLMEngine):
         # If EOS is not ignored, sequences may differ in length; pad to the
         # longest in the batch
         if not ignore_eos:
-            output_token_lengths = [tokens.shape[0] for tokens in output_tokens]
+            output_token_lengths = [
+                tokens.shape[0] for tokens in output_tokens
+            ]
             max_length = max(output_token_lengths)
             output_tokens = [
                 torch.nn.functional.pad(
@@ -803,11 +866,15 @@ class SpeculativeLLMEngine(LLMEngine):
         times, events = timers.get_times()
 
         tput = (
-            prompt_tokens.shape[0] * tokens_to_generate / (times[("generate",)] / 1000)
+            prompt_tokens.shape[0]
+            * tokens_to_generate
+            / (times[("generate",)] / 1000)
         )
         ttft = times[("generate", "prefill")] / events[("generate", "prefill")]
         if events[("generate", "decode")] > 0:
-            tbs = times[("generate", "decode")] / events[("generate", "decode")]
+            tbs = (
+                times[("generate", "decode")] / events[("generate", "decode")]
+            )
             tbs_draft = (
                 times[("generate", "decode", "draft_decode")]
                 / events[("generate", "decode", "draft_decode")]

@@ -77,7 +77,9 @@ def _compare_token_outputs(standard_tokens, speculative_tokens, tokenizer):
 
             # Find first mismatch position
             diff_positions = (std_tokens != spec_tokens).nonzero().flatten()
-            first_diff = diff_positions[0].item() if len(diff_positions) > 0 else -1
+            first_diff = (
+                diff_positions[0].item() if len(diff_positions) > 0 else -1
+            )
 
             warnings.warn(
                 f"Batch {i}: Token mismatch at position {first_diff}\n"
@@ -110,13 +112,19 @@ def test_speculative(
     """
 
     if attn_backend.yalis != "sdpa":
-        pytest.skip("Non-SDPA attention backends do not uphold greedy equality")
+        pytest.skip(
+            "Non-SDPA attention backends do not uphold greedy equality"
+        )
 
     # Generate test prompts
-    prompts = alpaca_prompt(alpaca_dataset, tokenizer, prompt_length, batch_size)
+    prompts = alpaca_prompt(
+        alpaca_dataset, tokenizer, prompt_length, batch_size
+    )
 
     # Get outputs from both engines
-    standard_tokens = _get_standard_output(speculative_engine, prompts, num_tokens)
+    standard_tokens = _get_standard_output(
+        speculative_engine, prompts, num_tokens
+    )
     speculative_tokens = _get_speculative_output(
         speculative_engine, prompts, num_tokens, gamma=gamma
     )

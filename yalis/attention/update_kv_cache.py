@@ -48,8 +48,12 @@ def update_paged_kv_cache_kernel(
         offs_d_broadcast = offs_d[None, :]
 
         token_idx = b * S + s
-        k_src_ptrs = k_ptr + token_idx * H * D + offs_h_broadcast * D + offs_d_broadcast
-        v_src_ptrs = v_ptr + token_idx * H * D + offs_h_broadcast * D + offs_d_broadcast
+        k_src_ptrs = (
+            k_ptr + token_idx * H * D + offs_h_broadcast * D + offs_d_broadcast
+        )
+        v_src_ptrs = (
+            v_ptr + token_idx * H * D + offs_h_broadcast * D + offs_d_broadcast
+        )
 
         if layout_mode == 0:  # this is what flash attention uses
             # Unified layout: [num_blocks, page_block_size, H, D]

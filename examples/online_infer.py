@@ -50,7 +50,9 @@ inference_config = InferenceConfig(
     temperature=1.0,
     tp_dims=None,
 )
-global_engine = LLMEngine(model_config=model_config, inference_config=inference_config)
+global_engine = LLMEngine(
+    model_config=model_config, inference_config=inference_config
+)
 
 
 @app.route("/v1/completions", methods=["POST"])
@@ -111,7 +113,9 @@ def infer_endpoint():
         n = 1
         if "n" in data and data["n"] != 1:
             return (
-                jsonify({"error": "YALIS only supports n=1 completion choices."}),
+                jsonify(
+                    {"error": "YALIS only supports n=1 completion choices."}
+                ),
                 400,
             )
 
@@ -143,7 +147,9 @@ def infer_endpoint():
 
         logging.info("Ending time after tok gen.")
         req_end_time = time.time()
-        logging.info(f"Time taken for tok gen: {req_end_time - req_start_time:.2f} s.")
+        logging.info(
+            f"Time taken for tok gen: {req_end_time - req_start_time:.2f} s."
+        )
 
         output_tokens = output_tokens.cpu()
         detokenized_text = global_tokenizer.batch_decode(
@@ -165,10 +171,12 @@ def infer_endpoint():
 
             # Usage json object:
             prompt_tokens = sum(
-                len(global_tokenizer(prompt)["input_ids"]) for prompt in user_prompts
+                len(global_tokenizer(prompt)["input_ids"])
+                for prompt in user_prompts
             )
             completion_tokens = sum(
-                len(global_tokenizer(text)["input_ids"]) for text in detokenized_text
+                len(global_tokenizer(text)["input_ids"])
+                for text in detokenized_text
             )
             total_tokens = prompt_tokens + completion_tokens
             usage = {
@@ -205,7 +213,9 @@ def infer_endpoint():
 if __name__ == "__main__":
     # Rank 0 is the only one that has external access to requests from user
     if dist.get_rank() == 0:
-        logging.info("Starting Flask server on rank 0. Listening on port 5000...")
+        logging.info(
+            "Starting Flask server on rank 0. Listening on port 5000..."
+        )
         app.run(host="0.0.0.0", port=5000, threaded=False, processes=1)
     else:
         infer_endpoint()

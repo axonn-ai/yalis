@@ -103,10 +103,12 @@ def benchmark_config(
     w1 = torch.randn(E, 2 * N, K, dtype=dtype, device="cuda")
     gating = torch.randn(M, E, dtype=dtype, device="cuda")
 
-    topk_weights, topk_ids = fused_topk(hidden_states, gating, top_k, renormalize=True)
+    topk_weights, topk_ids = fused_topk(
+        hidden_states, gating, top_k, renormalize=True
+    )
 
-    sorted_token_ids, expert_ids, num_tokens_post_padded = moe_align_block_size(
-        topk_ids, config["BLOCK_SIZE_M"], E
+    sorted_token_ids, expert_ids, num_tokens_post_padded = (
+        moe_align_block_size(topk_ids, config["BLOCK_SIZE_M"], E)
     )
 
     # Output tensor
@@ -257,7 +259,9 @@ def tune_for_shape(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Offline MoE kernel tuning script")
+    parser = argparse.ArgumentParser(
+        description="Offline MoE kernel tuning script"
+    )
     parser.add_argument(
         "--num-experts",
         type=int,
@@ -308,7 +312,9 @@ def main():
     args = parser.parse_args()
 
     # Resolve save directory - uses YALIS_CACHE or falls back to ~/.cache/yalis
-    save_dir = args.save_dir if args.save_dir else get_moe_config_dir(create=True)
+    save_dir = (
+        args.save_dir if args.save_dir else get_moe_config_dir(create=True)
+    )
 
     dtype = torch.bfloat16 if args.dtype == "bf16" else torch.float16
 

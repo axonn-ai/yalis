@@ -29,7 +29,9 @@ class LazySafeTensorDict(MutableMapping):
         name_to_device_dtype: Dict[str, Tuple[torch.device, torch.dtype]],
     ) -> None:
         self._root = Path(ckpt_path)
-        self._map: Dict[str, str] = {}  # name -> shard filename (or single file)
+        self._map: Dict[str, str] = (
+            {}
+        )  # name -> shard filename (or single file)
         self._keys: Iterable[str] = []
         self._single_file: Optional[Path] = None
         self._opened: Dict[str, Any] = {}  # shard path -> safe_open handle
@@ -39,14 +41,18 @@ class LazySafeTensorDict(MutableMapping):
         if self._root.is_file() and self._root.suffix == ".safetensors":
             # Single-file checkpoint
             self._single_file = self._root
-            with safe_open(str(self._single_file), framework="pt", device="cpu") as f:
+            with safe_open(
+                str(self._single_file), framework="pt", device="cpu"
+            ) as f:
                 self._keys = list(f.keys())
             for k in self._keys:
                 self._map[k] = self._single_file.name
         else:
             # Sharded (expect an index json nearby)
             index_json = None
-            if self._root.is_file() and self._root.name.endswith(".index.json"):
+            if self._root.is_file() and self._root.name.endswith(
+                ".index.json"
+            ):
                 index_json = self._root
                 base_dir = self._root.parent
             elif self._root.is_dir():
@@ -75,7 +81,9 @@ class LazySafeTensorDict(MutableMapping):
             # Make sure shard files exist
             for shard in set(self._map.values()):
                 if not (base_dir / shard).is_file():
-                    raise FileNotFoundError(f"Shard missing: {base_dir / shard}")
+                    raise FileNotFoundError(
+                        f"Shard missing: {base_dir / shard}"
+                    )
 
             self._base_dir = base_dir
 
@@ -142,7 +150,9 @@ class LazySafeTensorDict(MutableMapping):
         spath = str(path)
         if spath not in self._opened:
             # Keep handle open to avoid re-parsing the header repeatedly
-            self._opened[spath] = safe_open(spath, framework="pt", device="cpu")
+            self._opened[spath] = safe_open(
+                spath, framework="pt", device="cpu"
+            )
         return self._opened[spath]
 
     def _load_key(self, name: str) -> torch.Tensor:
@@ -205,13 +215,17 @@ def load_checkpoint_safetensors(
     *,
     strict: bool = True,
 ) -> None:
-    print_rank0(f"Loading checkpoint (lazy safetensors) from {checkpoint_path}")
+    print_rank0(
+        f"Loading checkpoint (lazy safetensors) from {checkpoint_path}"
+    )
 
     # Build per-key device/dtype targets from the CURRENT model
     name_to_devdtype = _collect_param_buffer_devdtype(model)
 
     # Build a lazy dict view over the safetensors checkpoint
-    lazy_sd = LazySafeTensorDict(checkpoint_path, name_to_device_dtype=name_to_devdtype)
+    lazy_sd = LazySafeTensorDict(
+        checkpoint_path, name_to_device_dtype=name_to_devdtype
+    )
 
     # Progress hook (unchanged from your current code)
     modules_to_hook = [
@@ -229,7 +243,10 @@ def load_checkpoint_safetensors(
     def _post_hook(module, incompatible_keys):
         pbar.update(1)
 
-    hooks = [m.register_load_state_dict_post_hook(_post_hook) for m in modules_to_hook]
+    hooks = [
+        m.register_load_state_dict_post_hook(_post_hook)
+        for m in modules_to_hook
+    ]
 
     try:
         model.load_state_dict(lazy_sd, strict=strict, assign=True)

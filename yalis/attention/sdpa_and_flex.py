@@ -51,7 +51,11 @@ def intra_head_sdpa(
     enable_gqa: bool,
     parallel: bool = True,
 ) -> torch.Tensor:
-    mask = create_upper_mask(q.size(2), q.device) if attn_mask is None else attn_mask
+    mask = (
+        create_upper_mask(q.size(2), q.device)
+        if attn_mask is None
+        else attn_mask
+    )
     if enable_gqa:
         B, h, n_q, d = q.shape
         g = k.size(1)
@@ -152,7 +156,9 @@ def rotary_kv_update_sdpa_gen(
     arange_t = torch.arange(t_max, device=k_cache.device).view(1, -1)
     upper_mask = arange_t <= token_counter[:B].view(-1, 1)
     if sliding_window and sliding_window > 0:
-        lower_bound = (token_counter[:B].view(-1, 1) - sliding_window).clamp(min=0)
+        lower_bound = (token_counter[:B].view(-1, 1) - sliding_window).clamp(
+            min=0
+        )
         lower_mask = arange_t >= lower_bound
         mask = upper_mask & lower_mask
     else:
@@ -272,18 +278,24 @@ def rotary_kv_update_sdpa_gen_gptoss(
             # `ax.is_initialized` may be a boolean attribute in some
             # axonn versions or a callable in others; handle both.
             is_ax_init = getattr(ax, "is_initialized", False)
-            ax_initialized = is_ax_init() if callable(is_ax_init) else bool(is_ax_init)
+            ax_initialized = (
+                is_ax_init() if callable(is_ax_init) else bool(is_ax_init)
+            )
 
             # Defaults for single-process / non-distributed runs
             tp_rank = 0
             tp_size = 1
             if ax_initialized:
                 # Prefer an explicit intra-layer row rank when available.
-                tp_rank = getattr(ax.comm_handle, "intra_layer_row_parallel_rank", None)
+                tp_rank = getattr(
+                    ax.comm_handle, "intra_layer_row_parallel_rank", None
+                )
                 if tp_rank is None:
                     # Fallback: derive a row-rank from the generic intra-layer
                     # parallel rank and the G_intra_c configuration.
-                    raw_rank = getattr(ax.comm_handle, "intra_layer_parallel_rank", 0)
+                    raw_rank = getattr(
+                        ax.comm_handle, "intra_layer_parallel_rank", 0
+                    )
                     g_intra_c = getattr(ax.config, "G_intra_c", 1)
                     tp_rank = (raw_rank // g_intra_c) % getattr(
                         ax.config, "G_intra_r", 1
@@ -351,13 +363,21 @@ def rotary_kv_update_sdpa_gen_gptoss(
                 v[:, :, 0, :], process_group
             ).to(v_cache.dtype)
         else:
-            k_cache[b_indices, :, t_indices, :] = k[:, :, 0, :].to(k_cache.dtype)
-            v_cache[b_indices, :, t_indices, :] = v[:, :, 0, :].to(v_cache.dtype)
+            k_cache[b_indices, :, t_indices, :] = k[:, :, 0, :].to(
+                k_cache.dtype
+            )
+            v_cache[b_indices, :, t_indices, :] = v[:, :, 0, :].to(
+                v_cache.dtype
+            )
     else:
         # PREFILL: T tokens starting at position 0
         if use_intra_head_parallelism:
-            k_cache[:B, :, :T, :] = Drop.apply(k, process_group).to(k_cache.dtype)
-            v_cache[:B, :, :T, :] = Drop.apply(v, process_group).to(v_cache.dtype)
+            k_cache[:B, :, :T, :] = Drop.apply(k, process_group).to(
+                k_cache.dtype
+            )
+            v_cache[:B, :, :T, :] = Drop.apply(v, process_group).to(
+                v_cache.dtype
+            )
         else:
             k_cache[:B, :, :T, :] = k.to(k_cache.dtype)
             v_cache[:B, :, :T, :] = v.to(v_cache.dtype)
@@ -379,7 +399,9 @@ def rotary_kv_update_sdpa_gen_gptoss(
         upper_mask = arange_t <= token_counter[:B].view(-1, 1)
 
         if sliding_window and sliding_window > 0:
-            lower_bound = (token_counter[:B].view(-1, 1) - sliding_window).clamp(min=0)
+            lower_bound = (
+                token_counter[:B].view(-1, 1) - sliding_window
+            ).clamp(min=0)
             lower_mask = arange_t >= lower_bound
             mask = upper_mask & lower_mask
         else:
@@ -395,7 +417,9 @@ def rotary_kv_update_sdpa_gen_gptoss(
 
         # Causal mask: query i attends to keys 0..i
         # Create lower-triangular mask (T, T)
-        causal_mask = torch.tril(torch.ones(T, T, dtype=torch.bool, device=q.device))
+        causal_mask = torch.tril(
+            torch.ones(T, T, dtype=torch.bool, device=q.device)
+        )
 
         if sliding_window and sliding_window > 0:
             # Sliding window: query i attends to keys max(0, i-window)..i
@@ -462,7 +486,9 @@ def rotary_kv_update_sdpa_gen_gptoss(
 
     if use_intra_head_parallelism:
         dist.all_reduce(QK, op=dist.ReduceOp.SUM, group=process_group)
-    W = torch.nn.functional.softmax(QK, dim=-1, dtype=torch.float).to(dtype=QK.dtype)
+    W = torch.nn.functional.softmax(QK, dim=-1, dtype=torch.float).to(
+        dtype=QK.dtype
+    )
     # drop sinks column
     if sinks is not None:
         W = W[..., :-1]
@@ -582,7 +608,9 @@ def rotary_kv_update_sdpa_multi(
     v_cache[:B].scatter_(dim=2, index=index_kv, src=v.to(v_cache.dtype))
 
     # Create the mask
-    arange_t = torch.arange(k_cache.size(-2), device=k_cache.device).view(1, 1, 1, -1)
+    arange_t = torch.arange(k_cache.size(-2), device=k_cache.device).view(
+        1, 1, 1, -1
+    )
     arange_l = token_counter[:B].view(B, 1, 1, 1) + torch.arange(
         T, device=k_cache.device
     ).view(1, 1, -1, 1)
@@ -745,7 +773,9 @@ def flex_attention_(
     use_intra_head_parallelism: bool = False,
     **kwargs,
 ):
-    assert "flex_attention_block_mask" in kwargs, "flex attention requires a block mask"
+    assert (
+        "flex_attention_block_mask" in kwargs
+    ), "flex attention requires a block mask"
     return sdpa_and_flex_attention(
         q=q,
         k=k,

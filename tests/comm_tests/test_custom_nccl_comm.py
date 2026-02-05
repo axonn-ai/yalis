@@ -16,7 +16,9 @@ def main():
     device = rank
     torch.cuda.set_device(device)
 
-    comm_idx = CommHandler.create_communicator_from_process_group(dist.group.WORLD)
+    comm_idx = CommHandler.create_communicator_from_process_group(
+        dist.group.WORLD
+    )
     comm = CommHandler.get_communicator_from_idx(comm_idx)
 
     for dtype in DTYPES:
@@ -28,7 +30,9 @@ def main():
             stream.synchronize()
             expected = world_size * (world_size + 1) / 2
             atol = 1e-2 if dtype in [torch.float16, torch.bfloat16] else 1e-6
-            if not torch.allclose(tensor, torch.full_like(tensor, expected), atol=atol):
+            if not torch.allclose(
+                tensor, torch.full_like(tensor, expected), atol=atol
+            ):
                 print(
                     f"[Rank {rank}] FAILED: dtype={dtype}, size={size},"
                     f" tensor={tensor}, expected={expected}"

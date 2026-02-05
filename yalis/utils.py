@@ -75,7 +75,9 @@ def is_process_group_within_node(group=None):
         torch.empty(max_len, dtype=torch.uint8, device="cuda")
         for _ in range(torch.distributed.get_world_size(group))
     ]
-    local_tensor = torch.tensor(list(local_bytes), dtype=torch.uint8, device="cuda")
+    local_tensor = torch.tensor(
+        list(local_bytes), dtype=torch.uint8, device="cuda"
+    )
     torch.distributed.all_gather(all_hostnames, local_tensor, group=group)
 
     # Decode hostnames

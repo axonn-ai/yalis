@@ -68,7 +68,9 @@ class ModelConfig:
         Validate the configuration.
         """
         if self.model_path is None and self.model_name is None:
-            raise ValueError("Either 'model_name' or 'model_path' must be provided.")
+            raise ValueError(
+                "Either 'model_name' or 'model_path' must be provided."
+            )
 
         if self.precision not in {"fp32", "fp16", "bf16"}:
 
@@ -186,7 +188,9 @@ class InferenceConfig:
             self.use_paged_kv_caching
             and not self.attention_backend == AttentionBackend.FLASH
         ):
-            raise ValueError("use_paged_kv_caching requires attention_backend=flash")
+            raise ValueError(
+                "use_paged_kv_caching requires attention_backend=flash"
+            )
 
         if (
             self.use_intra_head_parallelism

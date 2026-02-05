@@ -154,7 +154,9 @@ def download_from_hub(
         # (e.g., 'metal') which is not a model config name.
         local_model_name = model_name or directory.name
         convert_hf_checkpoint(
-            checkpoint_dir=resolved_dir, dtype=dtype, model_name=local_model_name
+            checkpoint_dir=resolved_dir,
+            dtype=dtype,
+            model_name=local_model_name,
         )
 
 
@@ -167,7 +169,9 @@ def find_weight_files(
     with gated_repo_catcher(repo_id, access_token):
         info = repo_info(repo_id, token=access_token)
     filenames = [f.rfilename for f in info.siblings]
-    bins = list(filter_repo_objects(items=filenames, allow_patterns=["*model*.bin*"]))
+    bins = list(
+        filter_repo_objects(items=filenames, allow_patterns=["*model*.bin*"])
+    )
     safetensors = list(
         filter_repo_objects(items=filenames, allow_patterns=["*.safetensors*"])
     )

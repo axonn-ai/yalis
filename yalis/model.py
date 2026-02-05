@@ -22,7 +22,9 @@ def get_model(
 ):
     tensor_parallel = dist.get_world_size() > 1
     if disable_tp:
-        print(f"Disabling tensor parallelism for {litgpt_checkpoint_directory}")
+        print(
+            f"Disabling tensor parallelism for {litgpt_checkpoint_directory}"
+        )
         tensor_parallel = False
     if tensor_parallel and dist.get_rank() == 0:
         print(f"Using Tensor parallelism on {dist.get_world_size()} GPUs")
