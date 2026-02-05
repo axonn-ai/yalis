@@ -107,9 +107,7 @@ def _get_hf_output(tokenizer, model, prompts, num_tokens):
     for i in range(len(prompts)):
         input_len = inputs["input_ids"][i].shape[0]
         new_tokens.append(
-            output.sequences[i][
-                input_len : input_len + num_tokens
-            ].cpu()
+            output.sequences[i][input_len : input_len + num_tokens].cpu()
         )
 
     # new_tokens: list of [num_tokens] tensors of length batch_size

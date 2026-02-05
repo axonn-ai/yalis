@@ -458,16 +458,12 @@ def rotary_kv_update_sdpa_gen_gptoss(
         V_expanded = V.repeat_interleave(hpg, dim=1)  # (B, h, t_max, hs)
         # Now both Q and K/V have the same number of heads
         Q_scaled = (Q * scale).to(dtype=K_expanded.dtype)
-        QK = torch.einsum(
-            "b h q d, b h k d -> b h q k", Q_scaled, K_expanded
-        )
+        QK = torch.einsum("b h q d, b h k d -> b h q k", Q_scaled, K_expanded)
     else:
         # Standard MHA path
         # Ensure both operands are in the same dtype before einsum
         Q_scaled = (Q * scale).to(dtype=K.dtype)
-        QK = torch.einsum(
-            "b h q d, b h k d -> b h q k", Q_scaled, K
-        )
+        QK = torch.einsum("b h q d, b h k d -> b h q k", Q_scaled, K)
 
     # Apply mask (broadcast over batch & heads)
     # For DECODE: mask is (B, t_max), QK is (B, h, 1, t_max)

@@ -166,9 +166,7 @@ def hf_model_loader(model_id, dtype, attn_backend, device):
         )
         # Move to GPU
         target_device = "cuda:0"
-        logger.info(
-            f"Moving model to {target_device}..."
-        )
+        logger.info(f"Moving model to {target_device}...")
         model = model.to(target_device)
         model.eval()
         return model
