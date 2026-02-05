@@ -1815,7 +1815,7 @@ def convert_hf_checkpoint(
                     )
 
             if debug_mode:
-                print(f"Updated config from HF config.json:")
+                print("Updated config from HF config.json:")
                 print(f"  vocab_size: {config.vocab_size}")
                 print(f"  n_embd: {config.n_embd}")
                 print(f"  n_head: {config.n_head}")
