@@ -8,8 +8,6 @@ import torch.nn as nn
 from safetensors import safe_open
 from yalis.utils import print_rank0
 from tqdm import tqdm
-import gc
-import time
 
 
 class LazySafeTensorDict(MutableMapping):
@@ -251,31 +249,7 @@ def load_checkpoint_safetensors(
     ]
 
     try:
-        # Log memory just before loading state_dict at the callee level
-        try:
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
-        except Exception:
-            pass
-        print_rank0(
-            f"[model_loading] Before load_state_dict: allocated={torch.cuda.memory_allocated() / 1024**3:.3f}GB, "
-            f"reserved={torch.cuda.memory_reserved() / 1024**3:.3f}GB, "
-            f"max_allocated={torch.cuda.max_memory_allocated() / 1024**3:.3f}GB"
-        )
-        t0 = time.time()
         model.load_state_dict(lazy_sd, strict=strict, assign=True)
-        # Ensure any async CUDA work completed
-        try:
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
-        except Exception:
-            pass
-        gc.collect()
-        print_rank0(
-            f"[model_loading] After load_state_dict (took {time.time()-t0:.2f}s): allocated={torch.cuda.memory_allocated() / 1024**3:.3f}GB, "
-            f"reserved={torch.cuda.memory_reserved() / 1024**3:.3f}GB, "
-            f"max_allocated={torch.cuda.max_memory_allocated() / 1024**3:.3f}GB"
-        )
     except Exception as e:
         print_rank0(f"Error loading checkpoint: {e}")
         raise
