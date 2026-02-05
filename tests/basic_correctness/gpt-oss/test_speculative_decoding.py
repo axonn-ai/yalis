@@ -10,7 +10,7 @@ IGNORE_EOS = True
 # Test parameters
 BATCH_SIZES = [2]
 PROMPT_LENGTHS = [128]
-TOKEN_GENERATION_LENGTHS = [128]
+TOKEN_GENERATION_LENGTHS = [4]
 GAMMA_VALUES = [2, 5]
 
 def _get_standard_output(engine, prompts, num_tokens):
