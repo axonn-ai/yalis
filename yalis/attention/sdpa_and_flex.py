@@ -1,6 +1,5 @@
 import math
 from typing import Optional
-import os
 
 import torch
 import torch.distributed as dist
