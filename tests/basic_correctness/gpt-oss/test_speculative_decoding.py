@@ -15,11 +15,6 @@ GAMMA_VALUES = [2, 5]
 
 def _get_standard_output(engine, prompts, num_tokens):
     """Get output from standard LLMEngine."""
-    # Set deterministic seeds
-    torch.manual_seed(42)
-    random.seed(42)
-    np.random.seed(42)
-
     output_tokens, _ = engine.generate(
         prompts,
         tokens_to_generate=num_tokens,
@@ -32,11 +27,6 @@ def _get_standard_output(engine, prompts, num_tokens):
 
 def _get_speculative_output(engine, prompts, num_tokens, gamma=5):
     """Get output from SpeculativeLLMEngine."""
-    # Set deterministic seeds
-    torch.manual_seed(42)
-    random.seed(42)
-    np.random.seed(42)
-
     output_tokens, metrics = engine.generate_speculative(
         prompts,
         tokens_to_generate=num_tokens,
@@ -114,6 +104,13 @@ def test_speculative(
         pytest.skip(
             "Non-SDPA attention backends do not uphold greedy equality"
         )
+
+    # Ensure consistent random sampling across all ranks for TP tests
+    # All ranks must generate identical prompts for distributed inference
+    random_seed = 42
+    torch.manual_seed(random_seed)
+    random.seed(random_seed)
+    np.random.seed(random_seed)
 
     # Generate test prompts
     prompts = alpaca_prompt(
