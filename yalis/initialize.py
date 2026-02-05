@@ -12,6 +12,16 @@ def init_distributed(tp_dims=None):
     # find a way to do this to avoid the warning without OOMs.
     if not dist.is_initialized():
         dist.init_process_group(backend="nccl")
+    else:
+        current_backend = dist.get_backend()
+        if str(current_backend) != "nccl":
+            warnings.warn(
+                f"Existing distributed process group backend '{current_backend}' does not "
+                "match expected backend 'nccl'. Proceeding with existing configuration.",
+                UserWarning,
+            )
+        else:
+            print(f"Reusing existing distributed process group with backend '{current_backend}'.")
     torch.cuda.set_device(dist.get_rank() % torch.cuda.device_count())
     print(
         f"[{dist.get_rank()}] Current Device - {torch.cuda.get_device_properties(torch.cuda.current_device())}"  # noqa: E501
