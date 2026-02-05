@@ -65,15 +65,12 @@ class GPT(nn.Module):
             dict(
                 wte=nn.Embedding(config.padded_vocab_size, config.n_embd),
                 h=nn.ModuleList(
-                    Block(config, block_idx)
-                    for block_idx in range(config.n_layer)
+                    Block(config, block_idx) for block_idx in range(config.n_layer)
                 ),
                 ln_f=config.norm_class(config.n_embd, eps=config.norm_eps),
             )
         )
-        self.max_seq_length = (
-            self.config.block_size
-        )  # rope cache is built here
+        self.max_seq_length = self.config.block_size  # rope cache is built here
         self.symmetric_memory_pool = None
 
     @property
@@ -156,9 +153,7 @@ class GPT(nn.Module):
                 16384 // PAGE_BLOCK_SIZE,
             )
 
-        x = self.transformer.wte(
-            idx
-        )  # token embeddings of shape (b, t, n_embd)
+        x = self.transformer.wte(idx)  # token embeddings of shape (b, t, n_embd)
         if self.config.scale_embeddings:
             x = x * torch.tensor(self.config.n_embd**0.5, dtype=x.dtype)
         if self.config.tensor_parallel:
@@ -173,9 +168,7 @@ class GPT(nn.Module):
         # Block table is not sliced and expected that
         # the attention backend will handle the slicing.
         block_table = (
-            self.kvcache_block_table
-            if self.config.use_paged_kv_caching
-            else None
+            self.kvcache_block_table if self.config.use_paged_kv_caching else None
         )
 
         B = x.size(0)
@@ -199,9 +192,7 @@ class GPT(nn.Module):
                 flex_attention_block_mask,
             )
         if self.config.tensor_parallel:
-            x = Gather.apply(
-                x, ax.comm_handle.inner_intra_layer_parallel_group
-            )
+            x = Gather.apply(x, ax.comm_handle.inner_intra_layer_parallel_group)
         x = self.transformer.ln_f(x)
         x = self.lm_head(x)  # (b, t, vocab_size)
         if self.config.final_logit_softcapping is not None:
@@ -240,7 +231,7 @@ class GPT(nn.Module):
         # Check for yaRN mode in rope_adjustments
         if getattr(self.config, "rope_adjustments", None) is not None:
             rope_adj = self.config.rope_adjustments
-            
+
             # Check if this is yaRN mode
             if rope_adj.get("mode") == "yaRN":
                 extra_config = {
@@ -262,8 +253,7 @@ class GPT(nn.Module):
                     "original_max_seq_len",
                 ]
                 params_present = [
-                    param in rope_adj
-                    for param in adjusted_params_required
+                    param in rope_adj for param in adjusted_params_required
                 ]
                 num_params_present = sum(params_present)
 
@@ -380,9 +370,7 @@ class GPT(nn.Module):
                 PAGE_BLOCK_SIZE,
             )
             # TODO: move to separate Python class
-            self.tokens_assigned = (
-                self.kv_cache_manager.tokens_assigned_tensor()
-            )
+            self.tokens_assigned = self.kv_cache_manager.tokens_assigned_tensor()
             self.kvcache_block_table = self.kv_cache_manager.block_table()
             self.kvcache_free_pages = self.kv_cache_manager.free_pages_tensor()
             self.kvcache_next_page = self.kv_cache_manager.next_page_tensor()
@@ -450,9 +438,7 @@ class Block(nn.Module):
                 " (non-parallel residual and shared attention norm)."
             )
 
-        self.norm_1 = get_norm_class(config)(
-            config.n_embd, eps=config.norm_eps
-        )
+        self.norm_1 = get_norm_class(config)(config.n_embd, eps=config.norm_eps)
         self.attn = CausalSelfAttention(config, block_idx)
         self.post_attention_norm = (
             get_norm_class(config)(config.n_embd, eps=config.norm_eps)
@@ -527,11 +513,7 @@ class Block(nn.Module):
         # Currently, MLP does not need to be phase-aware
         # but we might add it in the future
         if self.config.parallel_residual:
-            x_normed = (
-                x_normed
-                if self.config.shared_attention_norm
-                else self.norm_2(x)
-            )
+            x_normed = x_normed if self.config.shared_attention_norm else self.norm_2(x)
             x = self.mlp(x_normed) + attention_output + x
         else:
             x = attention_output + x
@@ -575,10 +557,23 @@ class CausalSelfAttention(nn.Module):
             )
         # disabled by default
         self.kv_cache: Optional[KVCache] = None
-        
+
         # Determine if this layer uses sliding window attention
         # Priority: sliding_window_indices (per-layer) > sliding_window_layer_placing (modulo)
-        if config.sliding_window_indices is not None and block_idx < len(config.sliding_window_indices):
+        if (
+            block_idx == 0
+            and config.sliding_window_indices is not None
+            and len(config.sliding_window_indices) != config.n_layer
+        ):
+            warnings.warn(
+                f"sliding_window_indices has length {len(config.sliding_window_indices)} "
+                f"but n_layer is {config.n_layer}. Layers beyond the list will use "
+                "modulo-based placement.",
+                stacklevel=2,
+            )
+        if config.sliding_window_indices is not None and block_idx < len(
+            config.sliding_window_indices
+        ):
             # Use per-layer indices: 1 = sliding window, 0 = full attention
             self.apply_sliding_window_attention = (
                 config.sliding_window_size is not None
@@ -611,9 +606,7 @@ class CausalSelfAttention(nn.Module):
             self.duplicating_kv = attention_world_size > config.n_query_groups
             if self.duplicating_kv:
                 assert attention_world_size % config.n_query_groups == 0
-                self.duplication_degree = (
-                    attention_world_size // config.n_query_groups
-                )
+                self.duplication_degree = attention_world_size // config.n_query_groups
             else:
                 self.duplication_degree = 1
             assert self.config.n_head % attention_world_size == 0
@@ -654,9 +647,7 @@ class CausalSelfAttention(nn.Module):
         # assemble into a number of query groups to support
         # MHA, MQA and GQA together (see `config.n_query_groups`)
         q_per_kv = self.config.n_head // self.config.n_query_groups
-        total_qkv = (
-            q_per_kv + 2
-        )  # each group has 1+ queries, 1 key, and 1 value
+        total_qkv = q_per_kv + 2  # each group has 1+ queries, 1 key, and 1 value
         qkv = qkv.view(
             B, T, self.config.n_query_groups, total_qkv, self.config.head_size
         )
@@ -706,7 +697,11 @@ class CausalSelfAttention(nn.Module):
             use_intra_head_parallelism=self.config.use_intra_head_parallelism,
             prestore_kv_cache=self.config.prestore_kv_cache,
             flex_attention_block_mask=flex_attention_block_mask,
-            sliding_window=(self.config.sliding_window_size if self.apply_sliding_window_attention else 0),
+            sliding_window=(
+                self.config.sliding_window_size
+                if self.apply_sliding_window_attention
+                else 0
+            ),
             sliding_window_mode=getattr(self.config, "sliding_window_mode", None),
             sinks=sinks,
         )
@@ -786,9 +781,7 @@ class CausalSelfAttention(nn.Module):
                     batch_size,
                     heads,
                     max_seq_length,
-                    rope_cache_length
-                    + self.config.head_size
-                    - self.config.rope_n_elem,
+                    rope_cache_length + self.config.head_size - self.config.rope_n_elem,
                 )
 
         if self.config.use_intra_head_parallelism:
@@ -804,27 +797,19 @@ class GptNeoxMLP(nn.Module):
     def __init__(self, config: Config) -> None:
         super().__init__()
         assert not config.tensor_parallel
-        self.fc = nn.Linear(
-            config.n_embd, config.intermediate_size, bias=config.bias
-        )
-        self.proj = nn.Linear(
-            config.intermediate_size, config.n_embd, bias=config.bias
-        )
+        self.fc = nn.Linear(config.n_embd, config.intermediate_size, bias=config.bias)
+        self.proj = nn.Linear(config.intermediate_size, config.n_embd, bias=config.bias)
 
         self.config = config
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.fc(x)
-        x = torch.nn.functional.gelu(
-            x, approximate=self.config.gelu_approximate
-        )
+        x = torch.nn.functional.gelu(x, approximate=self.config.gelu_approximate)
         return self.proj(x)
 
 
 class LLaMAMLP(nn.Module):
-    def __init__(
-        self, config: Config, intermediate_size: Optional[int] = None
-    ) -> None:
+    def __init__(self, config: Config, intermediate_size: Optional[int] = None) -> None:
         super().__init__()
         self.intermediate_size = intermediate_size or config.intermediate_size
         if not config.tensor_parallel:
@@ -863,9 +848,7 @@ class GemmaMLP(LLaMAMLP):
         x = self.gate_up_proj(x)
         x_fc_1, x_fc_2 = x[..., ::2], x[..., 1::2]
         x = (
-            torch.nn.functional.gelu(
-                x_fc_1, approximate=self.config.gelu_approximate
-            )
+            torch.nn.functional.gelu(x_fc_1, approximate=self.config.gelu_approximate)
             * x_fc_2
         )
         return self.proj(x)
@@ -909,9 +892,7 @@ def build_rope_cache(
         base = extra_config.get("base", base)
 
         # compute base frequency vector (half-dimension)
-        freq = base ** (
-            torch.arange(0, n_elem, 2, device=device).float() / n_elem
-        )
+        freq = base ** (torch.arange(0, n_elem, 2, device=device).float() / n_elem)
 
         if scaling_factor > 1.0:
             concentration = 0.1 * math.log(scaling_factor) + 1.0
@@ -932,9 +913,9 @@ def build_rope_cache(
             interpolation = 1.0 / (scaling_factor * freq)
             extrapolation = 1.0 / freq
 
-            ramp = (
-                torch.arange(d_half, dtype=torch.float32, device=device) - low
-            ) / (high - low)
+            ramp = (torch.arange(d_half, dtype=torch.float32, device=device) - low) / (
+                high - low
+            )
             mask = 1 - ramp.clamp(0, 1)
 
             inv_freq = interpolation * (1 - mask) + extrapolation * mask
@@ -953,9 +934,7 @@ def build_rope_cache(
         return cos, sin
 
     # Legacy/simple RoPE path
-    theta = 1.0 / (
-        base ** (torch.arange(0, n_elem, 2, device=device).float() / n_elem)
-    )
+    theta = 1.0 / (base ** (torch.arange(0, n_elem, 2, device=device).float() / n_elem))
 
     if extra_config is not None and extra_config.get("mode") == "adjust":
         orig_context_len = extra_config["original_max_seq_len"]
@@ -965,9 +944,7 @@ def build_rope_cache(
 
         wavelen = 2 * torch.pi / theta
         ratio = orig_context_len / wavelen
-        smooth_factor = (ratio - low_freq_factor) / (
-            high_freq_factor - low_freq_factor
-        )
+        smooth_factor = (ratio - low_freq_factor) / (high_freq_factor - low_freq_factor)
         smooth_factor = torch.clamp(smooth_factor, min=0.0, max=1.0)
 
         adjusted_theta = (1 - smooth_factor) * (theta / factor) + smooth_factor * theta
@@ -1028,9 +1005,7 @@ def batched_index_copy_(t, dim, idx, val):
             t.scatter_(dim, idx_expanded, val)
             return t
         else:
-            raise NotImplementedError(
-                f"idx.dim() == {idx.dim()} not supported"
-            )
+            raise NotImplementedError(f"idx.dim() == {idx.dim()} not supported")
 
     else:
         if idx.dim() == 1:
@@ -1051,9 +1026,7 @@ def batched_index_copy_(t, dim, idx, val):
         return t
 
 
-def apply_rope(
-    x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
-) -> torch.Tensor:
+def apply_rope(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
     head_size = x.size(-1)
     x1 = x[..., : head_size // 2]  # (B, nh, T, hs/2)
     x2 = x[..., head_size // 2 :]  # (B, nh, T, hs/2)
@@ -1210,7 +1183,9 @@ class GptOssMoE(nn.Module):
 
         # compute per-rank shapes
         world_size = (
-            dist.get_world_size() if dist.is_available() and dist.is_initialized() else 1
+            dist.get_world_size()
+            if dist.is_available() and dist.is_initialized()
+            else 1
         )
 
         if config.intermediate_size is None:
@@ -1219,9 +1194,7 @@ class GptOssMoE(nn.Module):
 
         # mlp1: (num_experts, 2 * per_rank_intermediate, hidden_size)
         self.mlp1_weight = nn.Parameter(
-            torch.empty(
-                (self.num_experts, 2 * per_rank_intermediate, config.n_embd)
-            )
+            torch.empty((self.num_experts, 2 * per_rank_intermediate, config.n_embd))
         )
         self.mlp1_bias = nn.Parameter(
             torch.empty((self.num_experts, 2 * per_rank_intermediate))
@@ -1239,12 +1212,10 @@ class GptOssMoE(nn.Module):
         self._load_from_state_dict = self._modified_load_from_state_dict
 
     @torch.no_grad()
-    def _modified_load_from_state_dict(
-        self, state_dict, prefix, *args, **kwargs
-    ):
+    def _modified_load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
         """
         Custom state dict loader for GptOssMoE.
-        
+
         Handles sharding of MLP weights when loading full (unsharded) checkpoints:
         - mlp1_weight: [num_experts, 2*intermediate_size, hidden_size] -> shard dim 1
         - mlp1_bias: [num_experts, 2*intermediate_size] -> shard dim 1
@@ -1252,13 +1223,9 @@ class GptOssMoE(nn.Module):
         - mlp2_bias: [num_experts, hidden_size] -> no sharding (output dimension)
         """
         assert self.config.intermediate_size is not None
-        
-        rank = (
-            dist.get_rank()
-            if dist.is_available() and dist.is_initialized()
-            else 0
-        )
-        
+
+        rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+
         # Process mlp1_weight
         mlp1_weight_key = prefix + "mlp1_weight"
         if mlp1_weight_key in state_dict:
@@ -1269,7 +1236,7 @@ class GptOssMoE(nn.Module):
                     weight, dim=1, world_size=self.world_size, rank=rank
                 )
                 state_dict[mlp1_weight_key] = weight.contiguous()
-        
+
         # Process mlp1_bias
         mlp1_bias_key = prefix + "mlp1_bias"
         if mlp1_bias_key in state_dict:
@@ -1280,7 +1247,7 @@ class GptOssMoE(nn.Module):
                     bias, dim=1, world_size=self.world_size, rank=rank
                 )
                 state_dict[mlp1_bias_key] = bias.contiguous()
-        
+
         # Process mlp2_weight
         mlp2_weight_key = prefix + "mlp2_weight"
         if mlp2_weight_key in state_dict:
@@ -1291,10 +1258,10 @@ class GptOssMoE(nn.Module):
                     weight, dim=2, world_size=self.world_size, rank=rank
                 )
                 state_dict[mlp2_weight_key] = weight.contiguous()
-        
+
         # mlp2_bias does not need sharding: [num_experts, hidden_size]
         # It's replicated across all ranks for the all-reduce aggregation.
-        
+
         # Delegate to the original load_from_state_dict
         self._old_load_from_state_dict(state_dict, prefix, *args, **kwargs)
 

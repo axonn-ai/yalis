@@ -100,8 +100,7 @@ def flash_attention(
     **kwargs
 ) -> torch.Tensor:
     if (
-        "use_intra_head_parallelism" in kwargs
-        and kwargs["use_intra_head_parallelism"]
+        "use_intra_head_parallelism" in kwargs and kwargs["use_intra_head_parallelism"]
     ):  # noqa: E501
         raise ValueError(
             "flash attention backend does not support intra head parallelism"

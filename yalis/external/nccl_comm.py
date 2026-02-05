@@ -103,9 +103,7 @@ class CommHandler:
                 CommHandler.comm_lib = ctypes.cdll.LoadLibrary("libnccl.so.2")
             except OSError:
                 try:
-                    CommHandler.comm_lib = ctypes.cdll.LoadLibrary(
-                        "libnccl.so"
-                    )
+                    CommHandler.comm_lib = ctypes.cdll.LoadLibrary("libnccl.so")
                 except OSError as e:
                     raise RuntimeError("Failed to load NCCL library.") from e
             CommHandler.num_comms = 0
@@ -219,25 +217,17 @@ class NCCLCommunicator:
     def check_nccl_error(self, ret, msg="NCCL error"):
         if ret != 0:
             # Get error string
-            CommHandler.get_comm_lib().ncclGetErrorString.restype = (
-                ctypes.c_char_p
-            )
+            CommHandler.get_comm_lib().ncclGetErrorString.restype = ctypes.c_char_p
             err_str = CommHandler.get_comm_lib().ncclGetErrorString(ret)
-            raise RuntimeError(
-                f"{msg}: {err_str.decode('utf-8')} (code {ret})"
-            )
+            raise RuntimeError(f"{msg}: {err_str.decode('utf-8')} (code {ret})")
 
     def get_unique_id(self) -> ncclUniqueId:
         unique_id = ncclUniqueId()
-        ret = CommHandler.get_comm_lib().ncclGetUniqueId(
-            ctypes.byref(unique_id)
-        )
+        ret = CommHandler.get_comm_lib().ncclGetUniqueId(ctypes.byref(unique_id))
         self.check_nccl_error(ret, "ncclGetUniqueId failed")
         return unique_id
 
-    def all_reduce(
-        self, tensor, stream=None, op=torch.distributed.ReduceOp.SUM
-    ):
+    def all_reduce(self, tensor, stream=None, op=torch.distributed.ReduceOp.SUM):
         if not tensor.is_cuda:
             raise ValueError("Tensor must be on CUDA/ROCm device")
 

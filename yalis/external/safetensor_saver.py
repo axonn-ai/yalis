@@ -111,9 +111,7 @@ class _SafeTensorShardWriter:
         if self._write_errors:
             errors = self._write_errors
             self._write_errors = []
-            raise RuntimeError(
-                f"Async shard write failed: {errors[0]}"
-            ) from errors[0]
+            raise RuntimeError(f"Async shard write failed: {errors[0]}") from errors[0]
 
     def _wait_if_too_many_pending(self):
         """Block if we have too many pending writes (backpressure)."""
@@ -133,9 +131,7 @@ class _SafeTensorShardWriter:
         if self._write_errors:
             errors = self._write_errors
             self._write_errors = []
-            raise RuntimeError(
-                f"Async shard write failed: {errors[0]}"
-            ) from errors[0]
+            raise RuntimeError(f"Async shard write failed: {errors[0]}") from errors[0]
 
     def _flush(self):
         if not self.buf:
@@ -217,9 +213,7 @@ class _SafeTensorShardWriter:
             "prefix": self.prefix,
         }
         with open(
-            os.path.join(
-                self.out_dir, f"{self.prefix}.safetensors.index.json"
-            ),
+            os.path.join(self.out_dir, f"{self.prefix}.safetensors.index.json"),
             "w",
         ) as f:
             json.dump(index, f, indent=2)
@@ -291,9 +285,7 @@ class incremental_save:
         self._committed_names.add(name)
         return _AlreadyStored(name)
 
-    def _iter_named_tensors(
-        self, obj: Any
-    ) -> Iterable[Tuple[str, torch.Tensor]]:
+    def _iter_named_tensors(self, obj: Any) -> Iterable[Tuple[str, torch.Tensor]]:
         # Optional: allow adding late extras via a mapping in save(obj)
         if isinstance(obj, dict):
             for k, v in obj.items():
@@ -307,9 +299,7 @@ class incremental_save:
             iterator = iter(obj)
             first = next(iterator)
         except TypeError:
-            raise TypeError(
-                "save(obj) expects a mapping or iterable of (name, tensor)"
-            )
+            raise TypeError("save(obj) expects a mapping or iterable of (name, tensor)")
         except StopIteration:
             return
 

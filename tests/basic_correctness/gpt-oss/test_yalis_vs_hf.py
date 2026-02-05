@@ -22,14 +22,14 @@ LOCAL_RANK = int(os.environ.get("LOCAL_RANK", 0))
 
 def log_gpu_memory(phase: str):
     """Log current GPU memory usage.
-    
+
     Args:
         phase: Descriptive name of the current phase (e.g., "After HF inference")
     """
     if torch.cuda.is_available():
         torch.cuda.synchronize()
         allocated = torch.cuda.memory_allocated() / 1024**3  # GB
-        reserved = torch.cuda.memory_reserved() / 1024**3    # GB
+        reserved = torch.cuda.memory_reserved() / 1024**3  # GB
         max_allocated = torch.cuda.max_memory_allocated() / 1024**3  # GB
         logger.info(
             f"[rank {LOCAL_RANK}] [GPU Memory] {phase:.<50} "
@@ -37,9 +37,11 @@ def log_gpu_memory(phase: str):
             f"Peak: {max_allocated:.2f}GB"
         )
 
+
 class NeverStop(StoppingCriteria):
     def __call__(self, input_ids, scores, **kwargs):
         return False
+
 
 def _get_logprobs(logits):
     # logits: list of [batch_size, vocab_size] tensors of length num_tokens
@@ -52,9 +54,9 @@ def _get_logprobs(logits):
         logprobs = torch.log_softmax(logit, dim=-1, dtype=torch.float32)
         logprob_list.append(logprobs)
 
-        topk_indices = torch.argsort(
-            logprobs, dim=-1, descending=True, stable=True
-        )[:, :NUM_LOGPROBS]
+        topk_indices = torch.argsort(logprobs, dim=-1, descending=True, stable=True)[
+            :, :NUM_LOGPROBS
+        ]
         topk_list.append(topk_indices)
 
     # We need to convert this to a list of [num_tokens, -1] shaped
@@ -78,9 +80,7 @@ def _get_logprobs(logits):
 
 
 def _get_hf_output(tokenizer, model, prompts, num_tokens):
-    inputs = tokenizer(prompts, return_tensors="pt", padding=True).to(
-        model.device
-    )
+    inputs = tokenizer(prompts, return_tensors="pt", padding=True).to(model.device)
     with torch.no_grad(), torch.autocast(
         "cuda", dtype=torch.float16, cache_enabled=False
     ):
@@ -103,9 +103,7 @@ def _get_hf_output(tokenizer, model, prompts, num_tokens):
     new_tokens = []
     for i in range(len(prompts)):
         input_len = inputs["input_ids"][i].shape[0]
-        new_tokens.append(
-            output.sequences[i][input_len : input_len + num_tokens].cpu()
-        )
+        new_tokens.append(output.sequences[i][input_len : input_len + num_tokens].cpu())
 
     # new_tokens: list of [num_tokens] tensors of length batch_size
     # output.logits: list of [batch_size, vocab_size] tensors of length num_tokens  # noqa: E501
@@ -121,9 +119,7 @@ def _get_yalis_output(engine, prompts, num_tokens):
         get_logits=True,
     )
     # output_tokens: (batch, num_tokens)
-    tokens_cpu = [
-        output_tokens[i][:num_tokens].cpu() for i in range(len(prompts))
-    ]
+    tokens_cpu = [output_tokens[i][:num_tokens].cpu() for i in range(len(prompts))]
     logits_cpu = [logit.cpu() for logit in logits]
     return tokens_cpu, logits_cpu
 
@@ -136,9 +132,7 @@ def _compare_tokens_and_text(tokenizer, tokens1, tokens2):
         tokens2
     ), f"Batch size mismatch: {len(tokens1)} vs {len(tokens2)}"
     for t1, t2 in zip(tokens1, tokens2):
-        assert len(t1) == len(
-            t2
-        ), f"Token length mismatch: {len(t1)} vs {len(t2)}"
+        assert len(t1) == len(t2), f"Token length mismatch: {len(t1)} vs {len(t2)}"
         num_matches = sum(a == b for a, b in zip(t1, t2))
         if num_matches < len(t1) - 1:
             warnings.warn(f"Token mismatch: {t1} vs {t2}")
@@ -236,16 +230,14 @@ def test_01_prefill(
     # All ranks must generate identical prompts for distributed inference
     random_seed = 42
     random_module.seed(random_seed)
-    
-    prompts = alpaca_prompt(
-        alpaca_dataset, tokenizer, prompt_length, batch_size
-    )
+
+    prompts = alpaca_prompt(alpaca_dataset, tokenizer, prompt_length, batch_size)
 
     # Load and run YALIS inference
     logger.info(f"[rank {LOCAL_RANK}] Loading YALIS engine...")
     yalis_engine = yalis_engine_loader()
     log_gpu_memory("After YALIS load")
-    
+
     # Synchronize all ranks before starting inference to avoid collective op mismatches
     if dist.is_initialized():
         dist.barrier()
@@ -253,9 +245,7 @@ def test_01_prefill(
             logger.info("All ranks synchronized, starting YALIS inference...")
 
     logger.info(f"[rank {LOCAL_RANK}] Starting YALIS engine inference...")
-    yalis_tokens, yalis_logits = _get_yalis_output(
-        yalis_engine, prompts, num_tokens=1
-    )
+    yalis_tokens, yalis_logits = _get_yalis_output(yalis_engine, prompts, num_tokens=1)
     log_gpu_memory("After YALIS inference")
 
     # Ensure all ranks finish inference before moving to comparison
@@ -284,7 +274,7 @@ def test_01_prefill(
         logger.info("(Rank 1: Using dummy HF outputs)")
         hf_tokens = [torch.zeros(1, dtype=torch.long) for _ in prompts]
         hf_logits = [torch.zeros(1, 50257) for _ in range(1)]  # num_tokens=1
-    
+
     torch.cuda.empty_cache()
     gc.collect()
     log_gpu_memory("After HF cleanup")
@@ -324,16 +314,14 @@ def test_02_decode(
     # All ranks must generate identical prompts for distributed inference
     random_seed = 42
     random_module.seed(random_seed)
-    
-    prompts = alpaca_prompt(
-        alpaca_dataset, tokenizer, prompt_length, batch_size
-    )
+
+    prompts = alpaca_prompt(alpaca_dataset, tokenizer, prompt_length, batch_size)
 
     # Load and run YALIS inference
     logger.info(f"[rank {LOCAL_RANK}] Loading YALIS engine...")
     yalis_engine = yalis_engine_loader()
     log_gpu_memory("After YALIS load")
-    
+
     # Synchronize all ranks before starting inference to avoid collective op mismatches
     if dist.is_initialized():
         dist.barrier()
@@ -341,9 +329,7 @@ def test_02_decode(
             logger.info("All ranks synchronized, starting YALIS inference...")
 
     logger.info(f"[rank {LOCAL_RANK}] Starting YALIS engine inference...")
-    yalis_tokens, yalis_logits = _get_yalis_output(
-        yalis_engine, prompts, num_tokens=3
-    )
+    yalis_tokens, yalis_logits = _get_yalis_output(yalis_engine, prompts, num_tokens=3)
     log_gpu_memory("After YALIS inference")
 
     # Ensure all ranks finish inference before moving to comparison
@@ -354,7 +340,7 @@ def test_02_decode(
     torch.cuda.empty_cache()
     gc.collect()
     log_gpu_memory("After YALIS cleanup")
-    
+
     # Load and run HF inference
     logger.info(f"[rank {LOCAL_RANK}] Loading HF model...")
     hf_model = hf_model_loader()
@@ -372,7 +358,7 @@ def test_02_decode(
         logger.info("(Rank 1: Using dummy HF outputs)")
         hf_tokens = [torch.zeros(1, dtype=torch.long) for _ in prompts]
         hf_logits = [torch.zeros(1, 50257) for _ in range(3)]  # num_tokens=3
-    
+
     torch.cuda.empty_cache()
     gc.collect()
     log_gpu_memory("After HF cleanup")

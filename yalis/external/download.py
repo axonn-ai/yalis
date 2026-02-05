@@ -112,6 +112,7 @@ def download_from_hub(
         level deeper for files like `*.bin`, `*.safetensors` or index jsons
         (e.g., `pytorch_model.bin.index.json`, `model.safetensors.index.json`).
         """
+
         def _has_weights(p: Path) -> bool:
             if (p / "pytorch_model.bin.index.json").is_file() or (
                 p / "model.safetensors.index.json"
@@ -156,6 +157,7 @@ def download_from_hub(
             checkpoint_dir=resolved_dir, dtype=dtype, model_name=local_model_name
         )
 
+
 def find_weight_files(
     repo_id: str, access_token: Optional[str]
 ) -> Tuple[List[str], List[str]]:
@@ -165,9 +167,7 @@ def find_weight_files(
     with gated_repo_catcher(repo_id, access_token):
         info = repo_info(repo_id, token=access_token)
     filenames = [f.rfilename for f in info.siblings]
-    bins = list(
-        filter_repo_objects(items=filenames, allow_patterns=["*model*.bin*"])
-    )
+    bins = list(filter_repo_objects(items=filenames, allow_patterns=["*model*.bin*"]))
     safetensors = list(
         filter_repo_objects(items=filenames, allow_patterns=["*.safetensors*"])
     )

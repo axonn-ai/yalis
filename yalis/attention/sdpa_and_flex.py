@@ -1,7 +1,5 @@
 import math
 from typing import Optional
-import os
-import sys
 
 import torch
 import torch.distributed as dist
@@ -53,11 +51,7 @@ def intra_head_sdpa(
     enable_gqa: bool,
     parallel: bool = True,
 ) -> torch.Tensor:
-    mask = (
-        create_upper_mask(q.size(2), q.device)
-        if attn_mask is None
-        else attn_mask
-    )
+    mask = create_upper_mask(q.size(2), q.device) if attn_mask is None else attn_mask
     if enable_gqa:
         B, h, n_q, d = q.shape
         g = k.size(1)
@@ -138,7 +132,11 @@ def rotary_kv_update_sdpa_gen(
     b_indices = torch.arange(B, device=k_cache.device)
     t_indices = token_counter[:B].view(-1)
 
-    if hasattr(ax.config, 'G_intra_c') and ax.config.G_intra_c > 1 and use_intra_head_parallelism:
+    if (
+        hasattr(ax.config, "G_intra_c")
+        and ax.config.G_intra_c > 1
+        and use_intra_head_parallelism
+    ):
         k_cache[b_indices, :, t_indices, :] = Drop.apply(
             k[:, :, 0, :], ax.comm_handle.inner_intra_layer_parallel_group
         ).to(k_cache.dtype)
@@ -247,7 +245,7 @@ def rotary_kv_update_sdpa_gen_gptoss(
     resulting weights to V.
 
     Inputs are the per-batch Q and the key/value caches.
-    
+
     Now supports both PREFILL (T > 1) and DECODE (T = 1) phases.
     """
     B = q.size(0)
@@ -287,7 +285,9 @@ def rotary_kv_update_sdpa_gen_gptoss(
                     # parallel rank and the G_intra_c configuration.
                     raw_rank = getattr(ax.comm_handle, "intra_layer_parallel_rank", 0)
                     g_intra_c = getattr(ax.config, "G_intra_c", 1)
-                    tp_rank = (raw_rank // g_intra_c) % getattr(ax.config, "G_intra_r", 1)
+                    tp_rank = (raw_rank // g_intra_c) % getattr(
+                        ax.config, "G_intra_r", 1
+                    )
 
                 tp_size = getattr(ax.config, "G_intra_r", 1) or 1
 
@@ -322,7 +322,7 @@ def rotary_kv_update_sdpa_gen_gptoss(
             # Add singleton dimensions - (1, 1, T, hs)
             cos = cos[None, None, :, :]
             sin = sin[None, None, :, :]
-        
+
         # Apply RoPE to both Q and K
         roped_tensors = []
         for x in [q, k]:
@@ -332,7 +332,7 @@ def rotary_kv_update_sdpa_gen_gptoss(
             rotated = torch.cat((-x2, x1), dim=-1)
             roped = ((x * cos) + (rotated * sin)).to(dtype=x.dtype)
             roped_tensors.append(roped)
-        
+
         q, k = roped_tensors
 
     # Write the newly generated K and V to the cache at the current position
@@ -342,7 +342,6 @@ def rotary_kv_update_sdpa_gen_gptoss(
         # DECODE: single token
         b_indices = torch.arange(B, device=k_cache.device)
         t_indices = token_counter[:B].view(-1)
-        
 
         if use_intra_head_parallelism:
             k_cache[b_indices, :, t_indices, :] = Drop.apply(
@@ -357,12 +356,8 @@ def rotary_kv_update_sdpa_gen_gptoss(
     else:
         # PREFILL: T tokens starting at position 0
         if use_intra_head_parallelism:
-            k_cache[:B, :, :T, :] = Drop.apply(
-                k, process_group
-            ).to(k_cache.dtype)
-            v_cache[:B, :, :T, :] = Drop.apply(
-                v, process_group
-            ).to(v_cache.dtype)
+            k_cache[:B, :, :T, :] = Drop.apply(k, process_group).to(k_cache.dtype)
+            v_cache[:B, :, :T, :] = Drop.apply(v, process_group).to(v_cache.dtype)
         else:
             k_cache[:B, :, :T, :] = k.to(k_cache.dtype)
             v_cache[:B, :, :T, :] = v.to(v_cache.dtype)
@@ -370,19 +365,19 @@ def rotary_kv_update_sdpa_gen_gptoss(
     # Build mask for attention
     # For PREFILL: attend only to the T tokens being prefilled (causal within T)
     # For DECODE: attend to all cached tokens up to token_counter
-    
+
     if T == 1:
         # DECODE: Q is (B, h, 1, d), attend to cache up to token_counter
         # K and V are from cache (B, h, t_max, d)
         Q = q
         K = k_cache[:B]
         V = v_cache[:B]
-        
+
         # Mask: attend to all positions 0..token_counter
         t_max = k_cache.size(-2)
         arange_t = torch.arange(t_max, device=k_cache.device).view(1, -1)
         upper_mask = arange_t <= token_counter[:B].view(-1, 1)
-        
+
         if sliding_window and sliding_window > 0:
             lower_bound = (token_counter[:B].view(-1, 1) - sliding_window).clamp(min=0)
             lower_mask = arange_t >= lower_bound
@@ -397,13 +392,11 @@ def rotary_kv_update_sdpa_gen_gptoss(
         Q = q
         K = k_cache[:B, :, :T, :]
         V = v_cache[:B, :, :T, :]
-        
+
         # Causal mask: query i attends to keys 0..i
         # Create lower-triangular mask (T, T)
-        causal_mask = torch.tril(
-            torch.ones(T, T, dtype=torch.bool, device=q.device)
-        )
-        
+        causal_mask = torch.tril(torch.ones(T, T, dtype=torch.bool, device=q.device))
+
         if sliding_window and sliding_window > 0:
             # Sliding window: query i attends to keys max(0, i-window)..i
             # Create band matrix
@@ -419,20 +412,20 @@ def rotary_kv_update_sdpa_gen_gptoss(
     # Handle GQA: Q may have more heads than K/V
     # Q, K, V were set above based on PREFILL vs DECODE
     enable_gqa = Q.size(1) != K.size(1)
-    
+
     # keep scale in the same dtype/device as `Q` to avoid dtype promotion
     scale = torch.tensor(1.0 / math.sqrt(hs), dtype=Q.dtype, device=Q.device)
-    
+
     # Extract dimensions for later use
     B_q, h, n_q, d = Q.shape
     g = None
     hpg = None
-    
+
     if enable_gqa:
         # Reshape for GQA: Q has h heads, K/V have g groups
         # Following OpenAI's convention: expand K/V to match Q's head count
         g = K.size(1)  # number of key/value groups
-        hpg = h // g   # heads per group (q_mult in OpenAI's code)
+        hpg = h // g  # heads per group (q_mult in OpenAI's code)
         # Expand K and V by repeating each head hpg times to match Q's head count
         K_expanded = K.repeat_interleave(hpg, dim=1)  # (B, h, t_max, hs)
         V_expanded = V.repeat_interleave(hpg, dim=1)  # (B, h, t_max, hs)
@@ -450,7 +443,7 @@ def rotary_kv_update_sdpa_gen_gptoss(
     # For PREFILL: mask is (T, T), QK is (B, h, T, T)
     mask_float = torch.zeros_like(mask, dtype=torch.float32)
     mask_float = mask_float.masked_fill(~mask, float("-inf"))
-    
+
     if T == 1:
         # DECODE: mask shape (B, n_k) -> (B, 1, 1, n_k)
         QK = QK + mask_float.view(B, 1, 1, n_k)
@@ -521,7 +514,11 @@ def rotary_kv_update_sdpa_prefill(
     B = q.size(0)
 
     # Index K V caches with respect to current batch size
-    if hasattr(ax.config, 'G_intra_c') and ax.config.G_intra_c > 1 and use_intra_head_parallelism:
+    if (
+        hasattr(ax.config, "G_intra_c")
+        and ax.config.G_intra_c > 1
+        and use_intra_head_parallelism
+    ):
         k_cache[:B, :, :T, :] = Drop.apply(
             k[:B, :, :T, :], ax.comm_handle.inner_intra_layer_parallel_group
         ).to(k_cache.dtype)
@@ -563,7 +560,7 @@ def rotary_kv_update_sdpa_multi(
         index_rotary = index_pos.view(B, 1, T, 1).expand(B, 1, T, hs)
         cos = cos[None, None, :, :].expand(B, 1, t_max, hs)
         sin = sin[None, None, :, :].expand(B, 1, t_max, hs)
-        
+
         cos = torch.gather(cos, dim=2, index=index_rotary)
         sin = torch.gather(sin, dim=2, index=index_rotary)
 
@@ -580,14 +577,12 @@ def rotary_kv_update_sdpa_multi(
         q, k = roped_tensors
 
     index_kv = index_pos.view(B, 1, T, 1).expand(B, nh, T, hs)
-    
+
     k_cache[:B].scatter_(dim=2, index=index_kv, src=k.to(k_cache.dtype))
     v_cache[:B].scatter_(dim=2, index=index_kv, src=v.to(v_cache.dtype))
 
     # Create the mask
-    arange_t = torch.arange(k_cache.size(-2), device=k_cache.device).view(
-        1, 1, 1, -1
-    )
+    arange_t = torch.arange(k_cache.size(-2), device=k_cache.device).view(1, 1, 1, -1)
     arange_l = token_counter[:B].view(B, 1, 1, 1) + torch.arange(
         T, device=k_cache.device
     ).view(1, 1, -1, 1)
@@ -750,9 +745,7 @@ def flex_attention_(
     use_intra_head_parallelism: bool = False,
     **kwargs,
 ):
-    assert (
-        "flex_attention_block_mask" in kwargs
-    ), "flex attention requires a block mask"
+    assert "flex_attention_block_mask" in kwargs, "flex attention requires a block mask"
     return sdpa_and_flex_attention(
         q=q,
         k=k,

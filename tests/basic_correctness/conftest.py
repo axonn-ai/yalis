@@ -123,9 +123,7 @@ def yalis_engine(model_id, dtype, attn_backend):
         attention_backend=attn_backend.yalis,
         use_paged_kv_caching=False,
     )
-    return LLMEngine(
-        model_config=model_config, inference_config=inference_config
-    )
+    return LLMEngine(model_config=model_config, inference_config=inference_config)
 
 
 @pytest.fixture(scope="module")
@@ -156,12 +154,8 @@ def hf_model(model_id, dtype, attn_backend, device):
 @pytest.fixture(scope="module")
 def speculative_engine(model_id, draft_model_id, dtype, attn_backend):
     """Create a SpeculativeLLMEngine for testing."""
-    target_model_config = ModelConfig(
-        model_name=model_id, precision=dtype.yalis
-    )
-    draft_model_config = ModelConfig(
-        model_name=draft_model_id, precision=dtype.yalis
-    )
+    target_model_config = ModelConfig(model_name=model_id, precision=dtype.yalis)
+    draft_model_config = ModelConfig(model_name=draft_model_id, precision=dtype.yalis)
     inference_config = InferenceConfig(
         max_batch_size=8,
         max_length_of_generated_sequences=2048,

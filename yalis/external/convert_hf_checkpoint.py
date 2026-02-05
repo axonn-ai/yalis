@@ -340,9 +340,7 @@ def copy_weights_qwen_3(
                     gate_up_proj[weight_type][weight_name][e] = param
                 else:
                     # Non-MoE case
-                    gate_up_proj = gate_up_proj_weights.setdefault(
-                        l, defaultdict(dict)
-                    )
+                    gate_up_proj = gate_up_proj_weights.setdefault(l, defaultdict(dict))
                     weight_name, weight_type = from_name.split(".")[-2:]
                     gate_up_proj[weight_type][weight_name] = param
 
@@ -418,9 +416,7 @@ def copy_weights_qwen_3(
         for weight_type in list(gate_up_proj_weights[i]):
             gate_up_proj = gate_up_proj_weights[i][weight_type]
 
-            if ("gate_proj" not in gate_up_proj) or (
-                "up_proj" not in gate_up_proj
-            ):
+            if ("gate_proj" not in gate_up_proj) or ("up_proj" not in gate_up_proj):
                 continue
             gate_proj = gate_up_proj["gate_proj"]
             up_proj = gate_up_proj["up_proj"]
@@ -488,13 +484,13 @@ def copy_weights_qwen_3(
                         f"transformer.h.{i}.mlp.experts.gate_up_proj",
                         gate_up_proj_combined,
                     )
-                    state_dict[
-                        f"transformer.h.{i}.mlp.experts.gate_up_proj"
-                    ] = gate_up_proj_ref
+                    state_dict[f"transformer.h.{i}.mlp.experts.gate_up_proj"] = (
+                        gate_up_proj_ref
+                    )
                 else:
-                    state_dict[
-                        f"transformer.h.{i}.mlp.experts.gate_up_proj"
-                    ] = gate_up_proj_combined
+                    state_dict[f"transformer.h.{i}.mlp.experts.gate_up_proj"] = (
+                        gate_up_proj_combined
+                    )
                 del gate_up_proj_combined
                 del gate_up_proj_weights[i][weight_type]
             else:
@@ -508,9 +504,9 @@ def copy_weights_qwen_3(
                 up_proj = load_param(
                     up_proj, f"layer {i} up_proj", dtype, verbose=debug_mode
                 )
-                gate_up_proj = torch.stack(
-                    (gate_proj, up_proj), dim=1
-                ).reshape(2 * gate_proj.size(0), -1)
+                gate_up_proj = torch.stack((gate_proj, up_proj), dim=1).reshape(
+                    2 * gate_proj.size(0), -1
+                )
                 state_name = f"transformer.h.{i}.mlp.gate_up_proj.weight"
                 state_dict[state_name] = gate_up_proj
                 del gate_up_proj_weights[i][weight_type]
@@ -554,13 +550,9 @@ def copy_weights_qwen_3(
                 down_proj_ref = saver.store_early(
                     f"transformer.h.{i}.mlp.experts.proj", down_proj_combined
                 )
-                state_dict[f"transformer.h.{i}.mlp.experts.proj"] = (
-                    down_proj_ref
-                )
+                state_dict[f"transformer.h.{i}.mlp.experts.proj"] = down_proj_ref
             else:
-                state_dict[f"transformer.h.{i}.mlp.experts.proj"] = (
-                    down_proj_combined
-                )
+                state_dict[f"transformer.h.{i}.mlp.experts.proj"] = down_proj_combined
             del down_proj_combined
             del down_proj_weights[i]
 
@@ -670,9 +662,7 @@ def copy_weights_qwen_2_5(
     for i in list(gate_up_proj_weights):
         for weight_type in list(gate_up_proj_weights[i]):
             gate_up_proj = gate_up_proj_weights[i][weight_type]
-            if ("gate_proj" not in gate_up_proj) or (
-                "up_proj" not in gate_up_proj
-            ):
+            if ("gate_proj" not in gate_up_proj) or ("up_proj" not in gate_up_proj):
                 continue
             gate_proj = gate_up_proj["gate_proj"]
             up_proj = gate_up_proj["up_proj"]
@@ -686,9 +676,7 @@ def copy_weights_qwen_2_5(
             gate_up_proj = torch.stack((gate_proj, up_proj), dim=1).reshape(
                 2 * gate_proj.size(0), -1
             )
-            state_dict[f"transformer.h.{i}.mlp.gate_up_proj.weight"] = (
-                gate_up_proj
-            )
+            state_dict[f"transformer.h.{i}.mlp.gate_up_proj.weight"] = gate_up_proj
             del gate_up_proj_weights[i]
 
 
@@ -753,9 +741,7 @@ def copy_weights_hf_llama(
                 gate_up_proj = gate_up_proj_weights.setdefault(
                     l, defaultdict(lambda: [None, None])
                 )
-                down_proj = down_proj_weights.setdefault(
-                    l, defaultdict(lambda: [None])
-                )
+                down_proj = down_proj_weights.setdefault(l, defaultdict(lambda: [None]))
             elif "mlp" in name:
                 gate_up_proj = gate_up_proj_weights.setdefault(l, [None, None])
             else:
@@ -796,9 +782,7 @@ def copy_weights_hf_llama(
                 cycled = [t for group in zip(qs, ks, vs) for t in group]
                 qkv = torch.cat(cycled)
 
-                qkv_ref = saver.store_early(
-                    f"transformer.h.{l}.attn.attn.weight", qkv
-                )
+                qkv_ref = saver.store_early(f"transformer.h.{l}.attn.attn.weight", qkv)
                 # store early returns a reference to the actual memory stored in the disk
                 # freeing up space from the RAM
                 state_dict[f"transformer.h.{l}.attn.attn.weight"] = qkv_ref
@@ -831,9 +815,9 @@ def copy_weights_hf_llama(
                     verbose=debug_mode,
                 )
 
-                gate_up_proj = torch.stack(
-                    (gate_proj, up_proj), dim=1
-                ).reshape(2 * gate_proj.size(0), -1)
+                gate_up_proj = torch.stack((gate_proj, up_proj), dim=1).reshape(
+                    2 * gate_proj.size(0), -1
+                )
 
                 gate_up_proj_ref = saver.store_early(
                     f"transformer.h.{l}.mlp.gate_up_proj.weight", gate_up_proj
@@ -869,9 +853,7 @@ def copy_weights_hf_llama(
 
     if "lm_head.weight" not in state_dict:
         if transformer_wte_weight is not None:
-            param_saved = saver.store_early(
-                "lm_head.weight", transformer_wte_weight
-            )
+            param_saved = saver.store_early("lm_head.weight", transformer_wte_weight)
             del transformer_wte_weight
             state_dict["lm_head.weight"] = param_saved
 
@@ -892,9 +874,7 @@ def copy_weights_hf_llama(
             gate_up_proj = torch.stack((gate_proj, up_proj), dim=1).reshape(
                 2 * gate_proj.size(0), -1
             )
-            state_dict[f"transformer.h.{i}.mlp.gate_up_proj.weight"] = (
-                gate_up_proj
-            )
+            state_dict[f"transformer.h.{i}.mlp.gate_up_proj.weight"] = gate_up_proj
             del gate_up_proj_weights[i]
         elif isinstance(proj, dict):
             # MoE case
@@ -972,9 +952,7 @@ def copy_weights_hf_llama(
             del gate_up_proj_weights[i]
 
     for i, proj in list(down_proj_weights.items()):
-        assert isinstance(
-            proj, dict
-        ), "Down projection weights should be a dictionary"
+        assert isinstance(proj, dict), "Down projection weights should be a dictionary"
         if len(list(proj.items())) != config.n_expert:
             # Not all experts are present
             continue
@@ -1023,9 +1001,7 @@ def copy_weights_hf_llama(
             )
             state_dict[f"transformer.h.{i}.mlp.experts.proj"] = down_proj_ref
         else:
-            state_dict[f"transformer.h.{i}.mlp.experts.proj"] = (
-                down_proj_combined
-            )
+            state_dict[f"transformer.h.{i}.mlp.experts.proj"] = down_proj_combined
         del down_proj_combined
         del down_proj_weights[i]
 
@@ -1106,9 +1082,7 @@ def copy_weights_gemma_2(
 
     if "lm_head.weight" not in state_dict:
         if transformer_wte_weight is not None:
-            param_saved = saver.store_early(
-                "lm_head.weight", transformer_wte_weight
-            )
+            param_saved = saver.store_early("lm_head.weight", transformer_wte_weight)
             del transformer_wte_weight
             state_dict["lm_head.weight"] = param_saved
 
@@ -1140,9 +1114,7 @@ def copy_weights_gemma_2(
         gate_proj = load_param(
             gate_proj, f"layer {i} gate_proj", dtype, verbose=debug_mode
         )
-        up_proj = load_param(
-            up_proj, f"layer {i} up_proj", dtype, verbose=debug_mode
-        )
+        up_proj = load_param(up_proj, f"layer {i} up_proj", dtype, verbose=debug_mode)
 
         # shape of gate_proj -> intermediate x hidden
         # shape of up_proj -> intermediate x hidden
@@ -1174,8 +1146,7 @@ def copy_weights_phi(
     debug_mode: Optional[bool] = False,
 ) -> None:
     if any(
-        layer_name.startswith(("layers.", "transformer."))
-        for layer_name in hf_weights
+        layer_name.startswith(("layers.", "transformer.")) for layer_name in hf_weights
     ):
         raise ValueError(
             "You are using an outdated Phi checkpoint. Please reload it as described in 'tutorials/download_phi.md'"
@@ -1234,9 +1205,7 @@ def copy_weights_phi(
                 qkv[weight_type][weight_name] = param
             elif from_name.endswith("gate_up_proj.weight"):
                 weight = load_param(param, f"layer {l} gate_up_proj", dtype)
-                state_dict[f"transformer.h.{l}.mlp.gate_up_proj.weight"] = (
-                    weight
-                )
+                state_dict[f"transformer.h.{l}.mlp.gate_up_proj.weight"] = weight
                 continue
             to_name = weight_map[from_name]
             if to_name is None:
@@ -1353,7 +1322,7 @@ def copy_weights_gpt_oss(
     debug_mode: Optional[bool] = False,
 ) -> None:
     """Convert GPT-OSS HF checkpoint to yalis format.
-    
+
     Handles:
     - Quantized MoE weights (blocks, scales, biases)
     - Attention weights with biases (q/k/v/o projections)
@@ -1361,7 +1330,7 @@ def copy_weights_gpt_oss(
     - Router weights and biases
     - Layer norms (RMSNorm)
     """
-    
+
     weight_map = {
         "model.embed_tokens.weight": "transformer.wte.weight",
         "model.layers.{}.input_layernorm.weight": "transformer.h.{}.norm_1.weight",
@@ -1369,11 +1338,11 @@ def copy_weights_gpt_oss(
         "model.norm.weight": "transformer.ln_f.weight",
         "lm_head.weight": "lm_head.weight",
     }
-    
+
     for name, param in hf_weights.items():
         if "model.layers" in name:
             from_name, number = layer_template(name, idx=2)
-            
+
             # Handle attention weights (q, k, v projections - collect for deferred assembly)
             if "self_attn.q_proj.weight" in name:
                 if number not in qkv_weights:
@@ -1399,7 +1368,7 @@ def copy_weights_gpt_oss(
                 if number not in qkv_weights:
                     qkv_weights[number] = {}
                 qkv_weights[number]["v_proj.bias"] = param
-            
+
             # Handle attention output projection
             elif "self_attn.o_proj.weight" in name:
                 to_name = f"transformer.h.{number}.attn.proj.weight"
@@ -1409,7 +1378,7 @@ def copy_weights_gpt_oss(
                 to_name = f"transformer.h.{number}.attn.proj.bias"
                 param = load_param(param, name, dtype, verbose=debug_mode)
                 state_dict[to_name] = param
-            
+
             # Handle sinks (reshape from (n_head,) to (n_head, 1, 1))
             elif "self_attn.sinks" in name:
                 to_name = f"transformer.h.{number}.sinks"
@@ -1418,7 +1387,7 @@ def copy_weights_gpt_oss(
                 if param.dim() == 1:
                     param = param.view(-1, 1, 1)
                 state_dict[to_name] = param
-            
+
             # Handle layer norms
             elif "input_layernorm.weight" in name:
                 to_name = f"transformer.h.{number}.norm_1.weight"
@@ -1428,7 +1397,7 @@ def copy_weights_gpt_oss(
                 to_name = f"transformer.h.{number}.norm_2.weight"
                 param = load_param(param, name, dtype, verbose=debug_mode)
                 state_dict[to_name] = param
-            
+
             # Handle MoE router (maps to gate in GptOssMoE)
             elif "mlp.router.weight" in name:
                 to_name = f"transformer.h.{number}.mlp.gate.weight"
@@ -1437,7 +1406,7 @@ def copy_weights_gpt_oss(
             elif "mlp.router.bias" in name:
                 # GptOssMoE gate has no bias - skip this
                 pass
-            
+
             # Handle MoE expert weights (quantized format - collect for deferred dequantization)
             elif "mlp.experts.gate_up_proj_blocks" in name:
                 if number not in moe_weights:
@@ -1463,13 +1432,13 @@ def copy_weights_gpt_oss(
                 if number not in moe_weights:
                     moe_weights[number] = {}
                 moe_weights[number]["down_proj_bias"] = param
-            
+
         # Handle embeddings, norms, and lm_head via weight_map
         else:
             to_name = weight_map.get(name)
             if to_name is not None:
                 param = load_param(param, name, dtype, verbose=debug_mode)
-                
+
                 # Pad embedding and lm_head to match padded_vocab_size
                 if ("wte" in to_name or "lm_head" in to_name) and param.dim() >= 1:
                     vocab_size_checkpoint = param.shape[0]
@@ -1480,26 +1449,34 @@ def copy_weights_gpt_oss(
                         padding = torch.zeros(
                             (pad_size,) + param.shape[1:],
                             dtype=param.dtype,
-                            device=param.device
+                            device=param.device,
                         )
                         param = torch.cat([param, padding], dim=0)
                         if debug_mode:
-                            print(f"Padded {to_name} from {vocab_size_checkpoint} to {padded_vocab_size}")
-                
+                            print(
+                                f"Padded {to_name} from {vocab_size_checkpoint} to {padded_vocab_size}"
+                            )
+
                 state_dict[to_name] = param
-        
+
         if pbar is not None and progress_per_file is not None:
             pbar.update(progress_per_file / len(hf_weights))
-    
+
     # Deferred QKV assembly (interleave q, k, v for GQA)
     for i in list(qkv_weights.keys()):
         qkv = qkv_weights[i]
         if len(qkv) == 6:  # All q/k/v weights and biases present
             # Load weights
-            q_weight = load_param(qkv["q_proj"], f"layer {i} q_proj", dtype, verbose=debug_mode)
-            k_weight = load_param(qkv["k_proj"], f"layer {i} k_proj", dtype, verbose=debug_mode)
-            v_weight = load_param(qkv["v_proj"], f"layer {i} v_proj", dtype, verbose=debug_mode)
-            
+            q_weight = load_param(
+                qkv["q_proj"], f"layer {i} q_proj", dtype, verbose=debug_mode
+            )
+            k_weight = load_param(
+                qkv["k_proj"], f"layer {i} k_proj", dtype, verbose=debug_mode
+            )
+            v_weight = load_param(
+                qkv["v_proj"], f"layer {i} v_proj", dtype, verbose=debug_mode
+            )
+
             # Interleave for GQA
             q_per_kv = config.n_head // config.n_query_groups
             qs = torch.split(q_weight, config.head_size * q_per_kv)
@@ -1508,105 +1485,170 @@ def copy_weights_gpt_oss(
             cycled = [t for group in zip(qs, ks, vs) for t in group]
             qkv_weight = torch.cat(cycled)
             state_dict[f"transformer.h.{i}.attn.attn.weight"] = qkv_weight
-            
+
             # Load and interleave biases
-            q_bias = load_param(qkv["q_proj.bias"], f"layer {i} q_proj.bias", dtype, verbose=debug_mode)
-            k_bias = load_param(qkv["k_proj.bias"], f"layer {i} k_proj.bias", dtype, verbose=debug_mode)
-            v_bias = load_param(qkv["v_proj.bias"], f"layer {i} v_proj.bias", dtype, verbose=debug_mode)
-            
+            q_bias = load_param(
+                qkv["q_proj.bias"], f"layer {i} q_proj.bias", dtype, verbose=debug_mode
+            )
+            k_bias = load_param(
+                qkv["k_proj.bias"], f"layer {i} k_proj.bias", dtype, verbose=debug_mode
+            )
+            v_bias = load_param(
+                qkv["v_proj.bias"], f"layer {i} v_proj.bias", dtype, verbose=debug_mode
+            )
+
             qs_bias = torch.split(q_bias, config.head_size * q_per_kv)
             ks_bias = torch.split(k_bias, config.head_size)
             vs_bias = torch.split(v_bias, config.head_size)
             cycled_bias = [t for group in zip(qs_bias, ks_bias, vs_bias) for t in group]
             qkv_bias = torch.cat(cycled_bias)
             state_dict[f"transformer.h.{i}.attn.attn.bias"] = qkv_bias
-            
+
             # Debug: Check QKV weight statistics for first layer
             if debug_mode or i == 0:
-                print(f"Layer {i} QKV weight - shape: {qkv_weight.shape}, min: {qkv_weight.min():.6f}, max: {qkv_weight.max():.6f}, mean: {qkv_weight.mean():.6f}, std: {qkv_weight.std():.6f}")
-                print(f"Layer {i} QKV bias - shape: {qkv_bias.shape}, min: {qkv_bias.min():.6f}, max: {qkv_bias.max():.6f}, mean: {qkv_bias.mean():.6f}, std: {qkv_bias.std():.6f}")
-            
+                print(
+                    f"Layer {i} QKV weight - shape: {qkv_weight.shape}, min: {qkv_weight.min():.6f}, max: {qkv_weight.max():.6f}, mean: {qkv_weight.mean():.6f}, std: {qkv_weight.std():.6f}"
+                )
+                print(
+                    f"Layer {i} QKV bias - shape: {qkv_bias.shape}, min: {qkv_bias.min():.6f}, max: {qkv_bias.max():.6f}, mean: {qkv_bias.mean():.6f}, std: {qkv_bias.std():.6f}"
+                )
+
             del qkv_weights[i]
             if progress_per_file is not None and pbar is not None:
                 pbar.update(progress_per_file)
-    
+
     # Deferred MoE weight dequantization and assembly (MXFP4 format)
     # FP4 lookup table for MXFP4 decoding
     FP4_VALUES = [
-        +0.0, +0.5, +1.0, +1.5, +2.0, +3.0, +4.0, +6.0,
-        -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0,
+        +0.0,
+        +0.5,
+        +1.0,
+        +1.5,
+        +2.0,
+        +3.0,
+        +4.0,
+        +6.0,
+        -0.0,
+        -0.5,
+        -1.0,
+        -1.5,
+        -2.0,
+        -3.0,
+        -4.0,
+        -6.0,
     ]
-    
+
     for i in list(moe_weights.keys()):
         moe = moe_weights[i]
         if len(moe) == 6:  # All gate_up and down weights present
             # Load quantized gate_up weights
-            gate_up_blocks = load_param(moe["gate_up_proj_blocks"], f"layer {i} gate_up_proj_blocks", None, verbose=debug_mode)  # Keep as uint8
-            gate_up_scales = load_param(moe["gate_up_proj_scales"], f"layer {i} gate_up_proj_scales", None, verbose=debug_mode)  # Keep as uint8
-            gate_up_bias = load_param(moe["gate_up_proj_bias"], f"layer {i} gate_up_proj_bias", dtype, verbose=debug_mode)
-            
+            gate_up_blocks = load_param(
+                moe["gate_up_proj_blocks"],
+                f"layer {i} gate_up_proj_blocks",
+                None,
+                verbose=debug_mode,
+            )  # Keep as uint8
+            gate_up_scales = load_param(
+                moe["gate_up_proj_scales"],
+                f"layer {i} gate_up_proj_scales",
+                None,
+                verbose=debug_mode,
+            )  # Keep as uint8
+            gate_up_bias = load_param(
+                moe["gate_up_proj_bias"],
+                f"layer {i} gate_up_proj_bias",
+                dtype,
+                verbose=debug_mode,
+            )
+
             # Dequantize gate_up using MXFP4 decoding
             # Blocks shape: (n_experts, out_features, in_blocks, block_size=16)
             # Each uint8 byte contains TWO 4-bit FP4 values (nibbles)
             n_experts, out_features, in_blocks, block_size = gate_up_blocks.shape
-            
+
             # Split into low and high nibbles, then interleave
             gate_up_blocks_lo = gate_up_blocks & 0x0F
             gate_up_blocks_hi = gate_up_blocks >> 4
             gate_up_blocks = torch.stack((gate_up_blocks_lo, gate_up_blocks_hi), dim=-1)
-            gate_up_blocks = gate_up_blocks.view(*gate_up_blocks.shape[:-2], gate_up_blocks.shape[-2] * 2)
-            
+            gate_up_blocks = gate_up_blocks.view(
+                *gate_up_blocks.shape[:-2], gate_up_blocks.shape[-2] * 2
+            )
+
             # Convert scales: uint8 -> int32, subtract bias (127)
             gate_up_scales_adj = gate_up_scales.to(torch.int32) - 127
-            
+
             # Create FP4 lookup table
             target_dtype = dtype if dtype is not None else torch.bfloat16
-            fp4_lut = torch.tensor(FP4_VALUES, dtype=target_dtype, device=gate_up_blocks.device)
-            
+            fp4_lut = torch.tensor(
+                FP4_VALUES, dtype=target_dtype, device=gate_up_blocks.device
+            )
+
             # Decode: lookup FP4 values, then scale using ldexp (value * 2^scale)
             # Let broadcasting handle the scale expansion
-            gate_up_weight = torch.ldexp(fp4_lut[gate_up_blocks.to(torch.int32)], gate_up_scales_adj.unsqueeze(-1))
-            
+            gate_up_weight = torch.ldexp(
+                fp4_lut[gate_up_blocks.to(torch.int32)],
+                gate_up_scales_adj.unsqueeze(-1),
+            )
+
             # Debug: Check if weights look reasonable
             if debug_mode or i == 0:
-                print(f"Layer {i} gate_up - min: {gate_up_weight.min():.6f}, max: {gate_up_weight.max():.6f}, mean: {gate_up_weight.mean():.6f}, std: {gate_up_weight.std():.6f}")
-            
+                print(
+                    f"Layer {i} gate_up - min: {gate_up_weight.min():.6f}, max: {gate_up_weight.max():.6f}, mean: {gate_up_weight.mean():.6f}, std: {gate_up_weight.std():.6f}"
+                )
+
             # Reshape to final dimensions: (n_experts, out_features, in_features)
             # After reshape we get (E, 5760, 2880) which is already correct!
             gate_up_weight = gate_up_weight.view(n_experts, out_features, -1)
-            
+
             # Save with correct names for GptOssMoE (mlp1 = gate_up combined)
             state_dict[f"transformer.h.{i}.mlp.mlp1_weight"] = gate_up_weight
             state_dict[f"transformer.h.{i}.mlp.mlp1_bias"] = gate_up_bias
-            
+
             # Load and dequantize down weights (same MXFP4 process)
-            down_blocks = load_param(moe["down_proj_blocks"], f"layer {i} down_proj_blocks", None, verbose=debug_mode)
-            down_scales = load_param(moe["down_proj_scales"], f"layer {i} down_proj_scales", None, verbose=debug_mode)
-            down_bias = load_param(moe["down_proj_bias"], f"layer {i} down_proj_bias", dtype, verbose=debug_mode)
-            
+            down_blocks = load_param(
+                moe["down_proj_blocks"],
+                f"layer {i} down_proj_blocks",
+                None,
+                verbose=debug_mode,
+            )
+            down_scales = load_param(
+                moe["down_proj_scales"],
+                f"layer {i} down_proj_scales",
+                None,
+                verbose=debug_mode,
+            )
+            down_bias = load_param(
+                moe["down_proj_bias"],
+                f"layer {i} down_proj_bias",
+                dtype,
+                verbose=debug_mode,
+            )
+
             n_experts_d, out_features_d, in_blocks_d, block_size_d = down_blocks.shape
-            
+
             # Split nibbles
             down_blocks_lo = down_blocks & 0x0F
             down_blocks_hi = down_blocks >> 4
             down_blocks = torch.stack((down_blocks_lo, down_blocks_hi), dim=-1)
-            down_blocks = down_blocks.view(*down_blocks.shape[:-2], down_blocks.shape[-2] * 2)
-            
+            down_blocks = down_blocks.view(
+                *down_blocks.shape[:-2], down_blocks.shape[-2] * 2
+            )
+
             # Convert scales
             down_scales_adj = down_scales.to(torch.int32) - 127
-            
+
             # Decode
             down_decoded = fp4_lut[down_blocks.to(torch.int32)]
             down_weight = torch.ldexp(down_decoded, down_scales_adj.unsqueeze(-1))
-            
+
             # Reshape to final dimensions: (n_experts, hidden_size, intermediate_size)
             in_features = in_blocks_d * block_size_d * 2  # blocks * 32
             down_weight = down_weight.view(n_experts_d, out_features_d, in_features)
-            
+
             # Save with correct names for GptOssMoE (mlp2 = down projection)
             state_dict[f"transformer.h.{i}.mlp.mlp2_weight"] = down_weight
             state_dict[f"transformer.h.{i}.mlp.mlp2_bias"] = down_bias
-            
+
             del moe_weights[i]
             if progress_per_file is not None and pbar is not None:
                 pbar.update(progress_per_file)
@@ -1643,60 +1685,61 @@ def convert_hf_checkpoint(
         dtype = getattr(torch, dtype)
 
     config = Config.from_name(model_name)
-    
+
     # For GPT-OSS, load actual dimensions from HF config.json
     if model_name.lower().startswith("gpt-oss"):
         hf_config_path = checkpoint_dir / "config.json"
         if hf_config_path.exists():
             with open(hf_config_path, "r") as f:
                 hf_config = json.load(f)
-            
+
             # Update config with actual HF values
             if "vocab_size" in hf_config:
                 config.vocab_size = hf_config["vocab_size"]
                 # Recompute padded vocab size
-                config.padded_vocab_size = find_multiple(config.vocab_size, config.padding_multiple)
-            
+                config.padded_vocab_size = find_multiple(
+                    config.vocab_size, config.padding_multiple
+                )
+
             if "hidden_size" in hf_config:
                 config.n_embd = hf_config["hidden_size"]
-            
+
             if "num_attention_heads" in hf_config:
                 config.n_head = hf_config["num_attention_heads"]
-            
+
             if "num_key_value_heads" in hf_config:
                 config.n_query_groups = hf_config["num_key_value_heads"]
-            
+
             if "num_hidden_layers" in hf_config:
                 config.n_layer = hf_config["num_hidden_layers"]
-            
+
             # GPT-OSS uses head_dim instead of computing from n_embd/n_head
             if "head_dim" in hf_config:
                 config.head_size = hf_config["head_dim"]
             elif config.n_embd and config.n_head:
                 # Fallback: compute from n_embd // n_head
                 config.head_size = config.n_embd // config.n_head
-            
+
             # Load intermediate_size
             if "intermediate_size" in hf_config:
                 config.intermediate_size = hf_config["intermediate_size"]
-            
+
             # Load rope_theta (rope_base in YALIS)
             if "rope_theta" in hf_config:
                 config.rope_base = hf_config["rope_theta"]
-            
+
             # Load sliding_window
             if "sliding_window" in hf_config:
                 config.sliding_window_size = hf_config["sliding_window"]
-            
+
             # Load layer_types to set sliding_window_indices
             # layer_types: ["sliding_attention", "full_attention", ...] -> [1, 0, ...]
             if "layer_types" in hf_config:
                 layer_types = hf_config["layer_types"]
                 config.sliding_window_indices = [
-                    1 if lt == "sliding_attention" else 0 
-                    for lt in layer_types
+                    1 if lt == "sliding_attention" else 0 for lt in layer_types
                 ]
-            
+
             # Load rope_scaling parameters
             if "rope_scaling" in hf_config:
                 rope_scaling = hf_config["rope_scaling"]
@@ -1709,8 +1752,10 @@ def convert_hf_checkpoint(
                 if "beta_slow" in rope_scaling:
                     config.rope_adjustments["alpha"] = rope_scaling["beta_slow"]
                 if "original_max_position_embeddings" in rope_scaling:
-                    config.rope_adjustments["initial_context_length"] = rope_scaling["original_max_position_embeddings"]
-            
+                    config.rope_adjustments["initial_context_length"] = rope_scaling[
+                        "original_max_position_embeddings"
+                    ]
+
             if debug_mode:
                 print(f"Updated config from HF config.json:")
                 print(f"  vocab_size: {config.vocab_size}")
@@ -1721,7 +1766,7 @@ def convert_hf_checkpoint(
                 print(f"  rope_base: {config.rope_base}")
                 print(f"  sliding_window_size: {config.sliding_window_size}")
                 print(f"  sliding_window_indices: {config.sliding_window_indices}")
-    
+
     # Save config to main checkpoint directory
     save_config(config, checkpoint_dir)
 
@@ -1732,7 +1777,7 @@ def convert_hf_checkpoint(
     qkv_weights = {}
     gate_up_proj_weights = {}
     down_proj_weights = {}
-    
+
     # Also save to yalis_checkpoints subdirectory where model will load from
     save_dir = checkpoint_dir / "yalis_checkpoints"
     os.makedirs(save_dir, exist_ok=True)
@@ -1744,9 +1789,7 @@ def convert_hf_checkpoint(
         # GPT-OSS models with quantized MoE
         qkv_weights = {}
         moe_weights = {}
-        copy_fn = partial(
-            copy_weights_gpt_oss, config, qkv_weights, moe_weights
-        )
+        copy_fn = partial(copy_weights_gpt_oss, config, qkv_weights, moe_weights)
     elif model_name.lower().startswith("gemma-2"):
         copy_fn = partial(
             copy_weights_gemma_2, config, qkv_weights, gate_up_proj_weights
@@ -1785,25 +1828,15 @@ def convert_hf_checkpoint(
 
     # Load the json file containing weight mapping
     pytorch_bin_map_json_path = checkpoint_dir / "pytorch_model.bin.index.json"
-    model_safetensor_map_json_path = (
-        checkpoint_dir / "model.safetensors.index.json"
-    )
-    if (
-        pytorch_bin_map_json_path.is_file()
-    ):  # not all checkpoints have this file
+    model_safetensor_map_json_path = checkpoint_dir / "model.safetensors.index.json"
+    if pytorch_bin_map_json_path.is_file():  # not all checkpoints have this file
         with open(pytorch_bin_map_json_path, encoding="utf-8") as json_map:
             bin_index = json.load(json_map)
-        bin_files = {
-            checkpoint_dir / bin for bin in bin_index["weight_map"].values()
-        }
+        bin_files = {checkpoint_dir / bin for bin in bin_index["weight_map"].values()}
     elif model_safetensor_map_json_path.is_file():
-        with open(
-            model_safetensor_map_json_path, encoding="utf-8"
-        ) as json_map:
+        with open(model_safetensor_map_json_path, encoding="utf-8") as json_map:
             bin_index = json.load(json_map)
-        bin_files = {
-            checkpoint_dir / bin for bin in bin_index["weight_map"].values()
-        }
+        bin_files = {checkpoint_dir / bin for bin in bin_index["weight_map"].values()}
     else:
         bin_files = set(checkpoint_dir.glob("*.bin")) | set(
             checkpoint_dir.glob("*.safetensors")
@@ -1811,9 +1844,7 @@ def convert_hf_checkpoint(
         # some checkpoints serialize the training arguments
         bin_files = {f for f in bin_files if f.name != "training_args.bin"}
     if not bin_files:
-        raise ValueError(
-            f"Expected {str(checkpoint_dir)!r} to contain .bin files"
-        )
+        raise ValueError(f"Expected {str(checkpoint_dir)!r} to contain .bin files")
 
     # save_dir already created when saving config above (reuse the same path)
 
@@ -1893,14 +1924,10 @@ def convert_hf_checkpoint(
             # Debug mode: also use prefetch for consistency
             print(f"Phase 1: Loading {num_shards} shards (debug mode)...")
             with ThreadPoolExecutor(max_workers=1) as prefetch_executor:
-                next_future = prefetch_executor.submit(
-                    _load_shard, sorted_bin_files[0]
-                )
+                next_future = prefetch_executor.submit(_load_shard, sorted_bin_files[0])
 
                 for i, bin_file in enumerate(sorted_bin_files):
-                    print(
-                        f"  [{i+1}/{num_shards}] Processing: {bin_file.name}"
-                    )
+                    print(f"  [{i+1}/{num_shards}] Processing: {bin_file.name}")
                     hf_weights = next_future.result()
 
                     if i + 1 < num_shards:

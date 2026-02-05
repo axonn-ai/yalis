@@ -14,10 +14,7 @@ from tests.sample_dataset import AlpacaDataset
 HF_DATASETS_OFFLINE = os.environ.get("HF_DATASETS_OFFLINE", "1") == "1"
 
 # Configure logging for tests
-logging.basicConfig(
-    level=logging.INFO,
-    format='[%(levelname)s] %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
 logger = logging.getLogger(__name__)
 
@@ -113,13 +110,15 @@ def attn_backend(request):
 @pytest.fixture(scope="function")
 def tokenizer(model_id):
     """Create a tokenizer for the test model."""
-    tokenizer = AutoTokenizer.from_pretrained(model_id, local_files_only=HF_DATASETS_OFFLINE)
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_id, local_files_only=HF_DATASETS_OFFLINE
+    )
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
-    
+
     if tokenizer.chat_template is None:
         tokenizer.chat_template = "{% for message in messages %}{% if message['role'] == 'user' %}{{ message['content'] }}{% endif %}{% endfor %}"
-    
+
     return tokenizer
 
 
@@ -134,14 +133,15 @@ def alpaca_dataset():
 @pytest.fixture(scope="function")
 def hf_model_loader(model_id, dtype, attn_backend, device):
     """Return a callable that loads HF model on demand (rank 0 only)."""
+
     def load_hf():
         local_rank = int(os.environ.get("LOCAL_RANK", 0))
-        
+
         # Only load HF model on rank 0 to avoid duplicate loading
         if local_rank != 0:
             logger.info(f"Rank {local_rank}: Skipping HF model load (rank 0 only)")
             return None
-        
+
         # Disable MXFP4 CUDA kernels to prevent GPU-side dequantization attempts.
         os.environ["MXFP4_DISABLE_CUDA_KERNELS"] = "1"
         logger.info("Loading HF model on CPU for safe MXFP4 dequantization...")
@@ -159,12 +159,14 @@ def hf_model_loader(model_id, dtype, attn_backend, device):
         model = model.to(target_device)
         model.eval()
         return model
+
     return load_hf
 
 
 @pytest.fixture(scope="function")
 def yalis_engine_loader(model_id, dtype, attn_backend):
     """Return a callable that loads YALIS engine on demand."""
+
     def load_yalis():
         # Resolve model_path: if model_id is a relative path, make it absolute relative to repo root
         if not os.path.isabs(model_id):
@@ -172,7 +174,9 @@ def yalis_engine_loader(model_id, dtype, attn_backend):
         else:
             model_path = model_id
         model_name_for_config = os.path.basename(model_path)
-        model_config = ModelConfig(model_name_for_config, model_path=model_path, precision=dtype.yalis)
+        model_config = ModelConfig(
+            model_name_for_config, model_path=model_path, precision=dtype.yalis
+        )
         inference_config = InferenceConfig(
             max_batch_size=2,
             max_length_of_generated_sequences=2048,
@@ -183,11 +187,9 @@ def yalis_engine_loader(model_id, dtype, attn_backend):
             use_paged_kv_caching=False,
         )
         logger.info("Loading YALIS engine...")
-        engine = LLMEngine(
-            model_config=model_config, inference_config=inference_config
-        )
+        engine = LLMEngine(model_config=model_config, inference_config=inference_config)
         return engine
-    
+
     return load_yalis
 
 
@@ -199,16 +201,20 @@ def speculative_engine(model_id, draft_model_id, dtype, attn_backend):
         target_model_path = os.path.abspath(model_id)
     else:
         target_model_path = model_id
-    
+
     if not os.path.isabs(draft_model_id):
         draft_model_path = os.path.abspath(draft_model_id)
     else:
         draft_model_path = draft_model_id
-    
+
     target_model_name = os.path.basename(target_model_path)
     draft_model_name = os.path.basename(draft_model_path)
-    target_model_config = ModelConfig(target_model_name, model_path=target_model_path, precision=dtype.yalis)
-    draft_model_config = ModelConfig(draft_model_name, model_path=draft_model_path, precision=dtype.yalis)
+    target_model_config = ModelConfig(
+        target_model_name, model_path=target_model_path, precision=dtype.yalis
+    )
+    draft_model_config = ModelConfig(
+        draft_model_name, model_path=draft_model_path, precision=dtype.yalis
+    )
     inference_config = InferenceConfig(
         max_batch_size=2,
         max_length_of_generated_sequences=2048,

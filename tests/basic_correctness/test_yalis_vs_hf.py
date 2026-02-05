@@ -25,9 +25,9 @@ def _get_logprobs(logits):
         logprobs = torch.log_softmax(logit, dim=-1, dtype=torch.float32)
         logprob_list.append(logprobs)
 
-        topk_indices = torch.argsort(
-            logprobs, dim=-1, descending=True, stable=True
-        )[:, :NUM_LOGPROBS]
+        topk_indices = torch.argsort(logprobs, dim=-1, descending=True, stable=True)[
+            :, :NUM_LOGPROBS
+        ]
         topk_list.append(topk_indices)
 
     # We need to convert this to a list of [num_tokens, -1] shaped
@@ -78,9 +78,7 @@ def _get_hf_output(tokenizer, model, prompts, num_tokens):
     new_tokens = []
     for i in range(len(prompts)):
         input_len = inputs["input_ids"][i].shape[0]
-        new_tokens.append(
-            output.sequences[i][input_len : input_len + num_tokens].cpu()
-        )
+        new_tokens.append(output.sequences[i][input_len : input_len + num_tokens].cpu())
 
     # new_tokens: list of [num_tokens] tensors of length batch_size
     # output.logits: list of [batch_size, vocab_size] tensors of length num_tokens  # noqa: E501
@@ -95,9 +93,7 @@ def _get_yalis_output(engine, prompts, num_tokens):
         get_logits=True,
     )
     # output_tokens: (batch, num_tokens)
-    return [
-        output_tokens[i][:num_tokens].cpu() for i in range(len(prompts))
-    ], logits
+    return [output_tokens[i][:num_tokens].cpu() for i in range(len(prompts))], logits
 
 
 # This test does not mean a failure
@@ -108,9 +104,7 @@ def _compare_tokens_and_text(tokenizer, tokens1, tokens2):
         tokens2
     ), f"Batch size mismatch: {len(tokens1)} vs {len(tokens2)}"
     for t1, t2 in zip(tokens1, tokens2):
-        assert len(t1) == len(
-            t2
-        ), f"Token length mismatch: {len(t1)} vs {len(t2)}"
+        assert len(t1) == len(t2), f"Token length mismatch: {len(t1)} vs {len(t2)}"
         num_matches = sum(a == b for a, b in zip(t1, t2))
         if num_matches < len(t1) - 1:
             warnings.warn(f"Token mismatch: {t1} vs {t2}")
@@ -198,18 +192,14 @@ def test_01_prefill(
     dtype,
     alpaca_dataset,
 ):
-    prompts = alpaca_prompt(
-        alpaca_dataset, tokenizer, prompt_length, batch_size
-    )
+    prompts = alpaca_prompt(alpaca_dataset, tokenizer, prompt_length, batch_size)
     hf_tokens, hf_logits = _get_hf_output(
         tokenizer,
         hf_model,
         prompts,
         num_tokens=1,
     )
-    yalis_tokens, yalis_logits = _get_yalis_output(
-        yalis_engine, prompts, num_tokens=1
-    )
+    yalis_tokens, yalis_logits = _get_yalis_output(yalis_engine, prompts, num_tokens=1)
     # Only compare on rank 0 where HF model is loaded
     if hf_tokens is not None:
         _compare_logprobs(hf_logits, hf_tokens, yalis_logits, yalis_tokens)
@@ -228,15 +218,9 @@ def test_02_decode(
     dtype,
     alpaca_dataset,
 ):
-    prompts = alpaca_prompt(
-        alpaca_dataset, tokenizer, prompt_length, batch_size
-    )
-    hf_tokens, hf_logits = _get_hf_output(
-        tokenizer, hf_model, prompts, num_tokens=32
-    )
-    yalis_tokens, yalis_logits = _get_yalis_output(
-        yalis_engine, prompts, num_tokens=32
-    )
+    prompts = alpaca_prompt(alpaca_dataset, tokenizer, prompt_length, batch_size)
+    hf_tokens, hf_logits = _get_hf_output(tokenizer, hf_model, prompts, num_tokens=32)
+    yalis_tokens, yalis_logits = _get_yalis_output(yalis_engine, prompts, num_tokens=32)
     # Only compare on rank 0 where HF model is loaded
     if hf_tokens is not None:
         _compare_logprobs(hf_logits, hf_tokens, yalis_logits, yalis_tokens)

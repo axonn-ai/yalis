@@ -71,15 +71,15 @@ def divide(a, b):
 def shard_tensor_along_dim(tensor, dim, world_size, rank):
     """
     Extract the shard of a tensor for the current rank along a specified dimension.
-    
+
     Used for loading unsharded checkpoints in distributed settings.
-    
+
     Args:
         tensor: The full tensor to shard
         dim: Dimension along which to shard
         world_size: Total number of ranks
         rank: Current rank
-    
+
     Returns:
         Sharded tensor for the current rank
     """
@@ -157,10 +157,7 @@ class TPLinear(torch.nn.Module):
         # in_features are distributed across self.inner_group (X TP group)
         # out_features are distributed across self.inner_group (Y TP group)
         # if transpose is true then X and Y are swapped
-        if (
-            tensor_parallel_dims is not None
-            and torch.distributed.get_rank() == 0
-        ):
+        if tensor_parallel_dims is not None and torch.distributed.get_rank() == 0:
             print(
                 "Manually setting TP dims for a layer with shape",
                 f" - {(in_features, out_features)} | tp-dims = {tensor_parallel_dims}",  # noqa: E501
@@ -174,10 +171,8 @@ class TPLinear(torch.nn.Module):
                 self.inner_group,
             )
 
-        self.inner_nccl_comm_idx = (
-            CommHandler.create_communicator_from_process_group(
-                self.inner_group
-            )
+        self.inner_nccl_comm_idx = CommHandler.create_communicator_from_process_group(
+            self.inner_group
         )
 
         # We do not need NCCL communicators for the outer and depth group
@@ -217,13 +212,9 @@ class TPLinear(torch.nn.Module):
 
         # local_out_features - this is the number of out_features on each GPU
         if out_features % self.outer_group_size == 0:
-            self.local_out_features = divide(
-                out_features, self.outer_group_size
-            )
+            self.local_out_features = divide(out_features, self.outer_group_size)
         else:
-            self.local_out_features = math.ceil(
-                out_features / self.outer_group_size
-            )
+            self.local_out_features = math.ceil(out_features / self.outer_group_size)
         # initialize the weight matrix and grab the local slice for each GPU
         initial_params = initialize_params(
             out_features,
@@ -278,9 +269,7 @@ class TPLinear(torch.nn.Module):
 
     def all_reduce(self, x):
         # tp_all_reduce(x, self.inner_nccl_comm_idx)
-        dist.all_reduce(
-            x, op=torch.distributed.ReduceOp.SUM, group=self.inner_group
-        )
+        dist.all_reduce(x, op=torch.distributed.ReduceOp.SUM, group=self.inner_group)
         return x
 
     def matmul(self, w, x):
@@ -330,9 +319,7 @@ class TPLinear(torch.nn.Module):
                 )
             )
             if cache_key not in symmetric_memory_pool:
-                nelem = (
-                    max_batch_size * self.local_out_features
-                )  # Only used for decode
+                nelem = max_batch_size * self.local_out_features  # Only used for decode
 
                 nvshmem_comm = NVSHMEMCommHandler.get_communicator_from_idx(
                     self.symmetric_comm_id
@@ -373,9 +360,7 @@ class TPLinear(torch.nn.Module):
 
             if cache_key not in symmetric_memory_pool:
                 # Create a new tensor and add it to the pool
-                nelem = (
-                    max_batch_size * self.local_out_features
-                )  # Only used for decode
+                nelem = max_batch_size * self.local_out_features  # Only used for decode
 
                 msg = symm_mem.empty(
                     nelem,
@@ -444,9 +429,7 @@ class TPLinear(torch.nn.Module):
         )
 
     @torch.no_grad()
-    def _modified_load_from_state_dict(
-        self, state_dict, prefix, *args, **kwargs
-    ):
+    def _modified_load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
         # If the parameters were initialized on meta-device,
         # we need to materialize them here
         if self.init_device == "meta":
@@ -454,9 +437,7 @@ class TPLinear(torch.nn.Module):
             self.init_device = "cuda"
 
         weight = (
-            state_dict[prefix + "weight"]
-            if prefix + "weight" in state_dict
-            else None
+            state_dict[prefix + "weight"] if prefix + "weight" in state_dict else None
         )
 
         if weight is not None:
@@ -468,9 +449,7 @@ class TPLinear(torch.nn.Module):
             ), "This is neither a full checkpoint nor a sharded checkpoint"
 
             # TODO: This can be further optimized potentially
-            if is_full_weight_matrix and getattr(
-                self, "duplicating_kv", False
-            ):
+            if is_full_weight_matrix and getattr(self, "duplicating_kv", False):
                 rank = dist.get_rank(self.outer_group)
                 hs = self.head_size
                 q_per_rank = self.q_per_rank
@@ -518,9 +497,7 @@ class TPLinear(torch.nn.Module):
                     " > #kv heads when using a model with bias"
                 )
             bias = (
-                state_dict[prefix + "bias"]
-                if prefix + "bias" in state_dict
-                else None
+                state_dict[prefix + "bias"] if prefix + "bias" in state_dict else None
             )
             if bias is not None:
                 if bias.size(0) == self.out_features:

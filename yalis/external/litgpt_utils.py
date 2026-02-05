@@ -60,9 +60,7 @@ def load_litgpt_checkpoint(
     modules_to_hook = [
         m
         for m in model.modules()
-        if any(
-            True for _ in m.parameters(recurse=False)
-        )  # module has direct params
+        if any(True for _ in m.parameters(recurse=False))  # module has direct params
         or any(True for _ in m.buffers(recurse=False))  # or direct buffers
     ]
     assert (

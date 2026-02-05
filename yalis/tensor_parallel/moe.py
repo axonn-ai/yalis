@@ -76,9 +76,7 @@ def initialize_params(
     init_method,
     init_device="cuda",
 ):
-    params = torch.empty(
-        (n_experts, out_features, in_features), device=init_device
-    )
+    params = torch.empty((n_experts, out_features, in_features), device=init_device)
     init_method(params)
     params = extract_local_params_from_full_params(
         params, out_features_group, in_features_group
@@ -125,10 +123,7 @@ class TPMoE(torch.nn.Module):
         # with transpose=True. So, the second matrix is sharded as:
         #   hidden_size -> inner_group,
         #   intermediate_size -> outer_group
-        if (
-            tensor_parallel_dims is not None
-            and torch.distributed.get_rank() == 0
-        ):
+        if tensor_parallel_dims is not None and torch.distributed.get_rank() == 0:
             print(
                 "Manually setting TP dims for a layer with shape -",
                 f" gate_up_proj: {(n_experts, 2 * intermediate_size, hidden_size)} |"  # noqa: E501
@@ -138,10 +133,8 @@ class TPMoE(torch.nn.Module):
         self.inner_group, self.outer_group, self.depth_group = (
             ax.comm_handle.get_intra_layer_groups(tensor_parallel_dims)
         )
-        self.outer_nccl_comm_idx = (
-            CommHandler.create_communicator_from_process_group(
-                self.outer_group
-            )
+        self.outer_nccl_comm_idx = CommHandler.create_communicator_from_process_group(
+            self.outer_group
         )
 
         # calculating the sizes of each tensor parallel process group
@@ -169,9 +162,7 @@ class TPMoE(torch.nn.Module):
 
         # Number of features on each GPU
         self.local_hidden_size = divide(hidden_size, self.inner_group_size)
-        self.local_intermediate_size = divide(
-            intermediate_size, self.outer_group_size
-        )
+        self.local_intermediate_size = divide(intermediate_size, self.outer_group_size)
 
         self.n_experts = n_experts
         self.n_expert_per_token = n_expert_per_token
@@ -240,9 +231,7 @@ class TPMoE(torch.nn.Module):
         )
 
     def all_reduce(self, x):
-        dist.all_reduce(
-            x, op=torch.distributed.ReduceOp.SUM, group=self.outer_group
-        )
+        dist.all_reduce(x, op=torch.distributed.ReduceOp.SUM, group=self.outer_group)
         return x
 
     def set_symmetric_memory_tensor(
@@ -290,9 +279,7 @@ class TPMoE(torch.nn.Module):
             and weight.size(2) == in_features
         )
 
-    def _is_sharded_weight_matrix(
-        self, weight, local_in_features, local_out_features
-    ):
+    def _is_sharded_weight_matrix(self, weight, local_in_features, local_out_features):
         return (
             weight.ndim == 3
             and weight.size(1) == local_out_features
@@ -300,9 +287,7 @@ class TPMoE(torch.nn.Module):
         )
 
     @torch.no_grad()
-    def _modified_load_from_state_dict(
-        self, state_dict, prefix, *args, **kwargs
-    ):
+    def _modified_load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
         # If the parameters were initialized on meta-device,
         # we need to materialize them here
         if self.init_device == "meta":
@@ -315,11 +300,7 @@ class TPMoE(torch.nn.Module):
             else None
         )
 
-        w2 = (
-            state_dict[prefix + "proj"]
-            if prefix + "proj" in state_dict
-            else None
-        )
+        w2 = state_dict[prefix + "proj"] if prefix + "proj" in state_dict else None
 
         def modify_state_dict(
             weight,

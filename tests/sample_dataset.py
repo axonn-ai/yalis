@@ -66,9 +66,7 @@ class BenchmarkDataset(ABC):
         self.dataset_path = dataset_path
         # Set the random seed, ensuring that a None value is replaced with the
         # default seed.
-        self.random_seed = (
-            random_seed if random_seed is not None else self.DEFAULT_SEED
-        )
+        self.random_seed = random_seed if random_seed is not None else self.DEFAULT_SEED
         self.data = None
 
     def apply_multimodal_chat_transformation(self, prompt: str) -> list[dict]:
@@ -90,9 +88,7 @@ class BenchmarkDataset(ABC):
         Raises:
             NotImplementedError: If a subclass does not implement this method.
         """
-        raise NotImplementedError(
-            "load_data must be implemented in subclasses."
-        )
+        raise NotImplementedError("load_data must be implemented in subclasses.")
 
     @abstractmethod
     def sample(
@@ -128,13 +124,9 @@ class BenchmarkDataset(ABC):
         """
         if len(requests) < num_requests:
             random.seed(self.random_seed)
-            additional = random.choices(
-                requests, k=num_requests - len(requests)
-            )
+            additional = random.choices(requests, k=num_requests - len(requests))
             requests.extend(additional)
-            print(
-                f"Oversampled requests to reach {num_requests} total samples."
-            )
+            print(f"Oversampled requests to reach {num_requests} total samples.")
 
 
 # -----------------------------------------------------------------------------
@@ -176,12 +168,8 @@ class RandomDataset(BenchmarkDataset):
         input_low = int(input_len * range_ratio)
         output_low = int(output_len * range_ratio)
 
-        input_lens = np.random.randint(
-            input_low, input_len + 1, size=num_requests
-        )
-        output_lens = np.random.randint(
-            output_low, output_len + 1, size=num_requests
-        )
+        input_lens = np.random.randint(input_low, input_len + 1, size=num_requests)
+        output_lens = np.random.randint(output_low, output_len + 1, size=num_requests)
         offsets = np.random.randint(0, vocab_size, size=num_requests)
 
         requests = []
@@ -255,15 +243,11 @@ class AlpacaDataset(BenchmarkDataset):
     ) -> list:
         # Calculate average token length for a poem line.
         tokenized_lines = [tokenizer(line).input_ids for line in self.data]
-        avg_len = sum(len(tokens) for tokens in tokenized_lines) / len(
-            tokenized_lines
-        )
+        avg_len = sum(len(tokens) for tokens in tokenized_lines) / len(tokenized_lines)
         # print (f"Average length of tokenized lines: {avg_len}")
 
         # Find one minimum length line.
-        index_min = np.argmin(
-            [len(tokens) for tokens in tokenized_lines]
-        ).item()
+        index_min = np.argmin([len(tokens) for tokens in tokenized_lines]).item()
         min_len = len(tokenized_lines[index_min])
         padding_line = self.data[int(index_min)]
         # print (f"Minimum length line: {padding_line}")
@@ -312,9 +296,7 @@ class AlpacaDataset(BenchmarkDataset):
             prompt_len = len(tokenizer(prompt_formatted).input_ids)
             samples.append(
                 SampleRequest(
-                    prompt=(
-                        prompt_formatted if return_prompt_formatted else prompt
-                    ),
+                    prompt=(prompt_formatted if return_prompt_formatted else prompt),
                     prompt_len=prompt_len,
                     expected_output_len=output_len,
                 )
@@ -341,9 +323,7 @@ class SonnetDataset(BenchmarkDataset):
         self,
         **kwargs,
     ) -> None:
-        super().__init__(
-            dataset_path="Lambent/shakespeare_sonnets_diffused", **kwargs
-        )
+        super().__init__(dataset_path="Lambent/shakespeare_sonnets_diffused", **kwargs)
         self.dataset_split = "train"
         self.dataset_subset = None
         self.load_data()
@@ -369,9 +349,7 @@ class SonnetDataset(BenchmarkDataset):
     ) -> list:
         # Calculate average token length for a poem line.
         tokenized_lines = [tokenizer(line).input_ids for line in self.data]
-        avg_len = sum(len(tokens) for tokens in tokenized_lines) / len(
-            tokenized_lines
-        )
+        avg_len = sum(len(tokens) for tokens in tokenized_lines) / len(tokenized_lines)
 
         # Build the base prompt.
         base_prompt = "Pick as many lines as you can from these poem lines:\n"
@@ -387,9 +365,7 @@ class SonnetDataset(BenchmarkDataset):
             )
 
         # Determine how many lines to use.
-        num_input_lines = (
-            round(((input_len - base_offset) + avg_len) / avg_len) + 100
-        )
+        num_input_lines = round(((input_len - base_offset) + avg_len) / avg_len) + 100
 
         samples = []
         for _ in range(num_requests):
@@ -402,9 +378,7 @@ class SonnetDataset(BenchmarkDataset):
             prompt_len = len(tokenizer(prompt_formatted).input_ids)
             samples.append(
                 SampleRequest(
-                    prompt=(
-                        prompt_formatted if return_prompt_formatted else prompt
-                    ),
+                    prompt=(prompt_formatted if return_prompt_formatted else prompt),
                     prompt_len=prompt_len,
                     expected_output_len=output_len,
                 )
@@ -416,9 +390,7 @@ if __name__ == "__main__":
     # Test AlpacaDataset
     dataset = AlpacaDataset(random_seed=42)
     print(dataset.data[0])
-    tokenizer = AutoTokenizer.from_pretrained(
-        "meta-llama/Llama-3.1-8B-Instruct"
-    )
+    tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.1-8B-Instruct")
     samples = dataset.sample(
         tokenizer, 8, input_len=16384, return_prompt_formatted=True
     )
