@@ -309,7 +309,8 @@ def rotary_kv_update_sdpa_gen_gptoss(
             n_head_global = int(sinks.size(0))
             if n_head_global % tp_size != 0:
                 raise ValueError(
-                    f"sinks head count ({n_head_global}) not divisible by tp_size ({tp_size})"
+                    f"sinks head count ({n_head_global}) not divisible by "
+                    f"tp_size ({tp_size})"
                 )
             n_head_per_rank = n_head_global // tp_size
             start_idx = int(tp_rank) * n_head_per_rank
@@ -450,17 +451,22 @@ def rotary_kv_update_sdpa_gen_gptoss(
         # Following OpenAI's convention: expand K/V to match Q's head count
         g = K.size(1)  # number of key/value groups
         hpg = h // g  # heads per group (q_mult in OpenAI's code)
-        # Expand K and V by repeating each head hpg times to match Q's head count
+        # Expand K and V by repeating each head hpg times to match
+        # Q's head count
         K_expanded = K.repeat_interleave(hpg, dim=1)  # (B, h, t_max, hs)
         V_expanded = V.repeat_interleave(hpg, dim=1)  # (B, h, t_max, hs)
         # Now both Q and K/V have the same number of heads
         Q_scaled = (Q * scale).to(dtype=K_expanded.dtype)
-        QK = torch.einsum("b h q d, b h k d -> b h q k", Q_scaled, K_expanded)
+        QK = torch.einsum(
+            "b h q d, b h k d -> b h q k", Q_scaled, K_expanded
+        )
     else:
         # Standard MHA path
         # Ensure both operands are in the same dtype before einsum
         Q_scaled = (Q * scale).to(dtype=K.dtype)
-        QK = torch.einsum("b h q d, b h k d -> b h q k", Q_scaled, K)
+        QK = torch.einsum(
+            "b h q d, b h k d -> b h q k", Q_scaled, K
+        )
 
     # Apply mask (broadcast over batch & heads)
     # For DECODE: mask is (B, t_max), QK is (B, h, 1, t_max)

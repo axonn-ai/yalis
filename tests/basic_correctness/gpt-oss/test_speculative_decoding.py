@@ -175,7 +175,8 @@ def test_speculative(
         dist.barrier()
 
     logger.info(
-        f"[rank {LOCAL_RANK}] Running standard inference with {num_tokens} tokens..."
+        f"[rank {LOCAL_RANK}] Running standard inference with "
+        f"{num_tokens} tokens..."
     )
     output_tokens, _ = standard_engine.generate(
         prompts,
@@ -216,7 +217,8 @@ def test_speculative(
         dist.barrier()
 
     logger.info(
-        f"[rank {LOCAL_RANK}] Running speculative inference with {num_tokens} tokens and gamma={gamma}..."
+        f"[rank {LOCAL_RANK}] Running speculative inference with "
+        f"{num_tokens} tokens and gamma={gamma}..."
     )
     # Tokenize prompts to match the type signature of speculative generate
     tokenized_prompts = tokenizer(prompts, return_tensors="pt", padding=True)[

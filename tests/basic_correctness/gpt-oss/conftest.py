@@ -98,7 +98,7 @@ def attn_backend(request):
     yalis_attnb = attnb
 
     hf_map = {
-        "sdpa": "eager",  # Use eager as fallback for models that don't support SDPA yet (e.g., GptOssForCausalLM)
+        "sdpa": "eager",  # Use eager as fallback for GptOssForCausalLM
     }
 
     hf_attnb = hf_map[attnb]
@@ -111,13 +111,20 @@ def attn_backend(request):
 def tokenizer(model_id):
     """Create a tokenizer for the test model."""
     tokenizer = AutoTokenizer.from_pretrained(
-        model_id, local_files_only=HF_DATASETS_OFFLINE
+        model_id,
+        local_files_only=HF_DATASETS_OFFLINE,
     )
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
 
     if tokenizer.chat_template is None:
-        tokenizer.chat_template = "{% for message in messages %}{% if message['role'] == 'user' %}{{ message['content'] }}{% endif %}{% endfor %}"
+        template = (
+            "{% for message in messages %}"
+            "{% if message['role'] == 'user' %}"
+            "{{ message['content'] }}"
+            "{% endif %}{% endfor %}"
+        )
+        tokenizer.chat_template = template
 
     return tokenizer
 
@@ -150,14 +157,16 @@ def hf_model_loader(model_id, dtype, attn_backend, device):
         model = AutoModelForCausalLM.from_pretrained(
             model_id,
             attn_implementation=attn_backend.hf,
-            dtype=dtype.hf,
+            torch_dtype=dtype.hf,
             device_map="cpu",
             local_files_only=HF_DATASETS_OFFLINE,
             trust_remote_code=True,
         )
         # Move to GPU
         target_device = "cuda:0"
-        logger.info(f"Moving model to {target_device}...")
+        logger.info(
+            f"Moving model to {target_device}..."
+        )
         model = model.to(target_device)
         model.eval()
         return model
