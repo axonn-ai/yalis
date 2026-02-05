@@ -1,11 +1,22 @@
 import pytest
 import torch
+import torch.distributed as dist
 import random
 import numpy as np
 import warnings
+import gc
+import logging
+import os
 from utils import alpaca_prompt
+from yalis import ModelConfig, InferenceConfig, LLMEngine, SpeculativeLLMEngine
 
 IGNORE_EOS = True
+
+# Get logger instance
+logger = logging.getLogger(__name__)
+
+# Local rank for per-rank logging
+LOCAL_RANK = int(os.environ.get("LOCAL_RANK", 0))
 
 # Test parameters
 BATCH_SIZES = [2]
@@ -87,13 +98,15 @@ def _compare_token_outputs(standard_tokens, speculative_tokens, tokenizer):
 @pytest.mark.parametrize("gamma", GAMMA_VALUES)
 def test_speculative(
     tokenizer,
-    speculative_engine,
     batch_size,
     prompt_length,
     num_tokens,
     alpaca_dataset,
     gamma,
     attn_backend,
+    dtype,
+    model_id,
+    draft_model_id,
 ):
     """
     Test that speculative decoding produces exactly the same tokens
@@ -117,15 +130,122 @@ def test_speculative(
         alpaca_dataset, tokenizer, prompt_length, batch_size
     )
 
-    # Get outputs from both engines
-    standard_tokens = _get_standard_output(
-        speculative_engine, prompts, num_tokens
+    # Resolve model paths
+    if not os.path.isabs(model_id):
+        target_model_path = os.path.abspath(model_id)
+    else:
+        target_model_path = model_id
+    
+    if not os.path.isabs(draft_model_id):
+        draft_model_path = os.path.abspath(draft_model_id)
+    else:
+        draft_model_path = draft_model_id
+    
+    target_model_name = os.path.basename(target_model_path)
+    draft_model_name = os.path.basename(draft_model_path)
+    
+    # Create model configs
+    target_model_config = ModelConfig(
+        target_model_name, model_path=target_model_path, precision=dtype.yalis
     )
-    speculative_tokens = _get_speculative_output(
-        speculative_engine, prompts, num_tokens, gamma=gamma
+    draft_model_config = ModelConfig(
+        draft_model_name, model_path=draft_model_path, precision=dtype.yalis
+    )
+    inference_config = InferenceConfig(
+        max_batch_size=batch_size,
+        max_length_of_generated_sequences=2048,
+        top_p=0.0,
+        temperature=0.0,
+        tp_dims=None,
+        attention_backend=attn_backend.yalis,
+        use_paged_kv_caching=False,
     )
 
+    # Load and run standard inference
+    logger.info(
+        f"[rank {LOCAL_RANK}] Loading standard LLMEngine for inference..."
+    )
+    standard_engine = LLMEngine(
+        model_config=target_model_config, inference_config=inference_config
+    )
+    
+    # Synchronize after engine initialization
+    if dist.is_initialized():
+        dist.barrier()
+    
+    logger.info(
+        f"[rank {LOCAL_RANK}] Running standard inference with {num_tokens} tokens..."
+    )
+    output_tokens, _ = standard_engine.generate(
+        prompts,
+        tokens_to_generate=num_tokens,
+        report_throughput=False,
+        ignore_eos=IGNORE_EOS,
+    )
+    standard_tokens = [
+        output_tokens[i][:num_tokens].cpu() for i in range(len(prompts))
+    ]
+    
+    # Synchronize after inference before cleanup
+    if dist.is_initialized():
+        dist.barrier()
+    
+    # Clean up standard engine to free GPU memory
+    del standard_engine
+    torch.cuda.empty_cache()
+    gc.collect()
+    logger.info(f"[rank {LOCAL_RANK}] Cleaned up standard engine")
+    
+    # Synchronize after cleanup before loading next engine
+    if dist.is_initialized():
+        dist.barrier()
+
+    # Load and run speculative inference
+    logger.info(
+        f"[rank {LOCAL_RANK}] Loading SpeculativeLLMEngine for inference..."
+    )
+    speculative_engine = SpeculativeLLMEngine(
+        target_model_config=target_model_config,
+        draft_model_config=draft_model_config,
+        inference_config=inference_config,
+    )
+    
+    # Synchronize after engine initialization
+    if dist.is_initialized():
+        dist.barrier()
+    
+    logger.info(
+        f"[rank {LOCAL_RANK}] Running speculative inference with {num_tokens} tokens and gamma={gamma}..."
+    )
+    # Tokenize prompts to match the type signature of speculative generate
+    tokenized_prompts = tokenizer(prompts, return_tensors="pt", padding=True)["input_ids"]
+    output_tokens, metrics = speculative_engine.generate_speculative(
+        tokenized_prompts,
+        tokens_to_generate=num_tokens,
+        gamma=gamma,
+        report_throughput=False,
+        ignore_eos=IGNORE_EOS,
+    )
+    speculative_tokens = [
+        output_tokens[i][:num_tokens].cpu() for i in range(len(prompts))
+    ]
+    
+    # Synchronize after inference before cleanup
+    if dist.is_initialized():
+        dist.barrier()
+    
+    # Clean up speculative engine
+    del speculative_engine
+    torch.cuda.empty_cache()
+    gc.collect()
+    logger.info(f"[rank {LOCAL_RANK}] Cleaned up speculative engine")
+
+    # Synchronize after cleanup
+    if dist.is_initialized():
+        dist.barrier()
+
     # Compare outputs - they should match exactly
+    logger.info(f"[rank {LOCAL_RANK}] Comparing token outputs...")
     tokens_match = _compare_token_outputs(
         standard_tokens, speculative_tokens, tokenizer
     )
