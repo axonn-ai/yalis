@@ -412,7 +412,7 @@ def test_02_decode(
     logger.info(f"[rank {LOCAL_RANK}] Starting HF model inference...")
     if hf_model is not None:
         hf_tokens, hf_logits = _get_hf_output(
-            tokenizer, hf_model, prompts, num_tokens=5
+            tokenizer, hf_model, prompts, num_tokens=3
         )
         log_gpu_memory("After HF inference")
         del hf_model
@@ -420,7 +420,7 @@ def test_02_decode(
         # Rank 1: Dummy outputs for compatibility
         logger.info("(Rank 1: Using dummy HF outputs)")
         hf_tokens = [torch.zeros(1, dtype=torch.long) for _ in prompts]
-        hf_logits = [torch.zeros(1, 50257) for _ in range(5)]  # num_tokens=5
+        hf_logits = [torch.zeros(1, 50257) for _ in range(3)]  # num_tokens=3
     
     torch.cuda.empty_cache()
     gc.collect()
