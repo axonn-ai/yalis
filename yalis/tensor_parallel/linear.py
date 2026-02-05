@@ -73,7 +73,8 @@ def shard_tensor_along_dim(tensor, dim, world_size, rank):
     Extract the shard of a tensor for the current rank along a specified
     dimension.
 
-    Used in GptOssMoE for correctly loading unsharded checkpoints when TP is enabled.
+    Used in GptOssMoE for correctly loading unsharded checkpoints when TP is
+    enabled.
 
     Args:
         tensor: The full tensor to shard
