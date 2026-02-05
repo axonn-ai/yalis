@@ -252,7 +252,8 @@ def test_01_prefill(
     yalis_engine = yalis_engine_loader()
     log_gpu_memory("After YALIS load")
 
-    # Synchronize all ranks before starting inference to avoid collective op mismatches
+    # Synchronize all ranks before starting inference to avoid collective op
+    # mismatches
     if dist.is_initialized():
         dist.barrier()
         if LOCAL_RANK == 0:
@@ -295,7 +296,8 @@ def test_01_prefill(
     gc.collect()
     log_gpu_memory("After HF cleanup")
 
-    # Destroy process group before comparison to avoid NCCL collectives during CPU-only ops
+    # Destroy process group before comparison to avoid NCCL collectives during
+    # CPU-only ops
     if dist.is_initialized():
         dist.destroy_process_group()
 
@@ -340,7 +342,8 @@ def test_02_decode(
     yalis_engine = yalis_engine_loader()
     log_gpu_memory("After YALIS load")
 
-    # Synchronize all ranks before starting inference to avoid collective op mismatches
+    # Synchronize all ranks before starting inference to avoid collective op
+    # mismatches
     if dist.is_initialized():
         dist.barrier()
         if LOCAL_RANK == 0:
@@ -382,8 +385,8 @@ def test_02_decode(
     torch.cuda.empty_cache()
     gc.collect()
     log_gpu_memory("After HF cleanup")
-
-    # Destroy process group before comparison to avoid NCCL collectives during CPU-only ops
+    # Destroy process group before comparison to avoid NCCL collectives during
+    # CPU-only ops
     if dist.is_initialized():
         dist.destroy_process_group()
 

@@ -18,7 +18,8 @@ logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
 
 logger = logging.getLogger(__name__)
 
-# Add parent test directory to sys.path so imports like 'from utils import ...' work
+# Add parent test directory to sys.path so imports like
+# 'from utils import ...' work
 parent_test_dir = Path(__file__).parent.parent
 if str(parent_test_dir) not in sys.path:
     sys.path.insert(0, str(parent_test_dir))
@@ -151,7 +152,8 @@ def hf_model_loader(model_id, dtype, attn_backend, device):
             )
             return None
 
-        # Disable MXFP4 CUDA kernels to prevent GPU-side dequantization attempts.
+        # Disable MXFP4 CUDA kernels to prevent GPU-side dequantization
+        # attempts.
         os.environ["MXFP4_DISABLE_CUDA_KERNELS"] = "1"
         logger.info("Loading HF model on CPU for safe MXFP4 dequantization...")
         model = AutoModelForCausalLM.from_pretrained(
@@ -179,7 +181,8 @@ def yalis_engine_loader(model_id, dtype, attn_backend):
     """Return a callable that loads YALIS engine on demand."""
 
     def load_yalis():
-        # Resolve model_path: if model_id is a relative path, make it absolute relative to repo root
+        # Resolve model_path: if model_id is a relative path, make it
+        # absolute relative to repo root
         if not os.path.isabs(model_id):
             model_path = os.path.abspath(model_id)
         else:

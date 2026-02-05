@@ -164,8 +164,9 @@ class GPT(nn.Module):
         if self.config.tensor_parallel:
             x = Drop.apply(x, ax.comm_handle.inner_intra_layer_parallel_group)
 
-        # Flash Attention requires RoPE cache in the same dtype as query for numerical stability.
-        # Converting to query dtype (typically bf16) ensures efficient computation and memory usage.
+        # Flash Attention requires RoPE cache in the same dtype as query for
+        # numerical stability. Converting to query dtype (typically bf16)
+        # ensures efficient computation and memory usage.
         if self.config.attention_backend == AttentionBackend.FLASH:
             self.cos = self.cos.to(x.dtype)
             self.sin = self.sin.to(x.dtype)
@@ -290,8 +291,11 @@ class GPT(nn.Module):
                         if not present
                     ]
                     raise ValueError(
-                        f"The following adjusted RoPE parameters are missing in rope_adjustments: {', '.join(missing_params)}. "  # noqa: E501
-                        "All adjusted RoPE parameters must be specified together."
+                        f"The following adjusted RoPE parameters are "
+                        f"missing in rope_adjustments: "
+                        f"{', '.join(missing_params)}. "
+                        "All adjusted RoPE parameters must be specified "
+                        "together."
                     )
 
         # GPT-OSS NTK/YaRN parameterization support (opt-in via config attrs)
@@ -359,8 +363,9 @@ class GPT(nn.Module):
         if self.config.use_paged_kv_caching:
             if max_tokens > PAGE_BLOCK_SIZE * NUM_BLOCKS:
                 warnings.warn(
-                    f"Increasing NUM_BLOCKS from {NUM_BLOCKS} to 1024 to accommodate "
-                    f"{max_tokens} tokens (max_seq_length={max_seq_length}, "
+                    f"Increasing NUM_BLOCKS from {NUM_BLOCKS} to 1024 to "
+                    f"accommodate {max_tokens} tokens "
+                    f"(max_seq_length={max_seq_length}, "
                     f"max_batch_size={max_batch_size})",
                     stacklevel=2,
                 )
@@ -476,8 +481,9 @@ class Block(nn.Module):
         )
 
         self.config = config
-        # optional sink logits used by GPT-OSS sdpa implementation for sliding-window
-        # (shape: n_head x 1 x 1). Initialized to zeros; only used in 'gpt_oss' mode.
+        # optional sink logits used by GPT-OSS sdpa implementation for
+        # sliding-window (shape: n_head x 1 x 1). Initialized to zeros; only
+        # used in 'gpt_oss' mode.
         self.sinks = nn.Parameter(torch.zeros(self.config.n_head, 1, 1))
 
     def forward(
@@ -580,15 +586,17 @@ class CausalSelfAttention(nn.Module):
         self.kv_cache: Optional[KVCache] = None
 
         # Determine if this layer uses sliding window attention
-        # Priority: sliding_window_indices (per-layer) > sliding_window_layer_placing (modulo)
+        # Priority: sliding_window_indices (per-layer) >
+        # sliding_window_layer_placing (modulo)
         if (
             block_idx == 0
             and config.sliding_window_indices is not None
             and len(config.sliding_window_indices) != config.n_layer
         ):
             warnings.warn(
-                f"sliding_window_indices has length {len(config.sliding_window_indices)} "
-                f"but n_layer is {config.n_layer}. Layers beyond the list will use "
+                f"sliding_window_indices has length "
+                f"{len(config.sliding_window_indices)} but n_layer is "
+                f"{config.n_layer}. Layers beyond the list will use "
                 "modulo-based placement.",
                 stacklevel=2,
             )
@@ -1206,13 +1214,15 @@ class LLaMAMoE(nn.Module):
 
 class GptOssMoE(nn.Module):
     """
-    GPT-OSS compatible MoE MLP implemented in pure PyTorch for functional parity.
+    GPT-OSS compatible MoE MLP implemented in pure PyTorch for functional
+    parity.
 
     Behavior matches the GPT-OSS `MLPBlock`:
       - per-expert `mlp1_weight`, `mlp1_bias`, `mlp2_weight`, `mlp2_bias`
       - gating via a linear `gate` then `topk` + softmax
       - SWIGLU activation with clamping and alpha, using `(linear + 1)` branch
-      - supports distributed all-reduce after expert down projection (matches GPT-OSS world-size sum)
+      - supports distributed all-reduce after expert down projection (matches
+        GPT-OSS world-size sum)
 
     Notes:
       - Use `config.n_expert` and `config.n_expert_per_token`.
@@ -1279,11 +1289,15 @@ class GptOssMoE(nn.Module):
         """
         Custom state dict loader for GptOssMoE.
 
-        Handles sharding of MLP weights when loading full (unsharded) checkpoints:
-        - mlp1_weight: [num_experts, 2*intermediate_size, hidden_size] -> shard dim 1
+        Handles sharding of MLP weights when loading full (unsharded)
+        checkpoints:
+        - mlp1_weight: [num_experts, 2*intermediate_size, hidden_size] ->
+          shard dim 1
         - mlp1_bias: [num_experts, 2*intermediate_size] -> shard dim 1
-        - mlp2_weight: [num_experts, hidden_size, intermediate_size] -> shard dim 2
-        - mlp2_bias: [num_experts, hidden_size] -> no sharding (output dimension)
+        - mlp2_weight: [num_experts, hidden_size, intermediate_size] ->
+          shard dim 2
+        - mlp2_bias: [num_experts, hidden_size] -> no sharding (output
+          dimension)
         """
         assert self.config.intermediate_size is not None
 
@@ -1297,7 +1311,8 @@ class GptOssMoE(nn.Module):
         mlp1_weight_key = prefix + "mlp1_weight"
         if mlp1_weight_key in state_dict:
             weight = state_dict[mlp1_weight_key]
-            # Expect full unsharded: [num_experts, 2*intermediate_size, hidden_size]
+            # Expect full unsharded:
+            # [num_experts, 2*intermediate_size, hidden_size]
             if weight.size(1) == 2 * self.config.intermediate_size:
                 weight = shard_tensor_along_dim(
                     weight, dim=1, world_size=self.world_size, rank=rank
@@ -1319,7 +1334,8 @@ class GptOssMoE(nn.Module):
         mlp2_weight_key = prefix + "mlp2_weight"
         if mlp2_weight_key in state_dict:
             weight = state_dict[mlp2_weight_key]
-            # Expect full unsharded: [num_experts, hidden_size, intermediate_size]
+            # Expect full unsharded:
+            # [num_experts, hidden_size, intermediate_size]
             if weight.size(2) == self.config.intermediate_size:
                 weight = shard_tensor_along_dim(
                     weight, dim=2, world_size=self.world_size, rank=rank
@@ -1383,5 +1399,6 @@ class GptOssMoE(nn.Module):
         # Weighted sum of experts -> (M, C)
         out = torch.einsum("m k c, m k -> m c", down, expert_weights)
 
-        # reshape back to (B, T, C). Do NOT add residual here; `Block` handles it.
+        # reshape back to (B, T, C). Do NOT add residual here; `Block`
+        # handles it.
         return out.view(B, T, C)

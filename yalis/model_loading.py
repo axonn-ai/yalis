@@ -184,7 +184,9 @@ class LazySafeTensorDict(MutableMapping):
         except Exception:
             shard_info = shard
         print_rank0(
-            f"[rank {_rank}] Loaded key '{name}' from shard '{shard_info}' -> shape={tuple(t.shape)}, dtype={t.dtype}, target_dev={dev}, target_dtype={dt}"
+            f"[rank {_rank}] Loaded key '{name}' from shard '{shard_info}' -> "
+            f"shape={tuple(t.shape)}, dtype={t.dtype}, target_dev={dev}, "
+            f"target_dtype={dt}"
         )
         return t
 

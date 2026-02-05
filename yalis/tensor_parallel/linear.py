@@ -70,7 +70,8 @@ def divide(a, b):
 @torch.no_grad()
 def shard_tensor_along_dim(tensor, dim, world_size, rank):
     """
-    Extract the shard of a tensor for the current rank along a specified dimension.
+    Extract the shard of a tensor for the current rank along a specified
+    dimension.
 
     Used for loading unsharded checkpoints in distributed settings.
 
@@ -86,7 +87,8 @@ def shard_tensor_along_dim(tensor, dim, world_size, rank):
     size_along_dim = tensor.size(dim)
     if size_along_dim % world_size != 0:
         raise ValueError(
-            f"Dimension {dim} size {size_along_dim} not divisible by world_size {world_size}"
+            f"Dimension {dim} size {size_along_dim} not divisible by "
+            f"world_size {world_size}"
         )
     shard_size = size_along_dim // world_size
     start_idx = rank * shard_size

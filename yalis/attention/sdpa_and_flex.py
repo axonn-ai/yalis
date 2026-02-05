@@ -270,10 +270,10 @@ def rotary_kv_update_sdpa_gen_gptoss(
             sinks_dropped = Drop.apply(sinks_expanded, process_group, 1)
             sinks = sinks_dropped.contiguous()
     else:
-        # When not using intra-head parallelism but tensor parallelism is active,
-        # sinks is still (n_head_global, 1, 1) from Block initialization.
-        # We need to slice it to match the per-rank head count (nh).
-        # Determine per-rank head count from q shape
+        # When not using intra-head parallelism but tensor parallelism is
+        # active, sinks is still (n_head_global, 1, 1) from Block
+        # initialization. We need to slice it to match the per-rank head count
+        # (nh). Determine per-rank head count from q shape
         if sinks is not None:
             # `ax.is_initialized` may be a boolean attribute in some
             # axonn versions or a callable in others; handle both.
@@ -384,7 +384,8 @@ def rotary_kv_update_sdpa_gen_gptoss(
             v_cache[:B, :, :T, :] = v.to(v_cache.dtype)
 
     # Build mask for attention
-    # For PREFILL: attend only to the T tokens being prefilled (causal within T)
+    # For PREFILL: attend only to the T tokens being prefilled (causal within
+    # T)
     # For DECODE: attend to all cached tokens up to token_counter
 
     if T == 1:
@@ -499,13 +500,15 @@ def rotary_kv_update_sdpa_gen_gptoss(
     if sinks is not None:
         W = W[..., :-1]
 
-    # weighted sum over KV: W (B, nh, 1, t_max) @ V (B, nh, t_max, hs) -> (B, nh, 1, hs)
+    # weighted sum over KV: W (B, nh, 1, t_max) @ V (B, nh, t_max, hs) ->
+    # (B, nh, 1, hs)
     if enable_gqa:
         # Both W and V_expanded now have matching head dimensions
         Out = torch.einsum("b h q k, b h k d -> b h q d", W, V_expanded)
     else:
         Out = torch.einsum("b h q k, b h k d -> b h q d", W, V)
-    # Ensure output matches original Q dtype (may have been promoted to float during softmax)
+    # Ensure output matches original Q dtype (may have been promoted to float
+    # during softmax)
     Out = Out.to(dtype=q.dtype)
     if use_intra_head_parallelism:
         Out = Gather.apply(Out, process_group)
