@@ -48,21 +48,8 @@ def _get_logprobs(logits):
 
     logprob_list: list[torch.Tensor] = []
     topk_list: list[torch.Tensor] = []
-    for idx, logit in enumerate(logits):
-        # DEBUG: Check input logit before log_softmax
-        has_nan_in = torch.isnan(logit).any().item()
-        has_inf_in = torch.isinf(logit).any().item()
-        if has_nan_in or has_inf_in:
-            logger.warning(f"[DEBUG-LOGPROB] Input logit {idx} has NaN: {has_nan_in}, Inf: {has_inf_in}")
-        
+    for logit in logits:
         logprobs = torch.log_softmax(logit, dim=-1, dtype=torch.float32)
-        
-        # DEBUG: Check output logprobs after log_softmax
-        has_nan_out = torch.isnan(logprobs).any().item()
-        has_inf_out = torch.isinf(logprobs).any().item()
-        if has_nan_out or has_inf_out:
-            logger.warning(f"[DEBUG-LOGPROB] Output logprobs {idx} has NaN: {has_nan_out}, Inf: {has_inf_out}")
-        
         logprob_list.append(logprobs)
 
         topk_indices = torch.argsort(
@@ -138,15 +125,6 @@ def _get_yalis_output(engine, prompts, num_tokens):
         output_tokens[i][:num_tokens].cpu() for i in range(len(prompts))
     ]
     logits_cpu = [logit.cpu() for logit in logits]
-    
-    # DEBUG: Check for NaNs right after getting logits
-    local_rank = int(os.environ.get("LOCAL_RANK", 0))
-    if local_rank == 0:
-        for i, logit in enumerate(logits_cpu):
-            has_nan = torch.isnan(logit).any().item()
-            has_inf = torch.isinf(logit).any().item()
-            logger.info(f"[DEBUG-YALIS] Logit {i} - NaN: {has_nan}, Inf: {has_inf}, Shape: {logit.shape}, Sample: {logit[0, :5]}")
-    
     return tokens_cpu, logits_cpu
 
 
@@ -263,19 +241,6 @@ def test_01_prefill(
         alpaca_dataset, tokenizer, prompt_length, batch_size
     )
 
-    # DEBUG: Tokenize locally and verify sequence lengths across ranks
-    import torch.distributed as dist
-    tokenized = tokenizer(prompts, return_tensors="pt", padding=True)
-    seq_lengths = tokenized.attention_mask.sum(dim=1)
-    logger.info(f"[rank {LOCAL_RANK}] Local tokenized shape={tokenized.input_ids.shape}, seq_lengths={seq_lengths.tolist()}")
-    if dist.is_initialized():
-        world_size = dist.get_world_size()
-        local_len = torch.tensor([int(seq_lengths[0].item())], dtype=torch.long)
-        gather_list = [torch.zeros_like(local_len) for _ in range(world_size)]
-        dist.all_gather(gather_list, local_len)
-        gathered = [int(x.item()) for x in gather_list]
-        logger.info(f"[rank {LOCAL_RANK}] Tokenized seq lengths across ranks: {gathered}")
-
     # Load and run YALIS inference
     logger.info(f"[rank {LOCAL_RANK}] Loading YALIS engine...")
     yalis_engine = yalis_engine_loader()
@@ -292,13 +257,6 @@ def test_01_prefill(
         yalis_engine, prompts, num_tokens=1
     )
     log_gpu_memory("After YALIS inference")
-    
-    # DEBUG: Log YALIS outputs right after generation
-    if LOCAL_RANK == 0:
-        logger.info(f"[DEBUG-TEST] YALIS tokens: {yalis_tokens}")
-        for i, logit in enumerate(yalis_logits):
-            has_nan = torch.isnan(logit).any().item()
-            logger.info(f"[DEBUG-TEST] YALIS logit {i} - NaN: {has_nan}, Shape: {logit.shape}, Min: {logit.min()}, Max: {logit.max()}")
 
     # Ensure all ranks finish inference before moving to comparison
     if dist.is_initialized():
@@ -331,12 +289,6 @@ def test_01_prefill(
     gc.collect()
     log_gpu_memory("After HF cleanup")
 
-    # DEBUG: Final check before destroying process group
-    if LOCAL_RANK == 0:
-        logger.info(f"[DEBUG-FINAL] Before PG destroy - HF logits[0] NaN: {torch.isnan(hf_logits[0]).any()}, YALIS logits[0] NaN: {torch.isnan(yalis_logits[0]).any()}")
-        logger.info(f"[DEBUG-FINAL] HF logits[0] sample: {hf_logits[0][0, :5]}")
-        logger.info(f"[DEBUG-FINAL] YALIS logits[0] sample: {yalis_logits[0][0, :5]}")
-
     # Destroy process group before comparison to avoid NCCL collectives during CPU-only ops
     if dist.is_initialized():
         dist.destroy_process_group()
@@ -344,7 +296,6 @@ def test_01_prefill(
     # Only compare on rank 0 since HF only runs on rank 0
     if LOCAL_RANK == 0:
         logger.info(f"[rank {LOCAL_RANK}] Comparing logprobs...")
-        logger.info(f"[DEBUG-COMPARE] After PG destroy - HF logits[0] NaN: {torch.isnan(hf_logits[0]).any()}, YALIS logits[0] NaN: {torch.isnan(yalis_logits[0]).any()}")
         _compare_logprobs(hf_logits, hf_tokens, yalis_logits, yalis_tokens)
         log_gpu_memory("After comparison")
     logger.info(f"[rank {LOCAL_RANK}] test_01_prefill completed successfully")
@@ -426,12 +377,6 @@ def test_02_decode(
     gc.collect()
     log_gpu_memory("After HF cleanup")
 
-    # DEBUG: Final check before destroying process group
-    if LOCAL_RANK == 0:
-        logger.info(f"[DEBUG-FINAL] Before PG destroy - HF logits[0] NaN: {torch.isnan(hf_logits[0]).any()}, YALIS logits[0] NaN: {torch.isnan(yalis_logits[0]).any()}")
-        logger.info(f"[DEBUG-FINAL] HF logits[0] sample: {hf_logits[0][0, :5]}")
-        logger.info(f"[DEBUG-FINAL] YALIS logits[0] sample: {yalis_logits[0][0, :5]}")
-
     # Destroy process group before comparison to avoid NCCL collectives during CPU-only ops
     if dist.is_initialized():
         dist.destroy_process_group()
@@ -439,7 +384,6 @@ def test_02_decode(
     # Only compare on rank 0 since HF only runs on rank 0
     if LOCAL_RANK == 0:
         logger.info(f"[rank {LOCAL_RANK}] Comparing logprobs...")
-        logger.info(f"[DEBUG-COMPARE] After PG destroy - HF logits[0] NaN: {torch.isnan(hf_logits[0]).any()}, YALIS logits[0] NaN: {torch.isnan(yalis_logits[0]).any()}")
         _compare_logprobs(hf_logits, hf_tokens, yalis_logits, yalis_tokens)
         log_gpu_memory("After comparison")
     logger.info(f"[rank {LOCAL_RANK}] test_02_decode completed successfully")

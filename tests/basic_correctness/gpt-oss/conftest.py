@@ -5,7 +5,6 @@ import pytest
 import torch.distributed as dist
 import torch
 import logging
-import gc
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from yalis import ModelConfig, InferenceConfig, LLMEngine, SpeculativeLLMEngine
 from types import SimpleNamespace

@@ -224,18 +224,6 @@ class TPLinear(torch.nn.Module):
             self.local_out_features = math.ceil(
                 out_features / self.outer_group_size
             )
-        
-        # DEBUG: Log tensor parallelism sharding info
-        rank = dist.get_rank() if dist.is_initialized() else 0
-        if rank == 0:
-            print(f"[DEBUG-TP-LINEAR] Layer sharding info:")
-            print(f"  in_features={self.in_features}, out_features={self.out_features}")
-            print(f"  inner_group_size={self.inner_group_size}, outer_group_size={self.outer_group_size}")
-            print(f"  local_in_features={self.local_in_features}, local_out_features={self.local_out_features}")
-            print(f"  out_features % outer_group_size = {self.out_features % self.outer_group_size}")
-            if self.out_features % self.outer_group_size != 0:
-                print(f"  WARNING: out_features NOT evenly divisible! May cause AllReduce size mismatch!")
-        
         # initialize the weight matrix and grab the local slice for each GPU
         initial_params = initialize_params(
             out_features,
@@ -289,13 +277,6 @@ class TPLinear(torch.nn.Module):
         self.symmetric_memory_tensor = None
 
     def all_reduce(self, x):
-        # DEBUG: Log tensor shape and size before AllReduce
-        import os
-        local_rank = int(os.environ.get("LOCAL_RANK", 0))
-        numel = x.numel()
-        if local_rank == 0 or True:  # Log all ranks
-            print(f"[DEBUG-ALLREDUCE] Rank {local_rank}: x shape={x.shape}, numel={numel}")
-        
         # tp_all_reduce(x, self.inner_nccl_comm_idx)
         dist.all_reduce(
             x, op=torch.distributed.ReduceOp.SUM, group=self.inner_group
