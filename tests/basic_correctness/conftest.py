@@ -128,14 +128,23 @@ def alpaca_dataset():
 # Model fixtures
 @pytest.fixture(scope="module")
 def yalis_engine(model_id, dtype, attn_backend):
-    """Create a standard Yalis LLMEngine."""
+    """Create a standard Yalis LLMEngine (rank 0 only)."""
+    rank = 0
     world_size = 1
 
     if dist.is_initialized():
+        rank = dist.get_rank()
         world_size = dist.get_world_size()
-        # Synchronize all ranks before checkpoint load
-        if world_size > 1:
+
+    # Synchronize all ranks before checkpoint load
+    if world_size > 1 and dist.is_initialized():
+        dist.barrier()
+
+    # Only rank 0 loads the engine to avoid concurrent checkpoint access
+    if rank != 0:
+        if world_size > 1 and dist.is_initialized():
             dist.barrier()
+        return None
 
     # Resolve model_path: if model_id is a relative path, make it
     # absolute relative to repo root
@@ -161,7 +170,7 @@ def yalis_engine(model_id, dtype, attn_backend):
     )
 
     # Synchronize all ranks after YALIS engine is loaded
-    if world_size > 1:
+    if world_size > 1 and dist.is_initialized():
         dist.barrier()
 
     return engine
@@ -169,10 +178,11 @@ def yalis_engine(model_id, dtype, attn_backend):
 
 @pytest.fixture(scope="module")
 def hf_model(model_id, dtype, attn_backend, device):
-    """Create a HuggingFace model for comparison testing.
+    """Create a HuggingFace model for comparison testing (rank 0 only).
 
-    In distributed mode, HF model only loads on rank 0 to avoid conflicts
-    with other YALIS processes owning their GPUs. Uses CPU offload if needed.
+    In distributed mode, only rank 0 loads the HF model to avoid concurrent
+    file I/O and memory contention. Other ranks return None and wait at a
+    barrier to synchronize.
     """
     rank = 0
     world_size = 1
@@ -180,13 +190,14 @@ def hf_model(model_id, dtype, attn_backend, device):
     if dist.is_initialized():
         rank = dist.get_rank()
         world_size = dist.get_world_size()
-        # Synchronize all ranks before HF model load
-        if world_size > 1:
-            dist.barrier()
+
+    # Synchronize all ranks before HF model load
+    if world_size > 1 and dist.is_initialized():
+        dist.barrier()
 
     if rank != 0:
         # Only rank 0 loads the HF model; other ranks return None
-        if world_size > 1:
+        if world_size > 1 and dist.is_initialized():
             dist.barrier()
         return None
 
@@ -201,7 +212,7 @@ def hf_model(model_id, dtype, attn_backend, device):
     model.eval()
 
     # Synchronize all ranks after HF model is loaded
-    if world_size > 1:
+    if world_size > 1 and dist.is_initialized():
         dist.barrier()
 
     return model
