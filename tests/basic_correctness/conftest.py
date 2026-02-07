@@ -1,3 +1,4 @@
+import os
 import pytest
 import torch.distributed as dist
 import torch
@@ -6,13 +7,15 @@ from yalis import ModelConfig, InferenceConfig, LLMEngine, SpeculativeLLMEngine
 from types import SimpleNamespace
 from tests.sample_dataset import AlpacaDataset
 
+# Assume offline mode by default unless otherwise specified
+HF_DATASETS_OFFLINE = os.environ.get("HF_DATASETS_OFFLINE", "1") == "1"
 
 def pytest_addoption(parser):
     parser.addini(
         "model",
         "Model to use for the test",
         type="string",
-        default="meta-llama/Llama-3.1-8B-Instruct",
+        default="yalis/external/checkpoints/openai/gpt-oss-20b",
     )
     parser.addini(
         "dtype", "Data type to use for the test", type="string", default="bf16"
@@ -27,7 +30,7 @@ def pytest_addoption(parser):
         "draft_model",
         "Draft model to use for Speculative Decoding tests",
         type="string",
-        default="meta-llama/Llama-3.2-1B-Instruct",
+        default="yalis/external/checkpoints/openai/gpt-oss-20b",
     )
 
 
@@ -81,7 +84,7 @@ def attn_backend(request):
     yalis_attnb = attnb
 
     hf_map = {
-        "sdpa": "sdpa",
+        "sdpa": "eager", # Use eager as fallback for GptOssForCausalLM
         "flash": "flash_attention_2",
         # For some reason, flex does not work with in hf right now
         "flex": "flash_attention_2",
@@ -96,9 +99,22 @@ def attn_backend(request):
 @pytest.fixture(scope="module")
 def tokenizer(model_id):
     """Create a tokenizer for the test model."""
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_id,
+        local_files_only=HF_DATASETS_OFFLINE,
+    )
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
+
+    if tokenizer.chat_template is None:
+        template = (
+            "{% for message in messages %}"
+            "{% if message['role'] == 'user' %}"
+            "{{ message['content'] }}"
+            "{% endif %}{% endfor %}"
+        )
+        tokenizer.chat_template = template
+
     return tokenizer
 
 
@@ -113,7 +129,16 @@ def alpaca_dataset():
 @pytest.fixture(scope="module")
 def yalis_engine(model_id, dtype, attn_backend):
     """Create a standard Yalis LLMEngine."""
-    model_config = ModelConfig(model_name=model_id, precision=dtype.yalis)
+    # Resolve model_path: if model_id is a relative path, make it
+    # absolute relative to repo root
+    if not os.path.isabs(model_id):
+        model_path = os.path.abspath(model_id)
+    else:
+        model_path = model_id
+    model_name_for_config = os.path.basename(model_path)
+    model_config = ModelConfig(
+        model_name_for_config, model_path=model_path, precision=dtype.yalis
+    )
     inference_config = InferenceConfig(
         max_batch_size=4,
         max_length_of_generated_sequences=2048,
@@ -145,8 +170,9 @@ def hf_model(model_id, dtype, attn_backend, device):
     model = AutoModelForCausalLM.from_pretrained(
         model_id,
         attn_implementation=attn_backend.hf,
-        dtype=dtype.hf,
+        torch_dtype=dtype.hf,
         device_map="auto",
+        local_files_only=HF_DATASETS_OFFLINE, # prefer local model files to avoid network calls
         trust_remote_code=True,
     )
     model.eval()
