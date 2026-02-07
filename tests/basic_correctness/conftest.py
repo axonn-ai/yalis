@@ -129,6 +129,14 @@ def alpaca_dataset():
 @pytest.fixture(scope="module")
 def yalis_engine(model_id, dtype, attn_backend):
     """Create a standard Yalis LLMEngine."""
+    world_size = 1
+
+    if dist.is_initialized():
+        world_size = dist.get_world_size()
+        # Synchronize all ranks before checkpoint load
+        if world_size > 1:
+            dist.barrier()
+
     # Resolve model_path: if model_id is a relative path, make it
     # absolute relative to repo root
     if not os.path.isabs(model_id):
@@ -148,9 +156,15 @@ def yalis_engine(model_id, dtype, attn_backend):
         attention_backend=attn_backend.yalis,
         use_paged_kv_caching=False,
     )
-    return LLMEngine(
+    engine = LLMEngine(
         model_config=model_config, inference_config=inference_config
     )
+
+    # Synchronize all ranks after YALIS engine is loaded
+    if world_size > 1:
+        dist.barrier()
+
+    return engine
 
 
 @pytest.fixture(scope="module")
@@ -160,22 +174,36 @@ def hf_model(model_id, dtype, attn_backend, device):
     In distributed mode, HF model only loads on rank 0 to avoid conflicts
     with other YALIS processes owning their GPUs. Uses CPU offload if needed.
     """
+    rank = 0
+    world_size = 1
 
     if dist.is_initialized():
         rank = dist.get_rank()
-        if rank != 0:
-            # Only rank 0 loads the HF model; other ranks return None
-            return None
+        world_size = dist.get_world_size()
+        # Synchronize all ranks before HF model load
+        if world_size > 1:
+            dist.barrier()
+
+    if rank != 0:
+        # Only rank 0 loads the HF model; other ranks return None
+        if world_size > 1:
+            dist.barrier()
+        return None
 
     model = AutoModelForCausalLM.from_pretrained(
         model_id,
         attn_implementation=attn_backend.hf,
         torch_dtype=dtype.hf,
         device_map="auto",
-        local_files_only=HF_DATASETS_OFFLINE, # prefer local model files to avoid network calls
+        local_files_only=HF_DATASETS_OFFLINE,
         trust_remote_code=True,
     )
     model.eval()
+
+    # Synchronize all ranks after HF model is loaded
+    if world_size > 1:
+        dist.barrier()
+
     return model
 
 
