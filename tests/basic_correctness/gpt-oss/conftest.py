@@ -144,12 +144,23 @@ def hf_model_loader(model_id, dtype, attn_backend, device):
 
     def load_hf():
         local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        world_size = int(os.environ.get("WORLD_SIZE", 1))
+
+        # Synchronize all ranks before HF model load
+        if world_size > 1 and dist.is_initialized():
+            dist.barrier()
+            logger.info(
+                f"[rank {local_rank}] Synchronized before HF model load"
+            )
 
         # Only load HF model on rank 0 to avoid duplicate loading
         if local_rank != 0:
             logger.info(
                 f"Rank {local_rank}: Skipping HF model load (rank 0 only)"
             )
+            # Wait for rank 0 to finish loading before non-rank-0 continues
+            if world_size > 1 and dist.is_initialized():
+                dist.barrier()
             return None
 
         # Disable MXFP4 CUDA kernels to prevent GPU-side dequantization
@@ -169,6 +180,15 @@ def hf_model_loader(model_id, dtype, attn_backend, device):
         logger.info(f"Moving model to {target_device}...")
         model = model.to(target_device)
         model.eval()
+        logger.info("HF model loading complete")
+
+        # Synchronize: allow non-rank-0 processes to continue
+        if world_size > 1 and dist.is_initialized():
+            dist.barrier()
+            logger.info(
+                f"[rank {local_rank}] Synchronized after HF model load"
+            )
+
         return model
 
     return load_hf
@@ -179,6 +199,17 @@ def yalis_engine_loader(model_id, dtype, attn_backend):
     """Return a callable that loads YALIS engine on demand."""
 
     def load_yalis():
+        local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        world_size = int(os.environ.get("WORLD_SIZE", 1))
+
+        # Synchronize all ranks before YALIS checkpoint load to serialize
+        # access and avoid simultaneous file I/O and memory pressure
+        if world_size > 1 and dist.is_initialized():
+            dist.barrier()
+            logger.info(
+                f"[rank {local_rank}] Synchronized before YALIS engine load"
+            )
+
         # Resolve model_path: if model_id is a relative path, make it
         # absolute relative to repo root
         if not os.path.isabs(model_id):
@@ -202,6 +233,15 @@ def yalis_engine_loader(model_id, dtype, attn_backend):
         engine = LLMEngine(
             model_config=model_config, inference_config=inference_config
         )
+        logger.info(f"[rank {local_rank}] YALIS engine loading complete")
+
+        # Synchronize all ranks after YALIS engine is loaded
+        if world_size > 1 and dist.is_initialized():
+            dist.barrier()
+            logger.info(
+                f"[rank {local_rank}] Synchronized after YALIS engine load"
+            )
+
         return engine
 
     return load_yalis

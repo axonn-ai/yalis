@@ -128,23 +128,18 @@ def alpaca_dataset():
 # Model fixtures
 @pytest.fixture(scope="module")
 def yalis_engine(model_id, dtype, attn_backend):
-    """Create a standard Yalis LLMEngine (rank 0 only)."""
+    """Create a standard Yalis LLMEngine with serialized loading.
+    
+    In distributed mode, ranks serialize their checkpoint loading to avoid
+    concurrent memory contention. Each rank independently loads and shards
+    its weights via tensor parallelism.
+    """
     rank = 0
     world_size = 1
 
     if dist.is_initialized():
         rank = dist.get_rank()
         world_size = dist.get_world_size()
-
-    # Synchronize all ranks before checkpoint load
-    if world_size > 1 and dist.is_initialized():
-        dist.barrier()
-
-    # Only rank 0 loads the engine to avoid concurrent checkpoint access
-    if rank != 0:
-        if world_size > 1 and dist.is_initialized():
-            dist.barrier()
-        return None
 
     # Resolve model_path: if model_id is a relative path, make it
     # absolute relative to repo root
@@ -165,13 +160,19 @@ def yalis_engine(model_id, dtype, attn_backend):
         attention_backend=attn_backend.yalis,
         use_paged_kv_caching=False,
     )
-    engine = LLMEngine(
-        model_config=model_config, inference_config=inference_config
-    )
-
-    # Synchronize all ranks after YALIS engine is loaded
+    
+    # Serialize checkpoint loading: each rank loads and shards sequentially
     if world_size > 1 and dist.is_initialized():
-        dist.barrier()
+        for r in range(world_size):
+            if rank == r:
+                engine = LLMEngine(
+                    model_config=model_config, inference_config=inference_config
+                )
+            dist.barrier()  # Ensure rank r finishes before rank r+1 starts
+    else:
+        engine = LLMEngine(
+            model_config=model_config, inference_config=inference_config
+        )
 
     return engine
 
@@ -180,9 +181,8 @@ def yalis_engine(model_id, dtype, attn_backend):
 def hf_model(model_id, dtype, attn_backend, device):
     """Create a HuggingFace model for comparison testing (rank 0 only).
 
-    In distributed mode, only rank 0 loads the HF model to avoid concurrent
-    file I/O and memory contention. Other ranks return None and wait at a
-    barrier to synchronize.
+    Only rank 0 loads the HF model since it's only used for reference outputs
+    in single-GPU mode. Other ranks return None.
     """
     rank = 0
     world_size = 1
@@ -191,14 +191,8 @@ def hf_model(model_id, dtype, attn_backend, device):
         rank = dist.get_rank()
         world_size = dist.get_world_size()
 
-    # Synchronize all ranks before HF model load
-    if world_size > 1 and dist.is_initialized():
-        dist.barrier()
-
     if rank != 0:
         # Only rank 0 loads the HF model; other ranks return None
-        if world_size > 1 and dist.is_initialized():
-            dist.barrier()
         return None
 
     model = AutoModelForCausalLM.from_pretrained(
@@ -210,10 +204,6 @@ def hf_model(model_id, dtype, attn_backend, device):
         trust_remote_code=True,
     )
     model.eval()
-
-    # Synchronize all ranks after HF model is loaded
-    if world_size > 1 and dist.is_initialized():
-        dist.barrier()
 
     return model
 
