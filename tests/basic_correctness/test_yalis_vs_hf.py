@@ -290,15 +290,16 @@ def test_01_prefill(
     logger.info("HF inference complete, cleaning up HF model")
     # Garbage collect HF model before YALIS inference
     del hf_model
+    torch.cuda.synchronize()  # Ensure all GPU work from HF is done
     torch.cuda.empty_cache()
     gc.collect()
-    logger.info("HF model garbage collected")
+    logger.info("HF model garbage collected and CUDA memory cleared")
     
-    # Synchronize all ranks before YALIS inference to ensure both are ready
-    # for collective operations
+    # CRITICAL: Synchronize all ranks AFTER HF cleanup and BEFORE YALIS inference.
+    # Rank 0 had HF model loaded; ensure it's truly freed before any rank starts YALIS.
     if dist.is_initialized():
         rank = dist.get_rank()
-        logger.info(f"[Rank {rank}] Synchronizing ranks before YALIS inference")
+        logger.info(f"[Rank {rank}] Synchronizing ranks after HF cleanup")
         dist.barrier()
         logger.info(f"[Rank {rank}] Synchronization complete, starting YALIS inference")
     
@@ -366,15 +367,16 @@ def test_02_decode(
     logger.info("HF inference complete, cleaning up HF model")
     # Garbage collect HF model before YALIS inference
     del hf_model
+    torch.cuda.synchronize()  # Ensure all GPU work from HF is done
     torch.cuda.empty_cache()
     gc.collect()
-    logger.info("HF model garbage collected")
+    logger.info("HF model garbage collected and CUDA memory cleared")
     
-    # Synchronize all ranks before YALIS inference to ensure both are ready
-    # for collective operations
+    # CRITICAL: Synchronize all ranks AFTER HF cleanup and BEFORE YALIS inference.
+    # Rank 0 had HF model loaded; ensure it's truly freed before any rank starts YALIS.
     if dist.is_initialized():
         rank = dist.get_rank()
-        logger.info(f"[Rank {rank}] Synchronizing ranks before YALIS inference")
+        logger.info(f"[Rank {rank}] Synchronizing ranks after HF cleanup")
         dist.barrier()
         logger.info(f"[Rank {rank}] Synchronization complete, starting YALIS inference")
     
