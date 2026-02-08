@@ -3,9 +3,13 @@ import torch
 import torch.distributed as dist
 import warnings
 import gc
+import logging
 from utils import alpaca_prompt
 from transformers import StoppingCriteriaList, StoppingCriteria
 import random as random_module
+
+# Configure logger
+logger = logging.getLogger(__name__)
 
 NUM_LOGPROBS = 5
 # BATCH_SIZES = [1, 4, 8]
@@ -258,23 +262,30 @@ def test_01_prefill(
         prompts,
         num_tokens=1,
     )
+    logger.info("HF inference complete, cleaning up HF model")
     # Garbage collect HF model before YALIS inference
     del hf_model
     torch.cuda.empty_cache()
     gc.collect()
+    logger.info("HF model garbage collected")
     
     # Synchronize all ranks after HF inference and before YALIS inference
     # to ensure no rank starts TP collective operations prematurely
     if dist.is_initialized():
+        rank = dist.get_rank()
+        logger.info(f"[Rank {rank}] Synchronizing ranks before YALIS inference")
         dist.barrier()
+        logger.info(f"[Rank {rank}] Synchronization complete, starting YALIS inference")
     
     yalis_tokens, yalis_logits = _get_yalis_output(
         yalis_engine, prompts, num_tokens=1
     )
+    logger.info("YALIS inference complete, cleaning up engine")
     # Garbage collect YALIS before comparison
     del yalis_engine
     torch.cuda.empty_cache()
     gc.collect()
+    logger.info("YALIS engine garbage collected")
     
     # Only compare on rank 0 where HF model is loaded
     if hf_tokens is not None:
@@ -302,23 +313,30 @@ def test_02_decode(
     hf_tokens, hf_logits = _get_hf_output(
         tokenizer, hf_model, prompts, num_tokens=32
     )
+    logger.info("HF inference complete, cleaning up HF model")
     # Garbage collect HF model before YALIS inference
     del hf_model
     torch.cuda.empty_cache()
     gc.collect()
+    logger.info("HF model garbage collected")
     
     # Synchronize all ranks after HF inference and before YALIS inference
     # to ensure no rank starts TP collective operations prematurely
     if dist.is_initialized():
+        rank = dist.get_rank()
+        logger.info(f"[Rank {rank}] Synchronizing ranks before YALIS inference")
         dist.barrier()
+        logger.info(f"[Rank {rank}] Synchronization complete, starting YALIS inference")
     
     yalis_tokens, yalis_logits = _get_yalis_output(
         yalis_engine, prompts, num_tokens=32
     )
+    logger.info("YALIS inference complete, cleaning up engine")
     # Garbage collect YALIS before comparison
     del yalis_engine
     torch.cuda.empty_cache()
     gc.collect()
+    logger.info("YALIS engine garbage collected")
     
     # Only compare on rank 0 where HF model is loaded
     if hf_tokens is not None:
