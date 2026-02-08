@@ -2,14 +2,10 @@ import os
 import pytest
 import torch.distributed as dist
 import torch
-import logging
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from yalis import ModelConfig, InferenceConfig, LLMEngine, SpeculativeLLMEngine
 from types import SimpleNamespace
 from tests.sample_dataset import AlpacaDataset
-
-# Configure logger
-logger = logging.getLogger(__name__)
 
 # Assume offline mode by default unless otherwise specified
 HF_DATASETS_OFFLINE = os.environ.get("HF_DATASETS_OFFLINE", "1") == "1"
@@ -132,29 +128,8 @@ def alpaca_dataset():
 # Model fixtures
 @pytest.fixture(scope="module")
 def yalis_engine(model_id, dtype, attn_backend):
-    """Create a standard Yalis LLMEngine with serialized loading.
-    
-    In distributed mode, ranks serialize their checkpoint loading to avoid
-    concurrent memory contention. Each rank independently loads and shards
-    its weights via tensor parallelism.
-    """
-    rank = 0
-    world_size = 1
-
-    if dist.is_initialized():
-        rank = dist.get_rank()
-        world_size = dist.get_world_size()
-
-    # Resolve model_path: if model_id is a relative path, make it
-    # absolute relative to repo root
-    if not os.path.isabs(model_id):
-        model_path = os.path.abspath(model_id)
-    else:
-        model_path = model_id
-    model_name_for_config = os.path.basename(model_path)
-    model_config = ModelConfig(
-        model_name_for_config, model_path=model_path, precision=dtype.yalis
-    )
+    """Create a standard Yalis LLMEngine."""
+    model_config = ModelConfig(model_name=model_id, precision=dtype.yalis)
     inference_config = InferenceConfig(
         max_batch_size=4,
         max_length_of_generated_sequences=2048,
@@ -164,47 +139,24 @@ def yalis_engine(model_id, dtype, attn_backend):
         attention_backend=attn_backend.yalis,
         use_paged_kv_caching=False,
     )
-    
-    # Serialize checkpoint loading: each rank loads and shards sequentially
-    engine = None
-    if world_size > 1 and dist.is_initialized():
-        for r in range(world_size):
-            if rank == r:
-                logger.info(f"[Rank {rank}] Loading and sharding YALIS checkpoint")
-                engine = LLMEngine(
-                    model_config=model_config, inference_config=inference_config
-                )
-                logger.info(f"[Rank {rank}] Checkpoint load and sharding complete")
-            logger.info(f"[Rank {rank}] Synchronizing ranks at checkpoint load barrier (iteration {r})")
-            dist.barrier()  # Ensure rank r finishes before rank r+1 starts
-            logger.info(f"[Rank {rank}] Barrier cleared, proceeding")
-    else:
-        logger.info("Single GPU mode: loading YALIS engine without serialization")
-        engine = LLMEngine(
-            model_config=model_config, inference_config=inference_config
-        )
-        logger.info("YALIS engine loaded successfully")
-
-    return engine
+    return LLMEngine(
+        model_config=model_config, inference_config=inference_config
+    )
 
 
 @pytest.fixture(scope="module")
 def hf_model(model_id, dtype, attn_backend, device):
-    """Create a HuggingFace model for comparison testing (rank 0 only).
+    """Create a HuggingFace model for comparison testing.
 
-    Only rank 0 loads the HF model since it's only used for reference outputs
-    in single-GPU mode. Other ranks return None.
+    In distributed mode, HF model only loads on rank 0 to avoid conflicts
+    with other YALIS processes owning their GPUs. Uses CPU offload if needed.
     """
-    rank = 0
-    world_size = 1
 
     if dist.is_initialized():
         rank = dist.get_rank()
-        world_size = dist.get_world_size()
-
-    if rank != 0:
-        # Only rank 0 loads the HF model; other ranks return None
-        return None
+        if rank != 0:
+            # Only rank 0 loads the HF model; other ranks return None
+            return None
 
     model = AutoModelForCausalLM.from_pretrained(
         model_id,
