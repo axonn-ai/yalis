@@ -140,27 +140,16 @@ def alpaca_dataset():
 # Model fixtures - return lazy loaders, not pre-loaded models
 @pytest.fixture(scope="function")
 def hf_model_loader(model_id, dtype, attn_backend, device):
-    """Return a callable that loads HF model on demand (rank 0 only)."""
+    """Return a callable that loads HF model on demand (rank 0 only, no dist sync)."""
 
     def load_hf():
         local_rank = int(os.environ.get("LOCAL_RANK", 0))
-        world_size = int(os.environ.get("WORLD_SIZE", 1))
-
-        # Synchronize all ranks before HF model load
-        if world_size > 1 and dist.is_initialized():
-            dist.barrier()
-            logger.info(
-                f"[rank {local_rank}] Synchronized before HF model load"
-            )
 
         # Only load HF model on rank 0 to avoid duplicate loading
         if local_rank != 0:
             logger.info(
                 f"Rank {local_rank}: Skipping HF model load (rank 0 only)"
             )
-            # Wait for rank 0 to finish loading before non-rank-0 continues
-            if world_size > 1 and dist.is_initialized():
-                dist.barrier()
             return None
 
         # Disable MXFP4 CUDA kernels to prevent GPU-side dequantization
@@ -181,13 +170,6 @@ def hf_model_loader(model_id, dtype, attn_backend, device):
         model = model.to(target_device)
         model.eval()
         logger.info("HF model loading complete")
-
-        # Synchronize: allow non-rank-0 processes to continue
-        if world_size > 1 and dist.is_initialized():
-            dist.barrier()
-            logger.info(
-                f"[rank {local_rank}] Synchronized after HF model load"
-            )
 
         return model
 
