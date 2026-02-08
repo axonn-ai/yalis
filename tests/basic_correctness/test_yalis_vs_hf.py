@@ -141,12 +141,26 @@ def _get_hf_output(tokenizer, model, prompts, num_tokens):
 
 
 def _get_yalis_output(engine, prompts, num_tokens):
-    output_tokens, _, logits = engine.generate(
-        prompts,
-        report_throughput=False,
-        tokens_to_generate=num_tokens,
-        get_logits=True,
-    )
+    if dist.is_initialized():
+        rank = dist.get_rank()
+        logger.info(f"[Rank {rank}] Starting YALIS generate with {len(prompts)} prompts")
+    
+    try:
+        output_tokens, _, logits = engine.generate(
+            prompts,
+            report_throughput=False,
+            tokens_to_generate=num_tokens,
+            get_logits=True,
+        )
+        if dist.is_initialized():
+            rank = dist.get_rank()
+            logger.info(f"[Rank {rank}] YALIS generate completed successfully")
+    except Exception as e:
+        if dist.is_initialized():
+            rank = dist.get_rank()
+            logger.error(f"[Rank {rank}] YALIS generate failed: {type(e).__name__}: {str(e)}")
+        raise
+    
     # output_tokens: (batch, num_tokens)
     return [
         output_tokens[i][:num_tokens].cpu() for i in range(len(prompts))
@@ -291,8 +305,22 @@ def test_01_prefill(
     yalis_tokens, yalis_logits = _get_yalis_output(
         yalis_engine, prompts, num_tokens=1
     )
-    logger.info("YALIS inference complete, cleaning up engine")
-    # Garbage collect YALIS before comparison
+    logger.info("YALIS inference complete")
+    
+    # CRITICAL: Synchronize CUDA and all ranks after YALIS inference.
+    # NCCL collectives are enqueued asynchronously, so the Python function
+    # returns before actual computation completes. Must wait for all GPU work
+    # and collective operations to finish before proceeding.
+    torch.cuda.synchronize()
+    logger.info("CUDA synchronized after YALIS inference")
+    
+    if dist.is_initialized():
+        rank = dist.get_rank()
+        logger.info(f"[Rank {rank}] Synchronizing ranks after YALIS inference")
+        dist.barrier()
+        logger.info(f"[Rank {rank}] All ranks completed YALIS inference")
+    
+    logger.info("Starting engine cleanup")
     del yalis_engine
     torch.cuda.empty_cache()
     gc.collect()
@@ -353,8 +381,22 @@ def test_02_decode(
     yalis_tokens, yalis_logits = _get_yalis_output(
         yalis_engine, prompts, num_tokens=32
     )
-    logger.info("YALIS inference complete, cleaning up engine")
-    # Garbage collect YALIS before comparison
+    logger.info("YALIS inference complete")
+    
+    # CRITICAL: Synchronize CUDA and all ranks after YALIS inference.
+    # NCCL collectives are enqueued asynchronously, so the Python function
+    # returns before actual computation completes. Must wait for all GPU work
+    # and collective operations to finish before proceeding.
+    torch.cuda.synchronize()
+    logger.info("CUDA synchronized after YALIS inference")
+    
+    if dist.is_initialized():
+        rank = dist.get_rank()
+        logger.info(f"[Rank {rank}] Synchronizing ranks after YALIS inference")
+        dist.barrier()
+        logger.info(f"[Rank {rank}] All ranks completed YALIS inference")
+    
+    logger.info("Starting engine cleanup")
     del yalis_engine
     torch.cuda.empty_cache()
     gc.collect()
