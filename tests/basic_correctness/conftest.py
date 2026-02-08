@@ -170,20 +170,20 @@ def yalis_engine(model_id, dtype, attn_backend):
     if world_size > 1 and dist.is_initialized():
         for r in range(world_size):
             if rank == r:
-                logger.info(f\"[Rank {rank}] Loading and sharding YALIS checkpoint\")
+                logger.info(f"[Rank {rank}] Loading and sharding YALIS checkpoint")
                 engine = LLMEngine(
                     model_config=model_config, inference_config=inference_config
                 )
-                logger.info(f\"[Rank {rank}] Checkpoint load and sharding complete\")
-            logger.info(f\"[Rank {rank}] Synchronizing ranks at checkpoint load barrier (iteration {r})\")
+                logger.info(f"[Rank {rank}] Checkpoint load and sharding complete")
+            logger.info(f"[Rank {rank}] Synchronizing ranks at checkpoint load barrier (iteration {r})")
             dist.barrier()  # Ensure rank r finishes before rank r+1 starts
-            logger.info(f\"[Rank {rank}] Barrier cleared, proceeding\")
+            logger.info(f"[Rank {rank}] Barrier cleared, proceeding")
     else:
-        logger.info(\"Single GPU mode: loading YALIS engine without serialization\")
+        logger.info("Single GPU mode: loading YALIS engine without serialization")
         engine = LLMEngine(
             model_config=model_config, inference_config=inference_config
         )
-        logger.info(\"YALIS engine loaded successfully\")
+        logger.info("YALIS engine loaded successfully")
 
     return engine
 
