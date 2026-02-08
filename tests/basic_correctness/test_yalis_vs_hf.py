@@ -256,6 +256,17 @@ def test_01_prefill(
     prompts = _generate_and_broadcast_prompts(
         alpaca_dataset, tokenizer, prompt_length, batch_size
     )
+    
+    # Synchronize all ranks BEFORE HF inference to prevent timing mismatch:
+    # HF only runs on rank 0 (asymmetric operation), but all ranks must
+    # coordinate before this. Rank 1 finishes quickly (returns None) and must
+    # not reach TP collectives before rank 0 completes HF inference.
+    if dist.is_initialized():
+        rank = dist.get_rank()
+        logger.info(f"[Rank {rank}] Synchronizing ranks before HF inference")
+        dist.barrier()
+        logger.info(f"[Rank {rank}] Synchronization complete, starting HF inference")
+    
     hf_tokens, hf_logits = _get_hf_output(
         tokenizer,
         hf_model,
@@ -269,8 +280,8 @@ def test_01_prefill(
     gc.collect()
     logger.info("HF model garbage collected")
     
-    # Synchronize all ranks after HF inference and before YALIS inference
-    # to ensure no rank starts TP collective operations prematurely
+    # Synchronize all ranks before YALIS inference to ensure both are ready
+    # for collective operations
     if dist.is_initialized():
         rank = dist.get_rank()
         logger.info(f"[Rank {rank}] Synchronizing ranks before YALIS inference")
@@ -310,6 +321,17 @@ def test_02_decode(
     prompts = _generate_and_broadcast_prompts(
         alpaca_dataset, tokenizer, prompt_length, batch_size
     )
+    
+    # Synchronize all ranks BEFORE HF inference to prevent timing mismatch:
+    # HF only runs on rank 0 (asymmetric operation), but all ranks must
+    # coordinate before this. Rank 1 finishes quickly (returns None) and must
+    # not reach TP collectives before rank 0 completes HF inference.
+    if dist.is_initialized():
+        rank = dist.get_rank()
+        logger.info(f"[Rank {rank}] Synchronizing ranks before HF inference")
+        dist.barrier()
+        logger.info(f"[Rank {rank}] Synchronization complete, starting HF inference")
+    
     hf_tokens, hf_logits = _get_hf_output(
         tokenizer, hf_model, prompts, num_tokens=32
     )
@@ -320,8 +342,8 @@ def test_02_decode(
     gc.collect()
     logger.info("HF model garbage collected")
     
-    # Synchronize all ranks after HF inference and before YALIS inference
-    # to ensure no rank starts TP collective operations prematurely
+    # Synchronize all ranks before YALIS inference to ensure both are ready
+    # for collective operations
     if dist.is_initialized():
         rank = dist.get_rank()
         logger.info(f"[Rank {rank}] Synchronizing ranks before YALIS inference")
