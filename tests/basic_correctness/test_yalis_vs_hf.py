@@ -2,6 +2,7 @@ import pytest
 import torch
 import torch.distributed as dist
 import warnings
+import gc
 from utils import alpaca_prompt
 from transformers import StoppingCriteriaList, StoppingCriteria
 import random as random_module
@@ -257,9 +258,24 @@ def test_01_prefill(
         prompts,
         num_tokens=1,
     )
+    # Garbage collect HF model before YALIS inference
+    del hf_model
+    torch.cuda.empty_cache()
+    gc.collect()
+    
+    # Synchronize all ranks after HF inference and before YALIS inference
+    # to ensure no rank starts TP collective operations prematurely
+    if dist.is_initialized():
+        dist.barrier()
+    
     yalis_tokens, yalis_logits = _get_yalis_output(
         yalis_engine, prompts, num_tokens=1
     )
+    # Garbage collect YALIS before comparison
+    del yalis_engine
+    torch.cuda.empty_cache()
+    gc.collect()
+    
     # Only compare on rank 0 where HF model is loaded
     if hf_tokens is not None:
         _compare_logprobs(hf_logits, hf_tokens, yalis_logits, yalis_tokens)
@@ -286,9 +302,24 @@ def test_02_decode(
     hf_tokens, hf_logits = _get_hf_output(
         tokenizer, hf_model, prompts, num_tokens=32
     )
+    # Garbage collect HF model before YALIS inference
+    del hf_model
+    torch.cuda.empty_cache()
+    gc.collect()
+    
+    # Synchronize all ranks after HF inference and before YALIS inference
+    # to ensure no rank starts TP collective operations prematurely
+    if dist.is_initialized():
+        dist.barrier()
+    
     yalis_tokens, yalis_logits = _get_yalis_output(
         yalis_engine, prompts, num_tokens=32
     )
+    # Garbage collect YALIS before comparison
+    del yalis_engine
+    torch.cuda.empty_cache()
+    gc.collect()
+    
     # Only compare on rank 0 where HF model is loaded
     if hf_tokens is not None:
         _compare_logprobs(hf_logits, hf_tokens, yalis_logits, yalis_tokens)

@@ -162,6 +162,7 @@ def yalis_engine(model_id, dtype, attn_backend):
     )
     
     # Serialize checkpoint loading: each rank loads and shards sequentially
+    engine = None
     if world_size > 1 and dist.is_initialized():
         for r in range(world_size):
             if rank == r:
