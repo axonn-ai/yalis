@@ -1,4 +1,3 @@
-import os
 import pytest
 import torch.distributed as dist
 import torch
@@ -7,15 +6,13 @@ from yalis import ModelConfig, InferenceConfig, LLMEngine, SpeculativeLLMEngine
 from types import SimpleNamespace
 from tests.sample_dataset import AlpacaDataset
 
-# Assume offline mode by default unless otherwise specified
-HF_DATASETS_OFFLINE = os.environ.get("HF_DATASETS_OFFLINE", "1") == "1"
 
 def pytest_addoption(parser):
     parser.addini(
         "model",
         "Model to use for the test",
         type="string",
-        default="yalis/external/checkpoints/openai/gpt-oss-20b",
+        default="meta-llama/Llama-3.1-8B-Instruct",
     )
     parser.addini(
         "dtype", "Data type to use for the test", type="string", default="bf16"
@@ -30,7 +27,7 @@ def pytest_addoption(parser):
         "draft_model",
         "Draft model to use for Speculative Decoding tests",
         type="string",
-        default="yalis/external/checkpoints/openai/gpt-oss-20b",
+        default="meta-llama/Llama-3.2-1B-Instruct",
     )
 
 
@@ -84,7 +81,7 @@ def attn_backend(request):
     yalis_attnb = attnb
 
     hf_map = {
-        "sdpa": "eager", # Use eager as fallback for GptOssForCausalLM
+        "sdpa": "sdpa",
         "flash": "flash_attention_2",
         # For some reason, flex does not work with in hf right now
         "flex": "flash_attention_2",
@@ -99,22 +96,9 @@ def attn_backend(request):
 @pytest.fixture(scope="module")
 def tokenizer(model_id):
     """Create a tokenizer for the test model."""
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_id,
-        local_files_only=HF_DATASETS_OFFLINE,
-    )
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
-
-    if tokenizer.chat_template is None:
-        template = (
-            "{% for message in messages %}"
-            "{% if message['role'] == 'user' %}"
-            "{{ message['content'] }}"
-            "{% endif %}{% endfor %}"
-        )
-        tokenizer.chat_template = template
-
     return tokenizer
 
 
@@ -161,13 +145,11 @@ def hf_model(model_id, dtype, attn_backend, device):
     model = AutoModelForCausalLM.from_pretrained(
         model_id,
         attn_implementation=attn_backend.hf,
-        torch_dtype=dtype.hf,
+        dtype=dtype.hf,
         device_map="auto",
-        local_files_only=HF_DATASETS_OFFLINE,
         trust_remote_code=True,
     )
     model.eval()
-
     return model
 
 

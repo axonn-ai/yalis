@@ -3,13 +3,11 @@ import torch
 import warnings
 from utils import alpaca_prompt
 from transformers import StoppingCriteriaList, StoppingCriteria
-import random as random_module
 
 NUM_LOGPROBS = 5
-# BATCH_SIZES = [1, 4, 8]
-BATCH_SIZES = [1]
-# PROMPT_LENGTHS = [128, 256, 512, 1024]
-PROMPT_LENGTHS = [64]
+BATCH_SIZES = [1, 4, 8]
+PROMPT_LENGTHS = [128, 256, 512, 1024]
+
 
 class NeverStop(StoppingCriteria):
     def __call__(self, input_ids, scores, **kwargs):
@@ -200,11 +198,6 @@ def test_01_prefill(
     dtype,
     alpaca_dataset,
 ):
-    # Ensure consistent random sampling across all ranks for TP tests
-    # All ranks must generate identical prompts for distributed inference
-    random_seed = 42
-    random_module.seed(random_seed)
-
     prompts = alpaca_prompt(
         alpaca_dataset, tokenizer, prompt_length, batch_size
     )
@@ -235,11 +228,6 @@ def test_02_decode(
     dtype,
     alpaca_dataset,
 ):
-    # Ensure consistent random sampling across all ranks for TP tests
-    # All ranks must generate identical prompts for distributed inference
-    random_seed = 42
-    random_module.seed(random_seed)
-    
     prompts = alpaca_prompt(
         alpaca_dataset, tokenizer, prompt_length, batch_size
     )
