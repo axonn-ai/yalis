@@ -57,7 +57,7 @@ precision_to_dtype = {
 
 
 @torch.inference_mode()
-@torch.compile(dynamic=True, disable=YALIS_DISABLE_COMPILE)
+@torch.compile(disable=YALIS_DISABLE_COMPILE)
 def prefill(
     model,
     tokens,
