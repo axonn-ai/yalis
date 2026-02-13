@@ -55,9 +55,15 @@ precision_to_dtype = {
     "fp32": torch.float32,
 }
 
-
 @torch.inference_mode()
 @torch.compile(disable=YALIS_DISABLE_COMPILE)
+def prefill_logits_last(model, tokens, unpadded_prompt_lengths, phase: EnginePhase=EnginePhase.PREFILL):
+    logits = model(tokens, phase, unpadded_prompt_lengths)["logits"]
+    logits = logits[torch.arange(logits.size(0)), unpadded_prompt_lengths - 1]
+    return logits
+
+
+@torch.inference_mode()
 def prefill(
     model,
     tokens,
@@ -81,10 +87,8 @@ def prefill(
         logits: (Optional) The raw logits from the model.
     """
 
-    logits = model(tokens, phase, unpadded_prompt_lengths)["logits"].to(
-        torch.float32
-    )
-    logits = logits[torch.arange(logits.size(0)), unpadded_prompt_lengths - 1]
+    logits = prefill_logits_last(model, tokens, unpadded_prompt_lengths, phase)
+    logits = logits.to(torch.float32)
     token_id = sample(
         logits=logits, temperature=temperature, top_k=top_k, top_p=top_p
     )
@@ -357,37 +361,28 @@ class LLMEngine:
         self,
         batch_sizes,
         seq_lengths,
-        iterations,
     ) -> None:
         """Warmup prefill by calling module level prefill path"""
-        if batch_sizes is None or seq_lengths is None or iterations is None:
-            raise ValueError("batch_sizes, seq_lengths, and iterations must be provided.")
+        if batch_sizes is None or seq_lengths is None:
+            raise ValueError("batch_sizes and seq_lengths must be provided.")
         
         with torch.inference_mode(), torch.autocast(
-            self.device, dtype=self.dtype, cache_enabled=False
+            self.device, dtype=self.dtype
         ):
             for bs in batch_sizes:
                 for sl in seq_lengths:
                     print_rank0(f"Warmup prefill for batch size {bs} and sequence length {sl}")
-                    for _ in range(iterations):
-                        self._reset_warmup_states(bs)
+                    self._reset_warmup_states(bs)
+                    tokens = self._fake_tokens(bs, sl)  # (bs, sl)
+                    lens = torch.full(
+                        (bs,),
+                        fill_value=int(sl),
+                        dtype=torch.long,
+                        device=self.device,
+                    )
+                    _ = prefill_logits_last(self.model, tokens, lens, EnginePhase.PREFILL)
+                    print_rank0(f"Warmup prefill for batch size {bs} and sequence length {sl} completed")
 
-                        tokens = self._fake_tokens(bs, sl)  # (bs, sl)
-                        lens = torch.full(
-                            (bs,),
-                            fill_value=int(sl),
-                            dtype=torch.long,
-                            device=self.device,
-                        )
-                        _next_token, _ = prefill(
-                            self.model,
-                            tokens,
-                            lens,
-                            temperature=self.inference_config.temperature,
-                            top_k=self.inference_config.top_k,
-                            top_p=self.inference_config.top_p,
-                        )
-                        print_rank0(f"Warmup prefill for batch size {bs} and sequence length {sl} completed")
         torch.cuda.synchronize()
 
     def warmup(
@@ -400,7 +395,6 @@ class LLMEngine:
         self.warmup_prefill(
             batch_sizes=prefill_batch_sizes,
             seq_lengths=prefill_seq_lengths,
-            iterations=1,
         )
         print(f"Prefill warmup end.")
     
