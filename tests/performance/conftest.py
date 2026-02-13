@@ -13,6 +13,60 @@ from tests.sample_dataset import AlpacaDataset
 BASELINE_DIR = os.path.join(os.path.dirname(__file__), "baselines")
 DEFAULT_BASELINE_PATH = os.path.join(BASELINE_DIR, "perf_baselines.json")
 
+_PERF_RESULTS_KEY = pytest.StashKey[list]()
+
+
+# ------------------------------------------------------------------ #
+#  Hooks                                                              #
+# ------------------------------------------------------------------ #
+
+
+def pytest_configure(config):
+    """Initialise a session-wide list to collect perf comparison results."""
+    config.stash[_PERF_RESULTS_KEY] = []
+
+
+def pytest_terminal_summary(terminalreporter, config):
+    """Print a performance comparison table after the test run."""
+    results = config.stash.get(_PERF_RESULTS_KEY, [])
+    if not results:
+        return
+
+    write = terminalreporter.write_line
+    update_mode = config.getoption("--perf-update-baselines", default=False)
+
+    if update_mode:
+        write("")
+        write("=== Performance baselines saved ===", bold=True)
+        for entry in results:
+            write(f"  [{entry['key']}]")
+            for label, value in entry["metrics"]:
+                write(f"    {label:<14} {value:>12.4f}")
+        write("")
+    else:
+        tolerance = config.getoption("--perf-tolerance", default=0.10)
+        write("")
+        write("=== Performance comparison ===", bold=True)
+        write(
+            f"  {'Benchmark':<40} {'Metric':<14}"
+            f" {'Baseline':>12} {'Current':>12} {'Change':>10}"
+        )
+        write(f"  {'-' * 92}")
+        for entry in results:
+            first = True
+            for label, base_val, curr_val, pct in entry["comparisons"]:
+                tag = entry["key"] if first else ""
+                marker = " !!" if abs(pct) > tolerance else ""
+                write(
+                    f"  {tag:<40} {label:<14}"
+                    f" {base_val:>12.4f} {curr_val:>12.4f}"
+                    f" {pct:>+9.1%}{marker}"
+                )
+                first = False
+        write("")
+        write(f"  Tolerance: {tolerance:.0%}")
+        write("")
+
 
 # ------------------------------------------------------------------ #
 #  CLI options                                                        #
@@ -177,6 +231,12 @@ def tokenizer(model_id):
 @pytest.fixture(scope="session")
 def alpaca_dataset():
     return AlpacaDataset(random_seed=42)
+
+
+@pytest.fixture(scope="session")
+def perf_results(request):
+    """Session-wide list for collecting perf comparison data."""
+    return request.config.stash[_PERF_RESULTS_KEY]
 
 
 @pytest.fixture(scope="session")

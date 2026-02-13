@@ -148,6 +148,7 @@ def test_perf_regression(
     tokenizer,
     alpaca_dataset,
     baseline_store,
+    perf_results,
     batch_size,
     prompt_length,
     decode_length,
@@ -188,9 +189,14 @@ def test_perf_regression(
                 **current,
             },
         )
-        print(f"\n  [baseline saved] {key}")
-        for mkey, label in _ALL_METRICS:
-            print(f"    {label:<14} {current[mkey]:.4f}")
+        perf_results.append(
+            {
+                "key": key,
+                "metrics": [
+                    (label, current[mkey]) for mkey, label in _ALL_METRICS
+                ],
+            }
+        )
         return
 
     # --- compare mode --------------------------------------------- #
@@ -203,16 +209,13 @@ def test_perf_regression(
 
     regressions = _check_regressions(baseline, current, tolerance)
 
-    # Always print a summary so the user can eyeball the numbers.
-    print(f"\n  [perf] {key}")
+    comparisons = []
     for mkey, label in _ALL_METRICS:
         base_val = baseline[mkey]
         curr_val = current[mkey]
         pct = (curr_val - base_val) / base_val if base_val != 0 else 0
-        print(
-            f"    {label:<14} {base_val:>10.4f} -> {curr_val:>10.4f}"
-            f"  ({pct:+.1%})"
-        )
+        comparisons.append((label, base_val, curr_val, pct))
+    perf_results.append({"key": key, "comparisons": comparisons})
 
     if regressions:
         report = _format_report(key, current, baseline, regressions, tolerance)
