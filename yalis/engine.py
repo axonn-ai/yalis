@@ -23,16 +23,16 @@ import os
 # These flags are taken from the following URL -
 # https://github.com/pytorch/pytorch/blob/347f96061f1cff603983b9be19ec92b374329a5b/benchmarks/gpt_fast/generate.py#L19
 
-torch._inductor.config.coordinate_descent_tuning = True
+torch._inductor.config.coordinate_descent_tuning = False
 
-torch._inductor.config.triton.unique_kernel_names = True
+torch._inductor.config.triton.unique_kernel_names = False
 
 # Experimental feature to reduce compile times, will be on by default in future
 torch._inductor.config.fx_graph_cache = True
 
 torch._inductor.config.assert_indirect_indexing = False
 
-torch._inductor.config.combo_kernel_foreach_dynamic_shapes = True
+torch._inductor.config.combo_kernel_foreach_dynamic_shapes = False
 
 
 YALIS_DISABLE_COMPILE = os.environ.get("YALIS_DISABLE_COMPILE", "0") == "1"
