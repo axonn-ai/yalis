@@ -38,6 +38,12 @@ def pytest_addoption(parser):
         type="string",
         default="sdpa",
     )
+    parser.addini(
+        "use_paged_kv_caching",
+        "Enable paged KV caching (requires flash backend)",
+        type="bool",
+        default=False,
+    )
     parser.addoption(
         "--perf-update-baselines",
         action="store_true",
@@ -135,8 +141,13 @@ def attn_backend(request):
     return request.config.getini("attn_backend").lower()
 
 
+@pytest.fixture(scope="session")
+def use_paged_kv_caching(request):
+    return request.config.getini("use_paged_kv_caching")
+
+
 @pytest.fixture(scope="module")
-def perf_engine(model_id, dtype, attn_backend):
+def perf_engine(model_id, dtype, attn_backend, use_paged_kv_caching):
     """LLMEngine configured for performance measurement."""
     model_config = ModelConfig(model_name=model_id, precision=dtype)
     inference_config = InferenceConfig(
@@ -146,7 +157,7 @@ def perf_engine(model_id, dtype, attn_backend):
         temperature=0.0,
         tp_dims=None,
         attention_backend=attn_backend,
-        use_paged_kv_caching=False,
+        use_paged_kv_caching=use_paged_kv_caching,
         prestore_kv_cache=True,
     )
     return LLMEngine(
@@ -169,7 +180,9 @@ def alpaca_dataset():
 
 
 @pytest.fixture(scope="session")
-def baseline_store(request, model_id, dtype, attn_backend):
+def baseline_store(
+    request, model_id, dtype, attn_backend, use_paged_kv_caching
+):
     """Load (or create) the baseline store and flush on teardown."""
     path = request.config.getoption("--perf-baseline-path")
     store = BaselineStore(path)
@@ -181,8 +194,13 @@ def baseline_store(request, model_id, dtype, attn_backend):
             model=model_id,
             attention_backend=attn_backend,
             precision=dtype,
+            use_paged_kv_caching=use_paged_kv_caching,
             updated_at=datetime.now(timezone.utc).isoformat(),
             git_commit=git_sha,
+        )
+    else:
+        _validate_baseline_config(
+            store, model_id, dtype, attn_backend, use_paged_kv_caching
         )
 
     yield store
@@ -194,6 +212,47 @@ def baseline_store(request, model_id, dtype, attn_backend):
 # ------------------------------------------------------------------ #
 #  Helpers                                                            #
 # ------------------------------------------------------------------ #
+
+
+def _validate_baseline_config(
+    store, model_id, dtype, attn_backend, use_paged_kv_caching
+):
+    """Verify the current test config matches the baseline metadata.
+
+    Raises ``pytest.UsageError`` on mismatch so the session fails
+    immediately rather than producing misleading comparisons.
+    """
+    meta = store._data.get("metadata", {})
+    if not meta:
+        return  # no baselines yet — nothing to validate
+
+    checks = {
+        "model": (meta.get("model"), model_id),
+        "precision": (meta.get("precision"), dtype),
+        "attention_backend": (meta.get("attention_backend"), attn_backend),
+        "use_paged_kv_caching": (
+            meta.get("use_paged_kv_caching"),
+            use_paged_kv_caching,
+        ),
+    }
+
+    mismatches = []
+    for field, (stored, current) in checks.items():
+        if stored is None:
+            # Baseline was created before this field was tracked — skip.
+            continue
+        if stored != current:
+            mismatches.append(
+                f"  {field}: baseline={stored!r}, current={current!r}"
+            )
+
+    if mismatches:
+        detail = "\n".join(mismatches)
+        raise pytest.UsageError(
+            f"Baseline config mismatch — the stored baselines were "
+            f"recorded with a different configuration:\n{detail}\n"
+            f"Re-run with --perf-update-baselines to regenerate."
+        )
 
 
 def _git_sha():
