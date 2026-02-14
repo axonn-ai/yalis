@@ -340,10 +340,16 @@ class LLMEngine:
             )
         return prompt_tokens, prompt_sequence_lengths
 
-    def _validate_sequence_lengths(
+    def _validate_generation_inputs(
         self, prompt_sequence_lengths, tokens_to_generate
     ):
-        """Validate and adjust sequence lengths if necessary."""
+        """Validate batch/sequence limits and adjust decode length if needed."""
+        batch_size = int(prompt_sequence_lengths.size(0))
+        if batch_size > self.inference_config.max_batch_size:
+            raise ValueError(
+                f"Batch size ({batch_size}) exceeds configured max_batch_size "
+                f"({self.inference_config.max_batch_size})."
+            )
         if prompt_sequence_lengths.max() > self.model.max_seq_length:
             raise ValueError(
                 f"Prompt sequence length ({prompt_sequence_lengths.max()})"
@@ -406,7 +412,7 @@ class LLMEngine:
         prompt_tokens, prompt_sequence_lengths = self._tokenize_prompts(
             prompts
         )
-        tokens_to_generate = self._validate_sequence_lengths(
+        tokens_to_generate = self._validate_generation_inputs(
             prompt_sequence_lengths, tokens_to_generate
         )
         timers.stop("tokenize")
@@ -447,6 +453,11 @@ class LLMEngine:
             slot_ids = self.kv_slots_manager.allocate(
                 req_ids, prompt_sequence_lengths
             )
+            if len(slot_ids) != B:
+                raise RuntimeError(
+                    f"Allocated {len(slot_ids)} KV slots for batch size {B}. "
+                    "Expected full-batch allocation."
+                )
             for step in range(tokens_to_generate):
                 timer_key = None
                 if step == 0:  # Prefill step
@@ -634,7 +645,7 @@ class SpeculativeLLMEngine(LLMEngine):
         prompt_tokens, prompt_sequence_lengths = self._tokenize_prompts(
             input_tokens
         )
-        tokens_to_generate = self._validate_sequence_lengths(
+        tokens_to_generate = self._validate_generation_inputs(
             prompt_sequence_lengths, tokens_to_generate
         )
         timers.stop("tokenize")
