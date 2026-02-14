@@ -260,7 +260,8 @@ def baseline_store(
     # dist may not yet be initialised (session fixture created early) or
     # already torn down (cleanup_dist is module-scoped), so we must not
     # rely on dist.is_initialized() / dist.get_rank().
-    is_rank_zero = int(os.environ.get("RANK", os.environ.get("SLURM_PROCID", "0"))) == 0
+    _rank = os.environ.get("RANK", os.environ.get("SLURM_PROCID", "0"))
+    is_rank_zero = int(_rank) == 0
 
     if update:
         git_sha = _git_sha()
