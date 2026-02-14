@@ -256,8 +256,11 @@ def baseline_store(
 
     update = request.config.getoption("--perf-update-baselines")
 
-    # Capture rank now — dist may be torn down before session teardown.
-    is_rank_zero = (not dist.is_initialized()) or dist.get_rank() == 0
+    # Determine rank from env vars set by the launcher (torchrun / SLURM).
+    # dist may not yet be initialised (session fixture created early) or
+    # already torn down (cleanup_dist is module-scoped), so we must not
+    # rely on dist.is_initialized() / dist.get_rank().
+    is_rank_zero = int(os.environ.get("RANK", os.environ.get("SLURM_PROCID", "0"))) == 0
 
     if update:
         git_sha = _git_sha()
