@@ -26,6 +26,13 @@ def pytest_configure(config):
     config.stash[_PERF_RESULTS_KEY] = []
 
 
+def pytest_sessionstart(session):
+    """Validate CLI options that must be positive."""
+    val = session.config.getoption("--perf-measure-iters", default=5)
+    if val < 1:
+        raise pytest.UsageError("--perf-measure-iters must be at least 1")
+
+
 def pytest_terminal_summary(terminalreporter, config):
     """Print a performance comparison table after the test run."""
     results = config.stash.get(_PERF_RESULTS_KEY, [])
@@ -120,7 +127,7 @@ def pytest_addoption(parser):
         "--perf-measure-iters",
         type=int,
         default=5,
-        help="Measurement iterations for averaging (default: 5).",
+        help="Measurement iterations for averaging (default: 5, min: 1).",
     )
     parser.addoption(
         "--perf-baseline-path",
