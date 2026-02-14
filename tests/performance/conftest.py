@@ -272,7 +272,7 @@ def baseline_store(
 
     yield store
 
-    if update:
+    if update and (not dist.is_initialized() or dist.get_rank() == 0):
         store.flush()
 
 
