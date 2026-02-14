@@ -143,7 +143,9 @@ class GPT(nn.Module):
             x = Drop.apply(x, ax.comm_handle.inner_intra_layer_parallel_group)
         # TODO: Remove this once we have a way support
         # this for speculative decoding without token counter
+        update_token_counter = False
         if token_counter is None:
+            update_token_counter = True
             token_counter = self.token_counter
 
         # flash attention wants the rope cache to be
@@ -186,7 +188,7 @@ class GPT(nn.Module):
                 * self.config.final_logit_softcapping
             )
 
-        if token_counter is None:
+        if update_token_counter:
             self.token_counter[:B].add_(
                 T
                 if actual_sequence_lengths is None
