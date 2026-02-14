@@ -343,7 +343,7 @@ class LLMEngine:
     def _validate_generation_inputs(
         self, prompt_sequence_lengths, tokens_to_generate
     ):
-        """Validate batch/sequence limits and adjust decode length if needed."""
+        """Validate batch/sequence limits and adjust decode length."""
         batch_size = int(prompt_sequence_lengths.size(0))
         if batch_size > self.inference_config.max_batch_size:
             raise ValueError(
