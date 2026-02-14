@@ -115,13 +115,13 @@ def yalis_engine(model_id, dtype, attn_backend):
     """Create a standard Yalis LLMEngine."""
     model_config = ModelConfig(model_name=model_id, precision=dtype.yalis)
     inference_config = InferenceConfig(
-        max_batch_size=4,
+        max_batch_size=8,
         max_length_of_generated_sequences=2048,
         top_p=0.0,
         temperature=0.0,
         tp_dims=None,
         attention_backend=attn_backend.yalis,
-        use_paged_kv_caching=False,
+        use_paged_kv_caching=(attn_backend.yalis == "flash"),
     )
     return LLMEngine(
         model_config=model_config, inference_config=inference_config

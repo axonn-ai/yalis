@@ -22,10 +22,15 @@ from yalis.attention import attention_wrapper
 from yalis.external.config import Config
 from yalis.tensor_parallel import TPLinear, TPMoE
 from yalis.constants import EnginePhase
-from kvcache_manager import KVCacheManager
-from yalis.attention.flash import flash_apply_rotary as apply_rotary
+
+# TODO: These need to be abstracted away from the model
 from yalis.attention.backends import AttentionBackend
-from yalis.attention.masking import create_causal_block_mask_for_flex_attention
+from yalis.attention.backend_impl.flash import (
+    flash_apply_rotary as apply_rotary,
+)
+from yalis.attention.utils.flex_utils import (
+    create_causal_block_mask_for_flex_attention,
+)
 
 # TODO: these should be dynamically set during engine initialization
 NUM_BLOCKS, PAGE_BLOCK_SIZE = 512, 256
@@ -119,38 +124,14 @@ class GPT(nn.Module):
         input_ids: torch.Tensor,
         phase: EnginePhase,
         actual_sequence_lengths: torch.Tensor = None,
+        block_table: torch.Tensor = None,
+        token_counter: torch.Tensor = None,
     ) -> torch.Tensor:
         idx = input_ids
         T = idx.size(1)
         if self.max_seq_length < T:
             raise ValueError(
                 f"Cannot forward sequence of length {T}, max seq length is only {self.max_seq_length}."  # noqa: E501
-            )
-
-        # Update block table
-        # assign new pages to each sequence if needed to store new keys/values
-        # actual storage will be done by the flash attention kernel.
-        # this is just assigning pages to each sequence
-        if self.config.use_paged_kv_caching:
-            # create pages for T new tokens if needed.
-            # Note that T includes padding tokens in prefill.
-            # we will readjust the token counters of the block table
-            # at the end to exclude padded tokens.
-            B = input_ids.shape[0]
-            seq_lengths = torch.full(
-                (B,),
-                T,
-                dtype=torch.int64,
-                device=self.kvcache_block_table.device,
-            )
-            torch.ops.yalis.update_block_table_(
-                self.kvcache_block_table[:B],
-                self.tokens_assigned[:B],
-                self.kvcache_next_page,
-                self.kvcache_free_pages,
-                seq_lengths,
-                PAGE_BLOCK_SIZE,
-                16384 // PAGE_BLOCK_SIZE,
             )
 
         x = self.transformer.wte(
@@ -160,6 +141,12 @@ class GPT(nn.Module):
             x = x * torch.tensor(self.config.n_embd**0.5, dtype=x.dtype)
         if self.config.tensor_parallel:
             x = Drop.apply(x, ax.comm_handle.inner_intra_layer_parallel_group)
+        # TODO: Remove this once we have a way support
+        # this for speculative decoding without token counter
+        update_token_counter = False
+        if token_counter is None:
+            update_token_counter = True
+            token_counter = self.token_counter
 
         # flash attention wants the rope cache to be
         # in the same dtype as the query
@@ -168,19 +155,11 @@ class GPT(nn.Module):
             self.cos = self.cos.to(x.dtype)
             self.sin = self.sin.to(x.dtype)
 
-        # Block table is not sliced and expected that
-        # the attention backend will handle the slicing.
-        block_table = (
-            self.kvcache_block_table
-            if self.config.use_paged_kv_caching
-            else None
-        )
-
         B = x.size(0)
 
         flex_attention_block_mask = (
             create_causal_block_mask_for_flex_attention(
-                self.token_counter, self.kv_length, B
+                token_counter, self.kv_length, B
             )
             if self.config.attention_backend == AttentionBackend.FLEX
             else None
@@ -192,8 +171,9 @@ class GPT(nn.Module):
                 self.cos,
                 self.sin,
                 phase,
-                self.token_counter,
+                token_counter,
                 block_table,
+                actual_sequence_lengths,
                 flex_attention_block_mask,
             )
         if self.config.tensor_parallel:
@@ -207,15 +187,12 @@ class GPT(nn.Module):
                 torch.tanh(x / self.config.final_logit_softcapping)
                 * self.config.final_logit_softcapping
             )
-        self.token_counter[:B].add_(
-            T if actual_sequence_lengths is None else actual_sequence_lengths
-        )
-        if self.config.use_paged_kv_caching:
-            # NOTE: Paged KV: readjusting the token counters of the block table
-            # to exclude padded tokens.
-            # we can exclude this for generation
-            torch.ops.yalis.force_update_tokens_assigned_(
-                self.tokens_assigned[:B], self.token_counter[:B]
+
+        if update_token_counter:
+            self.token_counter[:B].add_(
+                T
+                if actual_sequence_lengths is None
+                else actual_sequence_lengths
             )
         return {"logits": x}
 
@@ -305,16 +282,6 @@ class GPT(nn.Module):
         self.kv_length = max_seq_length
         self.max_batch_size = max_batch_size
 
-        max_tokens = max_seq_length * max_batch_size
-
-        # TODO (Prajwal): This is a hack to not over allocated
-        # KV-cache by default.Fix with dynamic page calculation logic
-        global NUM_BLOCKS
-        if self.config.use_paged_kv_caching:
-            if max_tokens > PAGE_BLOCK_SIZE * NUM_BLOCKS:
-                print("Increasing NUM_BLOCKS to 1024")
-                NUM_BLOCKS = 1024
-
         # initialize the kv cache for all blocks
         for block in self.transformer.h:
             block.attn.kv_cache = block.attn.build_kv_cache(
@@ -324,20 +291,6 @@ class GPT(nn.Module):
                 device,
                 dtype,
             )
-        if self.config.use_paged_kv_caching:
-            self.kv_cache_manager = KVCacheManager(
-                max_batch_size,
-                16384 // PAGE_BLOCK_SIZE,  # ToDo: set these dynamically
-                NUM_BLOCKS,
-                PAGE_BLOCK_SIZE,
-            )
-            # TODO: move to separate Python class
-            self.tokens_assigned = (
-                self.kv_cache_manager.tokens_assigned_tensor()
-            )
-            self.kvcache_block_table = self.kv_cache_manager.block_table()
-            self.kvcache_free_pages = self.kv_cache_manager.free_pages_tensor()
-            self.kvcache_next_page = self.kv_cache_manager.next_page_tensor()
 
         self.token_counter = torch.zeros(
             max_batch_size, device=device, dtype=torch.int32
@@ -434,6 +387,7 @@ class Block(nn.Module):
         phase: EnginePhase,
         token_counter: Optional[torch.Tensor] = None,
         block_table: Optional[torch.Tensor] = None,
+        actual_sequence_lengths: Optional[torch.Tensor] = None,
         flex_attention_block_mask=None,
     ) -> torch.Tensor:
         """
@@ -465,6 +419,7 @@ class Block(nn.Module):
             phase,
             token_counter,
             block_table,
+            actual_sequence_lengths,
             flex_attention_block_mask,
         )
         attention_output = self.post_attention_norm(attention_output)
@@ -575,6 +530,7 @@ class CausalSelfAttention(nn.Module):
         phase: EnginePhase,
         token_counter: torch.Tensor,
         block_table: torch.Tensor = None,
+        actual_sequence_lengths: torch.Tensor = None,
         flex_attention_block_mask=None,
     ) -> torch.Tensor:
         B, T, C = (
@@ -631,6 +587,7 @@ class CausalSelfAttention(nn.Module):
             v=v,
             phase=phase,
             cache_seqlens=token_counter,
+            actual_seqlens=actual_sequence_lengths,
             block_table=block_table,
             rotary_cos=cos,
             rotary_sin=sin,
