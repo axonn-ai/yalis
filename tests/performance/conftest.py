@@ -255,6 +255,10 @@ def baseline_store(
     store = BaselineStore(path)
 
     update = request.config.getoption("--perf-update-baselines")
+
+    # Capture rank now — dist may be torn down before session teardown.
+    is_rank_zero = (not dist.is_initialized()) or dist.get_rank() == 0
+
     if update:
         git_sha = _git_sha()
         store.set_metadata(
@@ -272,7 +276,7 @@ def baseline_store(
 
     yield store
 
-    if update and (not dist.is_initialized() or dist.get_rank() == 0):
+    if update and is_rank_zero:
         store.flush()
 
 
