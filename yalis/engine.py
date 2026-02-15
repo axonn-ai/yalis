@@ -15,9 +15,11 @@ from transformers import AutoTokenizer
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from .constants import EnginePhase
 from yalis.attention.kv_cache import KVSlotsManager
+from .cuda_graph_manager import CUDAGraphManager
 import time
 import gc
 from .timers import Timers
+from tqdm import tqdm
 
 import os
 
@@ -41,16 +43,7 @@ torch._inductor.config.combo_kernel_foreach_dynamic_shapes = True
 
 YALIS_DISABLE_COMPILE = os.environ.get("YALIS_DISABLE_COMPILE", "0") == "1"
 
-YALIS_DECODE_MODE = (
-    "default"
-    if os.environ.get("YALIS_DISABLE_DECODE_CUDAGRAPHS", "0") == "1"
-    else "reduce-overhead"
-)
-
-print(
-    f"YALIS_DISABLE_COMPILE = {YALIS_DISABLE_COMPILE},"
-    f"YALIS_DECODE_MODE = {YALIS_DECODE_MODE}"
-)
+print(f"YALIS_DISABLE_COMPILE = {YALIS_DISABLE_COMPILE}")
 
 
 precision_to_dtype = {
@@ -106,7 +99,7 @@ def prefill(
 
 
 @torch.inference_mode()
-@torch.compile(mode=YALIS_DECODE_MODE, disable=YALIS_DISABLE_COMPILE)
+@torch.compile(mode="default", disable=YALIS_DISABLE_COMPILE)
 def generate(
     model,
     tokens,
@@ -144,9 +137,7 @@ def generate(
 
 
 @torch.inference_mode()
-@torch.compile(
-    mode=YALIS_DECODE_MODE, disable=YALIS_DISABLE_COMPILE, fullgraph=True
-)
+@torch.compile(mode="default", disable=YALIS_DISABLE_COMPILE, fullgraph=True)
 def verify(
     model,
     tokens,
@@ -206,6 +197,20 @@ class LLMEngine:
             PAGE_BLOCK_SIZE,
         )
 
+        # Initialize CUDA graph manager
+        self.cuda_graph_manager = CUDAGraphManager(
+            max_batch_size=inference_config.max_batch_size,
+            device=self.device,
+            cuda_graph_capture_sizes=inference_config.cuda_graph_capture_sizes,
+        )
+
+        # Pre-capture CUDA graphs if enabled
+        if (
+            self.cuda_graph_manager.enabled
+            and self.cuda_graph_manager.capture_sizes
+        ):
+            self._capture_cuda_graphs()
+
         # return extra memory to CUDA. Can prevent NCCL init OOMs
         torch.cuda.empty_cache()
         gc.collect()
@@ -223,6 +228,43 @@ class LLMEngine:
 
         model = model.to(self.device)
         return model
+
+    def _capture_cuda_graphs(self):
+        """Pre-capture CUDA graphs for configured batch sizes."""
+        capture_sizes = self.cuda_graph_manager.capture_sizes
+        max_num_blocks_per_seq = 16384 // PAGE_BLOCK_SIZE
+        use_paged = self.inference_config.use_paged_kv_caching
+
+        # Only show progress bar on rank 0
+        rank = dist.get_rank() if dist.is_initialized() else 0
+        if rank == 0:
+            iterator = tqdm(
+                capture_sizes,
+                desc="Capturing CUDA graphs",
+                unit="graph",
+            )
+        else:
+            iterator = capture_sizes
+
+        with torch.inference_mode(), torch.autocast(
+            self.device, dtype=self.dtype, cache_enabled=False
+        ):
+            for bs in iterator:
+                self.cuda_graph_manager.capture_for_decode(
+                    batch_size=bs,
+                    model=self.model,
+                    generate_fn=generate,
+                    max_num_blocks_per_seq=max_num_blocks_per_seq,
+                    temperature=self.inference_config.temperature,
+                    top_k=self.inference_config.top_k,
+                    top_p=self.inference_config.top_p,
+                    get_logits=False,
+                    use_paged_kv_caching=use_paged,
+                )
+
+        print_rank0(
+            f"Captured {len(self.cuda_graph_manager.graph_pool)} CUDA graphs"
+        )
 
     def _initialize_model(self, model_config, inference_config):
         """
@@ -486,18 +528,36 @@ class LLMEngine:
 
                     token_counter = self.kv_slots_manager.lengths(slot_ids)
                     self.kv_slots_manager.update(slot_ids, 1)
+                    block_table = self.kv_slots_manager.view(slot_ids)
 
-                    with sdpa_kernel(SDPBackend.MATH):
-                        next_token, logits = generate(
-                            self.model,
-                            current_input_to_model,
-                            temperature=self.inference_config.temperature,
-                            top_k=self.inference_config.top_k,
-                            top_p=self.inference_config.top_p,
-                            get_logits=get_logits,
-                            block_table=self.kv_slots_manager.view(slot_ids),
+                    # Use CUDA graph if available and not requesting logits
+                    use_cuda_graph = (
+                        self.cuda_graph_manager.enabled
+                        and not get_logits
+                        and self.cuda_graph_manager.find_suitable_batch_size(B)
+                        is not None
+                    )
+
+                    if use_cuda_graph:
+                        cgm = self.cuda_graph_manager
+                        next_token, logits = cgm.run_decode(
+                            batch_size=B,
+                            tokens=current_input_to_model,
+                            block_table=block_table,
                             token_counter=token_counter,
-                        )  # Call generate function
+                        )
+                    else:
+                        with sdpa_kernel(SDPBackend.MATH):
+                            next_token, logits = generate(
+                                self.model,
+                                current_input_to_model,
+                                temperature=self.inference_config.temperature,
+                                top_k=self.inference_config.top_k,
+                                top_p=self.inference_config.top_p,
+                                get_logits=get_logits,
+                                block_table=block_table,
+                                token_counter=token_counter,
+                            )
 
                     current_input_to_model.copy_(
                         next_token

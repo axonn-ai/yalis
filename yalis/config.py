@@ -1,4 +1,4 @@
-from typing import Optional, Literal, Tuple
+from typing import Optional, Literal, Tuple, List
 import os
 from packaging.version import Version
 from importlib.metadata import version, PackageNotFoundError
@@ -106,6 +106,7 @@ class InferenceConfig:
         symmetric_allreduce_strategy: Optional[
             Literal["one-shot", "two-shot", "nvshmem"]
         ] = None,
+        cuda_graph_capture_sizes: Optional[List[int]] = None,
     ):
         """
         Initialize the inference configuration.
@@ -131,6 +132,10 @@ class InferenceConfig:
             use_intra_head_parallelism (bool): Use intra-head parallelism.
             use_paged_kv_caching (bool): Use paged k/v caching for attention.
             prestore_kv_cache (bool): Pre-store k/v cache before attention.
+            cuda_graph_capture_sizes (Optional[List[int]]): Batch sizes to
+                            pre-capture CUDA graphs for. If None, defaults to
+                            powers of 2 up to max_batch_size. If empty list,
+                            enables lazy mode (capture on demand).
         """
         self.max_batch_size = max_batch_size
         # TODO - default max_length should be none.
@@ -145,6 +150,7 @@ class InferenceConfig:
         self.use_paged_kv_caching = use_paged_kv_caching
         self.prestore_kv_cache = prestore_kv_cache
         self.symmetric_allreduce_strategy = symmetric_allreduce_strategy
+        self.cuda_graph_capture_sizes = cuda_graph_capture_sizes
 
         if attention_backend not in ["flash", "sdpa", "flex"]:
             raise ValueError(
@@ -223,6 +229,7 @@ class InferenceConfig:
             f"  use_intra_head_parallelism={self.use_intra_head_parallelism},\n"  # noqa: E501
             f"  attention_backend={self.attention_backend.value},\n"
             f"  use_paged_kv_caching={self.use_paged_kv_caching},\n"
-            f"  prestore_kv_cache={self.prestore_kv_cache}\n"
+            f"  prestore_kv_cache={self.prestore_kv_cache},\n"
+            f"  cuda_graph_capture_sizes={self.cuda_graph_capture_sizes}\n"
             f")"
         )
