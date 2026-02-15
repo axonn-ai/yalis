@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Dict, Set
 
-from yalis.serving.logger import get_logger
+from yalis.logger import get_logger
 
 logger = get_logger("slot_allocator")
 
