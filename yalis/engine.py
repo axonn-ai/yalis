@@ -14,11 +14,15 @@ import torch.distributed as dist
 from transformers import AutoTokenizer
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from .constants import EnginePhase
+from yalis.attention.kv_cache import KVSlotsManager
 import time
 import gc
 from .timers import Timers
 
 import os
+
+# TODO: these should be dynamically set during engine initialization
+NUM_BLOCKS, PAGE_BLOCK_SIZE = 512, 256
 
 # These flags are taken from the following URL -
 # https://github.com/pytorch/pytorch/blob/347f96061f1cff603983b9be19ec92b374329a5b/benchmarks/gpt_fast/generate.py#L19
@@ -67,6 +71,8 @@ def prefill(
     top_p=1.0,
     get_logits=False,
     phase: EnginePhase = EnginePhase.PREFILL,
+    block_table: torch.Tensor = None,
+    token_counter: torch.Tensor = None,
 ):
     """
     Prefill function for generating the first token.
@@ -81,9 +87,13 @@ def prefill(
         logits: (Optional) The raw logits from the model.
     """
 
-    logits = model(tokens, phase, unpadded_prompt_lengths)["logits"].to(
-        torch.float32
-    )
+    logits = model(
+        tokens,
+        phase,
+        unpadded_prompt_lengths,
+        block_table=block_table,
+        token_counter=token_counter,
+    )["logits"].to(torch.float32)
     logits = logits[torch.arange(logits.size(0)), unpadded_prompt_lengths - 1]
     token_id = sample(
         logits=logits, temperature=temperature, top_k=top_k, top_p=top_p
@@ -105,6 +115,8 @@ def generate(
     top_p=1.0,
     get_logits=False,
     phase: EnginePhase = EnginePhase.DECODE_SINGLE,
+    block_table: torch.Tensor = None,
+    token_counter: torch.Tensor = None,
 ):
     """
     Generate function for producing the next token(s).
@@ -119,7 +131,9 @@ def generate(
         token_id: The next predicted token.
         logits: (Optional) The raw logits from the model.
     """
-    logits = model(tokens, phase)["logits"].to(torch.float32)
+    logits = model(
+        tokens, phase, block_table=block_table, token_counter=token_counter
+    )["logits"].to(torch.float32)
     token_id = sample(
         logits=logits[:, -1], temperature=temperature, top_k=top_k, top_p=top_p
     )
@@ -181,6 +195,16 @@ class LLMEngine:
         )
         self.model_config = model_config
         self.inference_config = inference_config
+
+        # TODO: Move to a separate Python class
+        # with better memory management and better API
+        self.kv_slots_manager = KVSlotsManager(
+            inference_config.max_batch_size,
+            inference_config.use_paged_kv_caching,
+            16384 // PAGE_BLOCK_SIZE,  # ToDo: set these dynamically
+            NUM_BLOCKS,
+            PAGE_BLOCK_SIZE,
+        )
 
         # return extra memory to CUDA. Can prevent NCCL init OOMs
         torch.cuda.empty_cache()
@@ -268,6 +292,8 @@ class LLMEngine:
             device=self.device,
             dtype=self.dtype,
         )
+        self.kv_slots_manager.reset()
+
         if self.inference_config.symmetric_allreduce_strategy is not None:
             model.create_symmetric_memory_pool(
                 max_batch_size=max_batch_size,
@@ -314,10 +340,16 @@ class LLMEngine:
             )
         return prompt_tokens, prompt_sequence_lengths
 
-    def _validate_sequence_lengths(
+    def _validate_generation_inputs(
         self, prompt_sequence_lengths, tokens_to_generate
     ):
-        """Validate and adjust sequence lengths if necessary."""
+        """Validate batch/sequence limits and adjust decode length."""
+        batch_size = int(prompt_sequence_lengths.size(0))
+        if batch_size > self.inference_config.max_batch_size:
+            raise ValueError(
+                f"Batch size ({batch_size}) exceeds configured max_batch_size "
+                f"({self.inference_config.max_batch_size})."
+            )
         if prompt_sequence_lengths.max() > self.model.max_seq_length:
             raise ValueError(
                 f"Prompt sequence length ({prompt_sequence_lengths.max()})"
@@ -380,7 +412,7 @@ class LLMEngine:
         prompt_tokens, prompt_sequence_lengths = self._tokenize_prompts(
             prompts
         )
-        tokens_to_generate = self._validate_sequence_lengths(
+        tokens_to_generate = self._validate_generation_inputs(
             prompt_sequence_lengths, tokens_to_generate
         )
         timers.stop("tokenize")
@@ -401,8 +433,8 @@ class LLMEngine:
         # Start timing the operations
         timers.start("generate")
         self.model.token_counter.zero_()
-        if self.inference_config.use_paged_kv_caching:
-            self.model.kv_cache_manager.reset()
+        self.kv_slots_manager.reset()
+
         with torch.inference_mode(), torch.autocast(
             self.device, dtype=self.dtype, cache_enabled=False
         ):
@@ -410,13 +442,29 @@ class LLMEngine:
                 self.device
             )  # Move prompt tokens to the device
 
-            prompt_sequence_lengths = prompt_sequence_lengths.to(self.device)
+            prompt_sequence_lengths = prompt_sequence_lengths.to(
+                self.device
+            ).to(torch.int32)
+            B = current_input_to_model.shape[0]
+            req_ids = [f"req_{i}" for i in range(B)]
+            token_counter = torch.zeros(
+                B, dtype=torch.int32, device=self.device
+            )
+            slot_ids = self.kv_slots_manager.allocate(
+                req_ids, prompt_sequence_lengths
+            )
+            if len(slot_ids) != B:
+                raise RuntimeError(
+                    f"Allocated {len(slot_ids)} KV slots for batch size {B}. "
+                    "Expected full-batch allocation."
+                )
             for step in range(tokens_to_generate):
                 timer_key = None
                 if step == 0:  # Prefill step
                     timer_key = "prefill"
                     timers.start(timer_key)
                     nvtx_range_push("Prefill")
+
                     next_token, logits = prefill(
                         self.model,
                         current_input_to_model,
@@ -425,6 +473,8 @@ class LLMEngine:
                         top_k=self.inference_config.top_k,
                         top_p=self.inference_config.top_p,
                         get_logits=get_logits,
+                        block_table=self.kv_slots_manager.view(slot_ids),
+                        token_counter=token_counter,
                     )  # Call prefill function
 
                     current_input_to_model = next_token.clone()
@@ -433,6 +483,10 @@ class LLMEngine:
                     timer_key = "decode"
                     timers.start(timer_key)
                     nvtx_range_push("Decode")
+
+                    token_counter = self.kv_slots_manager.lengths(slot_ids)
+                    self.kv_slots_manager.update(slot_ids, 1)
+
                     with sdpa_kernel(SDPBackend.MATH):
                         next_token, logits = generate(
                             self.model,
@@ -441,6 +495,8 @@ class LLMEngine:
                             top_k=self.inference_config.top_k,
                             top_p=self.inference_config.top_p,
                             get_logits=get_logits,
+                            block_table=self.kv_slots_manager.view(slot_ids),
+                            token_counter=token_counter,
                         )  # Call generate function
 
                     current_input_to_model.copy_(
@@ -589,7 +645,7 @@ class SpeculativeLLMEngine(LLMEngine):
         prompt_tokens, prompt_sequence_lengths = self._tokenize_prompts(
             input_tokens
         )
-        tokens_to_generate = self._validate_sequence_lengths(
+        tokens_to_generate = self._validate_generation_inputs(
             prompt_sequence_lengths, tokens_to_generate
         )
         timers.stop("tokenize")

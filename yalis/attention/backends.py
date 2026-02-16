@@ -1,6 +1,8 @@
 # These imports trigger @register_attention decorators
-from . import sdpa_and_flex  # noqa: F401
-from . import flash  # noqa: F401
+from yalis.attention.backend_impl.sdpa_and_flex import (  # noqa: F401
+    sdpa_attention,
+)
+from yalis.attention.backend_impl.flash import flash_attention  # noqa: F401
 
 from enum import Enum
 

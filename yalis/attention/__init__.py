@@ -4,7 +4,6 @@ from typing import Optional
 from yalis.constants import EnginePhase
 from .registry import get_attention
 from .backends import AttentionBackend
-from .masking import create_block_mask  # noqa: F401
 
 
 def attention_wrapper(
@@ -15,6 +14,7 @@ def attention_wrapper(
     k_cache: Optional[torch.Tensor] = None,
     v_cache: Optional[torch.Tensor] = None,
     cache_seqlens: Optional[torch.Tensor] = None,
+    actual_seqlens: Optional[torch.Tensor] = None,
     block_table: Optional[torch.Tensor] = None,
     rotary_cos: Optional[torch.Tensor] = None,
     rotary_sin: Optional[torch.Tensor] = None,
@@ -35,6 +35,7 @@ def attention_wrapper(
         k_cache=k_cache,
         v_cache=v_cache,
         cache_seqlens=cache_seqlens,
+        actual_seqlens=actual_seqlens,
         block_table=block_table,
         rotary_cos=rotary_cos,
         rotary_sin=rotary_sin,
