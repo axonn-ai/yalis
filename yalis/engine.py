@@ -57,15 +57,17 @@ precision_to_dtype = {
     "fp32": torch.float32,
 }
 
+# NOTE: temp:
+# @torch.inference_mode()
+# @torch.compile(disable=YALIS_DISABLE_COMPILE)
+# def prefill_logits_last(model, tokens, unpadded_prompt_lengths, phase: EnginePhase=EnginePhase.PREFILL):
+#     logits = model(tokens, phase, unpadded_prompt_lengths)["logits"]
+#     logits = logits[torch.arange(logits.size(0)), unpadded_prompt_lengths - 1]
+#     return logits
+
+
 @torch.inference_mode()
 @torch.compile(disable=YALIS_DISABLE_COMPILE)
-def prefill_logits_last(model, tokens, unpadded_prompt_lengths, phase: EnginePhase=EnginePhase.PREFILL):
-    logits = model(tokens, phase, unpadded_prompt_lengths)["logits"]
-    logits = logits[torch.arange(logits.size(0)), unpadded_prompt_lengths - 1]
-    return logits
-
-
-@torch.inference_mode()
 def prefill(
     model,
     tokens,
@@ -88,9 +90,14 @@ def prefill(
         token_id: The next predicted token.
         logits: (Optional) The raw logits from the model.
     """
+    # NOTE: temp:
+    # logits = prefill_logits_last(model, tokens, unpadded_prompt_lengths, phase)
+    # logits = logits.to(torch.float32)
 
-    logits = prefill_logits_last(model, tokens, unpadded_prompt_lengths, phase)
-    logits = logits.to(torch.float32)
+    logits = model(tokens, phase, unpadded_prompt_lengths)["logits"].to(
+        torch.float32
+    )
+    logits = logits[torch.arange(logits.size(0)), unpadded_prompt_lengths - 1]
     token_id = sample(
         logits=logits, temperature=temperature, top_k=top_k, top_p=top_p
     )
