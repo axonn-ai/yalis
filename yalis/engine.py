@@ -381,7 +381,7 @@ class LLMEngine:
             for bs in batch_sizes:
                 for sl in seq_lengths:
                     print_rank0(f"Warmup prefill for batch size {bs} and sequence length {sl}")
-                    self._reset_warmup_states(bs)
+                    # self._reset_warmup_states(bs)
                     tokens = self._fake_tokens(bs, sl)  # (bs, sl)
                     lens = torch.full(
                         (bs,),
@@ -390,15 +390,16 @@ class LLMEngine:
                         device=self.device,
                     )
 
-                    # Mark B and T dynamic for warmup
-                    dynamo.mark_dynamic(tokens, 0) # B
-                    dynamo.mark_dynamic(tokens, 1) # T
-                    dynamo.mark_dynamic(lens, 0) # B
+                    # # Mark B and T dynamic for warmup
+                    # dynamo.mark_dynamic(tokens, 0) # B
+                    # dynamo.mark_dynamic(tokens, 1) # T
+                    # dynamo.mark_dynamic(lens, 0) # B
 
-                    _ = prefill_logits_last(self.model, tokens, lens, EnginePhase.PREFILL)
+                    # _ = prefill_logits_last(self.model, tokens, lens, EnginePhase.PREFILL)
+                    _ = prefill(self.model, tokens, lens, EnginePhase.PREFILL)
                     print_rank0(f"Warmup prefill for batch size {bs} and sequence length {sl} completed")
 
-        torch.cuda.synchronize()
+        # torch.cuda.synchronize()
 
     def warmup(
         self,
