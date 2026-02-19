@@ -11,6 +11,7 @@ from .utils import (
 from .external.sampling import sample, sample_top_p
 from .external.rejection_sampler import RejectionSampler
 import torch.distributed as dist
+import torch._dynamo as dynamo
 from transformers import AutoTokenizer
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from .constants import EnginePhase
@@ -34,6 +35,7 @@ torch._inductor.config.assert_indirect_indexing = False
 
 torch._inductor.config.combo_kernel_foreach_dynamic_shapes = False
 
+dynamo.config.dynamic_shapes = True 
 
 YALIS_DISABLE_COMPILE = os.environ.get("YALIS_DISABLE_COMPILE", "0") == "1"
 
@@ -380,6 +382,12 @@ class LLMEngine:
                         dtype=torch.long,
                         device=self.device,
                     )
+
+                    # Mark B and T dynamic for warmup
+                    dynamo.mark_dynamic(tokens, 0) # B
+                    dynamo.mark_dynamic(tokens, 1) # T
+                    dynamo.mark_dynamic(lens, 0) # B
+
                     _ = prefill_logits_last(self.model, tokens, lens, EnginePhase.PREFILL)
                     print_rank0(f"Warmup prefill for batch size {bs} and sequence length {sl} completed")
 
