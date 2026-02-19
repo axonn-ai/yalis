@@ -14,7 +14,6 @@ import warnings
 import sys
 
 import torch
-import torch._dynamo as dynamo
 import torch.nn as nn
 from axonn import axonn as ax
 from axonn.intra_layer.communication import Drop, Gather
@@ -28,9 +27,6 @@ from yalis.attention.flash import flash_apply_rotary as apply_rotary
 from yalis.attention.backends import AttentionBackend
 from yalis.attention.masking import create_causal_block_mask_for_flex_attention
 
-# Disallow these ops from being compiled into the graph
-dynamo.disallow_in_graph(torch.ops.yalis.update_block_table_)
-dynamo.disallow_in_graph(torch.ops.yalis.force_update_tokens_assigned_)
 
 # TODO: these should be dynamically set during engine initialization
 NUM_BLOCKS, PAGE_BLOCK_SIZE = 512, 256
