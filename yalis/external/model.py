@@ -14,7 +14,7 @@ import warnings
 import sys
 
 import torch
-import torch.compiler
+import torch._dynamo as dynamo
 import torch.nn as nn
 from axonn import axonn as ax
 from axonn.intra_layer.communication import Drop, Gather
@@ -28,6 +28,9 @@ from yalis.attention.flash import flash_apply_rotary as apply_rotary
 from yalis.attention.backends import AttentionBackend
 from yalis.attention.masking import create_causal_block_mask_for_flex_attention
 
+# Disallow these ops from being compiled into the graph
+dynamo.disallow_in_graph(torch.ops.yalis.update_block_table_)
+dynamo.disallow_in_graph(torch.ops.yalis.force_update_tokens_assigned_)
 
 # TODO: these should be dynamically set during engine initialization
 NUM_BLOCKS, PAGE_BLOCK_SIZE = 512, 256
@@ -138,23 +141,22 @@ class GPT(nn.Module):
             # Note that T includes padding tokens in prefill.
             # we will readjust the token counters of the block table
             # at the end to exclude padded tokens.
-            with torch.compiler.disable():
-                B = input_ids.shape[0]
-                seq_lengths = torch.full(
-                    (B,),
-                    T,
-                    dtype=torch.int64,
-                    device=self.kvcache_block_table.device,
-                )
-                torch.ops.yalis.update_block_table_(
-                    self.kvcache_block_table[:B],
-                    self.tokens_assigned[:B],
-                    self.kvcache_next_page,
-                    self.kvcache_free_pages,
-                    seq_lengths,
-                    PAGE_BLOCK_SIZE,
-                    16384 // PAGE_BLOCK_SIZE,
-                )
+            B = input_ids.shape[0]
+            seq_lengths = torch.full(
+                (B,),
+                T,
+                dtype=torch.int64,
+                device=self.kvcache_block_table.device,
+            )
+            torch.ops.yalis.update_block_table_(
+                self.kvcache_block_table[:B],
+                self.tokens_assigned[:B],
+                self.kvcache_next_page,
+                self.kvcache_free_pages,
+                seq_lengths,
+                PAGE_BLOCK_SIZE,
+                16384 // PAGE_BLOCK_SIZE,
+            )
 
         x = self.transformer.wte(
             idx
@@ -168,9 +170,8 @@ class GPT(nn.Module):
         # in the same dtype as the query
         # ToDO: confirm if this is okay, or if we should do rope in fp32?
         if self.config.attention_backend == AttentionBackend.FLASH:
-            with torch.compiler.disable():
-                self.cos = self.cos.to(x.dtype)
-                self.sin = self.sin.to(x.dtype)
+            self.cos = self.cos.to(x.dtype)
+            self.sin = self.sin.to(x.dtype)
 
         # Block table is not sliced and expected that
         # the attention backend will handle the slicing.
@@ -211,17 +212,17 @@ class GPT(nn.Module):
                 torch.tanh(x / self.config.final_logit_softcapping)
                 * self.config.final_logit_softcapping
             )
-        with torch.compiler.disable():
-            self.token_counter[:B].add_(
-                T if actual_sequence_lengths is None else actual_sequence_lengths
+
+        self.token_counter[:B].add_(
+            T if actual_sequence_lengths is None else actual_sequence_lengths
+        )
+        if self.config.use_paged_kv_caching:
+            # NOTE: Paged KV: readjusting the token counters of the block table
+            # to exclude padded tokens.
+            # we can exclude this for generation
+            torch.ops.yalis.force_update_tokens_assigned_(
+                self.tokens_assigned[:B], self.token_counter[:B]
             )
-            if self.config.use_paged_kv_caching:
-                # NOTE: Paged KV: readjusting the token counters of the block table
-                # to exclude padded tokens.
-                # we can exclude this for generation
-                torch.ops.yalis.force_update_tokens_assigned_(
-                    self.tokens_assigned[:B], self.token_counter[:B]
-                )
         return {"logits": x}
 
     @classmethod
