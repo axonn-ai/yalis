@@ -396,7 +396,12 @@ class LLMEngine:
                     # dynamo.mark_dynamic(lens, 0) # B
 
                     # _ = prefill_logits_last(self.model, tokens, lens, EnginePhase.PREFILL)
-                    _ = prefill(self.model, tokens, lens, EnginePhase.PREFILL)
+                    _ = prefill(
+                        model=self.model, 
+                        tokens=tokens, 
+                        unpadded_prompt_lengths=lens, 
+                        phase=EnginePhase.PREFILL
+                    )
                     print_rank0(f"Warmup prefill for batch size {bs} and sequence length {sl} completed")
 
         # torch.cuda.synchronize()
