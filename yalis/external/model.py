@@ -14,7 +14,7 @@ import warnings
 import sys
 
 import torch
-import torch._dynamo
+import torch.compiler
 import torch.nn as nn
 from axonn import axonn as ax
 from axonn.intra_layer.communication import Drop, Gather
@@ -138,7 +138,7 @@ class GPT(nn.Module):
             # Note that T includes padding tokens in prefill.
             # we will readjust the token counters of the block table
             # at the end to exclude padded tokens.
-            with torch._dynamo.disable():
+            with torch.compiler.disable():
                 B = input_ids.shape[0]
                 seq_lengths = torch.full(
                     (B,),
@@ -168,7 +168,7 @@ class GPT(nn.Module):
         # in the same dtype as the query
         # ToDO: confirm if this is okay, or if we should do rope in fp32?
         if self.config.attention_backend == AttentionBackend.FLASH:
-            with torch._dynamo.disable():
+            with torch.compiler.disable():
                 self.cos = self.cos.to(x.dtype)
                 self.sin = self.sin.to(x.dtype)
 
@@ -211,7 +211,7 @@ class GPT(nn.Module):
                 torch.tanh(x / self.config.final_logit_softcapping)
                 * self.config.final_logit_softcapping
             )
-        with torch._dynamo.disable():
+        with torch.compiler.disable():
             self.token_counter[:B].add_(
                 T if actual_sequence_lengths is None else actual_sequence_lengths
             )
