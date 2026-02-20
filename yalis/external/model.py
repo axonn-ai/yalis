@@ -23,7 +23,6 @@ from axonn.intra_layer.communication import Drop, Gather
 from yalis.attention import attention_wrapper
 from yalis.external.config import Config
 from yalis.tensor_parallel import TPLinear, TPMoE
-from yalis.tensor_parallel.linear import shard_tensor_along_dim
 from yalis.constants import EnginePhase
 
 # TODO: These need to be abstracted away from the model
@@ -1165,20 +1164,12 @@ class LLaMAMoE(nn.Module):
 
 class GptOssMoE(nn.Module):
     """
-    GPT-OSS compatible MoE MLP implemented in pure PyTorch for functional
-    parity.
+    GPT-OSS compatible MoE MLP that now uses the extended TPMoE for better
+    performance while maintaining functional parity.
 
-    Behavior matches the GPT-OSS `MLPBlock`:
-      - per-expert `mlp1_weight`, `mlp1_bias`, `mlp2_weight`, `mlp2_bias`
-      - gating via a linear `gate` then `topk` + softmax
-      - SWIGLU activation with clamping and alpha, using `(linear + 1)` branch
-      - supports distributed all-reduce after expert down projection (matches
-        GPT-OSS world-size sum)
-
-    Notes:
-      - Use `config.n_expert` and `config.n_expert_per_token`.
-      - The parameters are sharded in GPT-OSS by world size; here we create the
-        same local shapes as GPT-OSS expects when loading a checkpoint.
+    This implementation uses the fused MoE kernels with SWIGLU activation
+    and per-expert biases, providing the same behavior as the original
+    PyTorch implementation but with better performance.
     """
 
     def __init__(self, config: Config) -> None:
@@ -1195,41 +1186,34 @@ class GptOssMoE(nn.Module):
         # gate
         self.gate = nn.Linear(config.n_embd, self.num_experts, bias=False)
 
-        # compute per-rank shapes
+        if config.intermediate_size is None:
+            raise ValueError(
+                "config.intermediate_size must be set for GptOssMoE"
+            )
+
+        # Use TPMoE with SWIGLU activation and bias support
+        self.experts = TPMoE(
+            hidden_size=config.n_embd,
+            intermediate_size=config.intermediate_size,
+            n_experts=self.num_experts,
+            n_expert_per_token=self.experts_per_token,
+            init_device=getattr(config, "init_device", "cuda"),
+            bias=True,  # Enable bias support
+            activation="swiglu",  # Use SWIGLU activation
+            swiglu_alpha=self.swiglu_alpha,
+            swiglu_limit=self.swiglu_limit,
+            dtype=getattr(config, "dtype", None),
+        )
+
+        # Store world_size for checkpoint loading compatibility
         world_size = (
             dist.get_world_size()
             if dist.is_available() and dist.is_initialized()
             else 1
         )
-
-        if config.intermediate_size is None:
-            raise ValueError(
-                "config.intermediate_size must be set for GptOssMoE"
-            )
-        per_rank_intermediate = config.intermediate_size // max(1, world_size)
-
-        # mlp1: (num_experts, 2 * per_rank_intermediate, hidden_size)
-        self.mlp1_weight = nn.Parameter(
-            torch.empty(
-                (self.num_experts, 2 * per_rank_intermediate, config.n_embd)
-            )
-        )
-        self.mlp1_bias = nn.Parameter(
-            torch.empty((self.num_experts, 2 * per_rank_intermediate))
-        )
-
-        # mlp2: (num_experts, config.n_embd, per_rank_intermediate)
-        self.mlp2_weight = nn.Parameter(
-            torch.empty(
-                (self.num_experts, config.n_embd, per_rank_intermediate)
-            )
-        )
-        self.mlp2_bias = nn.Parameter(
-            torch.empty((self.num_experts, config.n_embd))
-        )
-
-        # Store world_size for checkpoint loading
         self.world_size = world_size
+
+        # Override state dict loading to handle GPT-OSS naming
         self._old_load_from_state_dict = self._load_from_state_dict
         self._load_from_state_dict = self._modified_load_from_state_dict
 
@@ -1240,120 +1224,40 @@ class GptOssMoE(nn.Module):
         """
         Custom state dict loader for GptOssMoE.
 
-        GptOssMoE uses different gating and activation mechanisms from LLaMA,
-        and stores per-expert weights as 3D tensors. TPMoE uses Axonn's
-        built-in tensor parallel sharding logic, which expects 2D matrices
-        per expert and therefore not compatible with GPT-OSS MoE.
-
-        Handles sharding of MLP weights when loading full
-        checkpoints:
-        - mlp1_weight: [num_experts, 2*intermediate_size, hidden_size] ->
-          shard dim 1
-        - mlp1_bias: [num_experts, 2*intermediate_size] -> shard dim 1
-        - mlp2_weight: [num_experts, hidden_size, intermediate_size] ->
-          shard dim 2
-        - mlp2_bias: [num_experts, hidden_size] -> no sharding (output
-          dimension)
+        Maps GPT-OSS parameter names to TPMoE parameter names:
+        - mlp1_weight -> experts.gate_up_proj
+        - mlp1_bias -> experts.gate_up_bias
+        - mlp2_weight -> experts.proj
+        - mlp2_bias -> experts.proj_bias
         """
-        assert self.config.intermediate_size is not None
+        # Map GPT-OSS names to TPMoE names
+        name_mapping = {
+            prefix + "mlp1_weight": prefix + "experts.gate_up_proj",
+            prefix + "mlp1_bias": prefix + "experts.gate_up_bias",
+            prefix + "mlp2_weight": prefix + "experts.proj",
+            prefix + "mlp2_bias": prefix + "experts.proj_bias",
+        }
 
-        rank = (
-            dist.get_rank()
-            if dist.is_available() and dist.is_initialized()
-            else 0
-        )
+        # Create a new state_dict with mapped names
+        for gpt_oss_key, tpmoe_key in name_mapping.items():
+            if gpt_oss_key in state_dict:
+                state_dict[tpmoe_key] = state_dict[gpt_oss_key]
+                del state_dict[gpt_oss_key]
 
-        # Process mlp1_weight
-        mlp1_weight_key = prefix + "mlp1_weight"
-        if mlp1_weight_key in state_dict:
-            weight = state_dict[mlp1_weight_key]
-            # Expect full unsharded:
-            # [num_experts, 2*intermediate_size, hidden_size]
-            if weight.size(1) == 2 * self.config.intermediate_size:
-                weight = shard_tensor_along_dim(
-                    weight, dim=1, world_size=self.world_size, rank=rank
-                )
-                state_dict[mlp1_weight_key] = weight.contiguous()
-
-        # Process mlp1_bias
-        mlp1_bias_key = prefix + "mlp1_bias"
-        if mlp1_bias_key in state_dict:
-            bias = state_dict[mlp1_bias_key]
-            # Expect full unsharded: [num_experts, 2*intermediate_size]
-            if bias.size(1) == 2 * self.config.intermediate_size:
-                bias = shard_tensor_along_dim(
-                    bias, dim=1, world_size=self.world_size, rank=rank
-                )
-                state_dict[mlp1_bias_key] = bias.contiguous()
-
-        # Process mlp2_weight
-        mlp2_weight_key = prefix + "mlp2_weight"
-        if mlp2_weight_key in state_dict:
-            weight = state_dict[mlp2_weight_key]
-            # Expect full unsharded:
-            # [num_experts, hidden_size, intermediate_size]
-            if weight.size(2) == self.config.intermediate_size:
-                weight = shard_tensor_along_dim(
-                    weight, dim=2, world_size=self.world_size, rank=rank
-                )
-                state_dict[mlp2_weight_key] = weight.contiguous()
-
-        # mlp2_bias does not need sharding: [num_experts, hidden_size]
-        # It's replicated across all ranks for the all-reduce aggregation.
-
-        # Delegate to the original load_from_state_dict
+        # Let TPMoE handle the actual loading and sharding
         self._old_load_from_state_dict(state_dict, prefix, *args, **kwargs)
-
-    def _swiglu(self, x: torch.Tensor) -> torch.Tensor:
-        # x shape: (..., 2 * hidden)
-        alpha = self.swiglu_alpha
-        limit = self.swiglu_limit
-        x_glu = x[..., ::2]
-        x_lin = x[..., 1::2]
-        x_glu = x_glu.clamp(max=limit)
-        x_lin = x_lin.clamp(min=-limit, max=limit)
-        out_glu = x_glu * torch.sigmoid(alpha * x_glu)
-        return out_glu * (x_lin + 1.0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: (B, T, C)
         B, T, C = x.size()
-        M = B * T
         # Flatten batch and sequence dims
-        t = x.view(M, C)  # (M, C)
+        t = x.view(-1, C)  # (M, C) where M = B * T
 
         # gating
         g = self.gate(t)  # (M, E)
-        experts = torch.topk(g, k=self.experts_per_token, dim=-1, sorted=True)
-        expert_weights = torch.nn.functional.softmax(
-            experts.values, dim=1
-        )  # (M, k)
-        expert_indices = experts.indices  # (M, k)
 
-        # MLP #1
-        mlp1_weight = self.mlp1_weight[expert_indices, ...]  # (M, k, out1, C)
-        mlp1_bias = self.mlp1_bias[expert_indices, ...]  # (M, k, out1)
-        up = torch.einsum("m k o c, m c -> m k o", mlp1_weight, t) + mlp1_bias
-        up = self._swiglu(up)
-
-        # MLP #2
-        mlp2_weight = self.mlp2_weight[expert_indices, ...]  # (M, k, C, per)
-        mlp2_bias = self.mlp2_bias[expert_indices, ...]  # (M, k, C)
-        down = torch.einsum("m k c p, m k p -> m k c", mlp2_weight, up)
-
-        # distributed aggregation when sharded across ranks
-        if (
-            torch.distributed.is_available()
-            and torch.distributed.is_initialized()
-        ):
-            torch.distributed.all_reduce(
-                down, op=torch.distributed.ReduceOp.SUM
-            )
-
-        down = down + mlp2_bias
-
-        # Weighted sum of experts -> (M, C)
-        out = torch.einsum("m k c, m k -> m c", down, expert_weights)
+        # Use TPMoE for expert computation with SWIGLU and biases
+        out = self.experts(t, g)  # (M, C)
 
         # reshape back to (B, T, C). Do NOT add residual here; `Block`
         # handles it.
