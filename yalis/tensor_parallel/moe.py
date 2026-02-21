@@ -240,10 +240,13 @@ class TPMoE(torch.nn.Module):
                 gate_up_bias, requires_grad=True
             )
 
-            # proj bias: [n_experts, local_hidden_size]
+            # proj_bias: [n_experts, hidden_size] - NOT sharded.
+            # In the OpenAI reference, mlp2_bias is applied after
+            # all_reduce and before the weighted expert sum, so it
+            # must be full-size (not partitioned across TP ranks).
             proj_bias = torch.zeros(
                 n_experts,
-                self.local_hidden_size,
+                hidden_size,
                 device=self.init_device,
                 dtype=dtype,
             )
@@ -251,7 +254,8 @@ class TPMoE(torch.nn.Module):
 
             # Set tensor parallel attributes for biases
             setattr(self.gate_up_bias, "is_tensor_parallel", True)
-            setattr(self.proj_bias, "is_tensor_parallel", True)
+            # proj_bias is NOT tensor-parallel (full hidden_size)
+            setattr(self.proj_bias, "is_tensor_parallel", False)
             setattr(
                 self.gate_up_bias, "needs_depth_parallel_gradient_sync", False
             )
@@ -260,11 +264,6 @@ class TPMoE(torch.nn.Module):
             )
             setattr(
                 self.gate_up_bias,
-                "process_group_for_norm_reduction",
-                ax.comm_handle.intra_layer_group,
-            )
-            setattr(
-                self.proj_bias,
                 "process_group_for_norm_reduction",
                 ax.comm_handle.intra_layer_group,
             )
@@ -319,8 +318,10 @@ class TPMoE(torch.nn.Module):
         x,
         router,
     ):
-
-        y = fused_moe(
+        # proj_bias is NOT passed to fused_moe. Per the OpenAI
+        # reference, mlp2_bias is applied after all_reduce and
+        # before the weighted expert sum. We handle it here.
+        y, topk_weights, topk_ids = fused_moe(
             x,
             self.gate_up_proj,
             self.proj,
@@ -328,14 +329,35 @@ class TPMoE(torch.nn.Module):
             self.n_expert_per_token,
             True,
             inplace=False,
-            moe_configs=self._moe_configs,  # Pass pre-loaded configs
+            moe_configs=self._moe_configs,
             activation=self.activation,
             swiglu_alpha=self.swiglu_alpha,
             swiglu_limit=self.swiglu_limit,
             gate_up_bias=self.gate_up_bias,
-            proj_bias=self.proj_bias,
-        ).to(x.dtype)
+            proj_bias=None,  # handled below
+        )
+        y = y.to(x.dtype)
+
         y = self.all_reduce(y)
+
+        # Apply proj_bias after all_reduce, matching the OpenAI
+        # reference order:
+        #   t = einsum("beck,bek->bec", mlp2_weight, t)
+        #   all_reduce(t)
+        #   t += mlp2_bias[expert_indices]
+        #   t = einsum("bec,be->bc", t, expert_weights)
+        # Compute weighted bias: sum_e(weight_e * bias_e)
+        if self.proj_bias is not None:
+            # topk_ids: (M, topk), topk_weights: (M, topk)
+            # proj_bias: (E, hidden_size)
+            bias_per_expert = self.proj_bias[topk_ids]  # (M, topk, C)
+            weighted_bias = torch.einsum(
+                "mec,me->mc",
+                bias_per_expert.to(y.dtype),
+                topk_weights.to(y.dtype),
+            )
+            y = y + weighted_bias
+
         return y
 
     def _is_full_weight_matrix(self, weight, in_features, out_features):
@@ -445,13 +467,11 @@ class TPMoE(torch.nn.Module):
                 bias = None
 
             if bias is not None:
-                # bias shape: [n_experts, 2 * intermediate_size] -> shard dim 1
-                if bias.size(1) == 2 * self.intermediate_size:
-                    bias = extract_local_params_from_full_params(
-                        bias,
-                        self.outer_group,
-                        None,  # Only shard outer dimension
-                    )
+                # bias shape: [n_experts, 2 * intermediate_size]
+                # Shard the features dim (dim -1) across outer_group
+                # to get [n_experts, 2 * local_intermediate_size]
+                if bias.size(-1) == 2 * self.intermediate_size:
+                    bias = Drop.apply(bias, self.outer_group, -1)
                     state_dict[gate_up_bias_key] = bias
 
             # Handle proj_bias (mlp2_bias in GPT-OSS)
@@ -470,13 +490,8 @@ class TPMoE(torch.nn.Module):
                 bias = None
 
             if bias is not None:
-                # bias shape: [n_experts, hidden_size] -> shard dim 1
-                if bias.size(1) == self.hidden_size:
-                    bias = extract_local_params_from_full_params(
-                        bias,
-                        self.inner_group,
-                        None,  # Only shard inner dimension
-                    )
-                    state_dict[proj_bias_key] = bias
+                # proj_bias is NOT sharded - it stays full size
+                # [n_experts, hidden_size] per the OpenAI reference
+                state_dict[proj_bias_key] = bias
 
         self._old_load_from_state_dict(state_dict, prefix, *args, **kwargs)
