@@ -16,7 +16,6 @@ import sys
 
 import torch
 import torch.nn as nn
-import torch.distributed as dist
 from axonn import axonn as ax
 from axonn.intra_layer.communication import Drop, Gather
 
@@ -427,10 +426,12 @@ class Block(nn.Module):
         )
 
         self.config = config
-        # optional sink logits used by GPT-OSS sdpa implementation for
-        # sliding-window (shape: n_head x 1 x 1). Initialized to zeros; only
-        # used in 'gpt_oss' mode.
-        self.sinks = nn.Parameter(torch.zeros(self.config.n_head, 1, 1))
+        # Sink logits used by GPT-OSS sdpa implementation for sliding-window
+        # (shape: n_head x 1 x 1). Only created for GPT-OSS models to avoid
+        # state dict incompatibility when loading non-GPT-OSS checkpoints.
+        is_gpt_oss = getattr(config, "sliding_window_mode", None) == "gpt_oss"
+        if is_gpt_oss:
+            self.sinks = nn.Parameter(torch.zeros(self.config.n_head, 1, 1))
 
     def forward(
         self,
@@ -466,8 +467,10 @@ class Block(nn.Module):
         """
 
         x_normed = self.norm_1(x)
-        # Use self.sinks if no sinks argument provided
-        effective_sinks = sinks if sinks is not None else self.sinks
+        # Use self.sinks if available (GPT-OSS models), otherwise None
+        effective_sinks = (
+            sinks if sinks is not None else getattr(self, "sinks", None)
+        )
         attention_output = self.attn(
             x_normed,
             cos,
@@ -1191,7 +1194,15 @@ class GptOssMoE(nn.Module):
                 "config.intermediate_size must be set for GptOssMoE"
             )
 
+        # Get tensor parallel dims from config if specified, otherwise use
+        # AxoNN defaults. This ensures correct sharding in hybrid parallel
+        # configurations where TP groups are a subset of global ranks.
+        tensor_parallel_dims = getattr(config, "tensor_parallel_dims", None)
+
         # Use TPMoE with SWIGLU activation and bias support
+        # TPMoE handles all parameter sharding based on TP group sizes,
+        # not global world size, ensuring correctness in hybrid parallel
+        # setups.
         self.experts = TPMoE(
             hidden_size=config.n_embd,
             intermediate_size=config.intermediate_size,
@@ -1203,15 +1214,8 @@ class GptOssMoE(nn.Module):
             swiglu_alpha=self.swiglu_alpha,
             swiglu_limit=self.swiglu_limit,
             dtype=getattr(config, "dtype", None),
+            tensor_parallel_dims=tensor_parallel_dims,
         )
-
-        # Store world_size for checkpoint loading compatibility
-        world_size = (
-            dist.get_world_size()
-            if dist.is_available() and dist.is_initialized()
-            else 1
-        )
-        self.world_size = world_size
 
         # Override state dict loading to handle GPT-OSS naming
         self._old_load_from_state_dict = self._load_from_state_dict
