@@ -795,7 +795,7 @@ def fused_moe(
     swiglu_limit: float = 7.0,
     gate_up_bias: Optional[torch.Tensor] = None,
     proj_bias: Optional[torch.Tensor] = None,
-) -> torch.Tensor:
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     This function computes a Mixture of Experts (MoE) layer using two sets of
     weights, w1 and w2, and top-k gating mechanism.

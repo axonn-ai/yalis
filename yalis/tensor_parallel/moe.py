@@ -240,10 +240,9 @@ class TPMoE(torch.nn.Module):
                 gate_up_bias, requires_grad=True
             )
 
-            # proj_bias: [n_experts, hidden_size] - NOT sharded.
-            # In the OpenAI reference, mlp2_bias is applied after
-            # all_reduce and before the weighted expert sum, so it
-            # must be full-size (not partitioned across TP ranks).
+            # Projection bias is applied after all_reduce in the tensor
+            # parallel context, so it must be full-size for
+            # correct distributed computation.
             proj_bias = torch.zeros(
                 n_experts,
                 hidden_size,
@@ -254,7 +253,6 @@ class TPMoE(torch.nn.Module):
 
             # Set tensor parallel attributes for biases
             setattr(self.gate_up_bias, "is_tensor_parallel", True)
-            # proj_bias is NOT tensor-parallel (full hidden_size)
             setattr(self.proj_bias, "is_tensor_parallel", False)
             setattr(
                 self.gate_up_bias, "needs_depth_parallel_gradient_sync", False
@@ -318,9 +316,9 @@ class TPMoE(torch.nn.Module):
         x,
         router,
     ):
-        # proj_bias is NOT passed to fused_moe. Per the OpenAI
-        # reference, mlp2_bias is applied after all_reduce and
-        # before the weighted expert sum. We handle it here.
+        # proj_bias is not passed to fused_moe. In tensor parallel MoE,
+        # the projection bias is applied after all_reduce aggregation
+        # with proper routing weight multiplication. We handle it here.
         y, topk_weights, topk_ids = fused_moe(
             x,
             self.gate_up_proj,
@@ -340,13 +338,10 @@ class TPMoE(torch.nn.Module):
 
         y = self.all_reduce(y)
 
-        # Apply proj_bias after all_reduce, matching the OpenAI
-        # reference order:
-        #   t = einsum("beck,bek->bec", mlp2_weight, t)
-        #   all_reduce(t)
-        #   t += mlp2_bias[expert_indices]
-        #   t = einsum("bec,be->bc", t, expert_weights)
-        # Compute weighted bias: sum_e(weight_e * bias_e)
+        # Apply proj_bias after all_reduce with routing weight
+        # multiplication. This ensures correct tensor parallel semantics:
+        # each expert's bias contribution is weighted by its routing
+        # weight before aggregation. Mathematically: y += sum_e(w_e * b_e)
         if self.proj_bias is not None:
             # topk_ids: (M, topk), topk_weights: (M, topk)
             # proj_bias: (E, hidden_size)
@@ -451,9 +446,9 @@ class TPMoE(torch.nn.Module):
 
         # Handle bias parameters if they exist
         if self.bias:
-            # Handle gate_up_bias (mlp1_bias in GPT-OSS)
+            # Handle gate_up_bias (named mlp1_bias in GPT-OSS)
             gate_up_bias_key = prefix + "gate_up_bias"
-            mlp1_bias_key = prefix + "mlp1_bias"  # GPT-OSS naming
+            mlp1_bias_key = prefix + "mlp1_bias"
 
             if gate_up_bias_key in state_dict:
                 bias = state_dict[gate_up_bias_key]
@@ -474,9 +469,9 @@ class TPMoE(torch.nn.Module):
                     bias = Drop.apply(bias, self.outer_group, -1)
                     state_dict[gate_up_bias_key] = bias
 
-            # Handle proj_bias (mlp2_bias in GPT-OSS)
+            # Handle proj_bias (named mlp2_bias in GPT-OSS)
             proj_bias_key = prefix + "proj_bias"
-            mlp2_bias_key = prefix + "mlp2_bias"  # GPT-OSS naming
+            mlp2_bias_key = prefix + "mlp2_bias"
 
             if proj_bias_key in state_dict:
                 bias = state_dict[proj_bias_key]
@@ -490,8 +485,8 @@ class TPMoE(torch.nn.Module):
                 bias = None
 
             if bias is not None:
-                # proj_bias is NOT sharded - it stays full size
-                # [n_experts, hidden_size] per the OpenAI reference
+                # proj_bias stays full-size [n_experts, hidden_size]
+                # for correct tensor parallel semantics.
                 state_dict[proj_bias_key] = bias
 
         self._old_load_from_state_dict(state_dict, prefix, *args, **kwargs)
