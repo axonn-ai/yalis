@@ -183,6 +183,28 @@ class GPT(nn.Module):
             else None
         )
 
+        # Pre-compute cu_seqlens and cache scatter indices once for all layers (Flash backend only)
+        if self.config.attention_backend == AttentionBackend.FLASH and actual_sequence_lengths is not None:
+            seqlens = actual_sequence_lengths.to(torch.int32)
+            cu_seqlens_no_zero = torch.cumsum(seqlens, dim=0)
+            cu_seqlens = torch.zeros(B + 1, dtype=torch.int32, device=x.device)
+            cu_seqlens[1:] = cu_seqlens_no_zero
+            # Pre-compute batch_idx and seq_idx for KV cache scatter (used 32× per forward)
+            if phase == EnginePhase.PREFILL:
+                total_tokens = x.shape[0]
+                token_indices = torch.arange(total_tokens, device=x.device)
+                # Use cu_seqlens_no_zero directly - it's the cumsum output, not a slice view
+                # (cu_seqlens[1:] would cause NotImplementedError: SliceView in Inductor)
+                cache_batch_idx = torch.searchsorted(cu_seqlens_no_zero, token_indices, right=True)
+                cache_seq_idx = token_indices - cu_seqlens[cache_batch_idx]
+            else:
+                cache_batch_idx = None
+                cache_seq_idx = None
+        else:
+            cu_seqlens = None
+            cache_batch_idx = None
+            cache_seq_idx = None
+
         for block in self.transformer.h:
             x = block(
                 x,
@@ -193,6 +215,9 @@ class GPT(nn.Module):
                 block_table,
                 actual_sequence_lengths,
                 flex_attention_block_mask,
+                cu_seqlens,
+                cache_batch_idx,
+                cache_seq_idx,
             )
         if self.config.tensor_parallel:
             x = Gather.apply(
@@ -421,6 +446,9 @@ class Block(nn.Module):
         block_table: Optional[torch.Tensor] = None,
         actual_sequence_lengths: Optional[torch.Tensor] = None,
         flex_attention_block_mask=None,
+        cu_seqlens: Optional[torch.Tensor] = None,
+        cache_batch_idx: Optional[torch.Tensor] = None,
+        cache_seq_idx: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Non-parallel residual       Parallel residual
@@ -453,6 +481,9 @@ class Block(nn.Module):
             block_table,
             actual_sequence_lengths,
             flex_attention_block_mask,
+            cu_seqlens,
+            cache_batch_idx,
+            cache_seq_idx,
         )
         attention_output = self.post_attention_norm(attention_output)
 
@@ -552,6 +583,9 @@ class CausalSelfAttention(nn.Module):
         block_table: torch.Tensor = None,
         actual_sequence_lengths: torch.Tensor = None,
         flex_attention_block_mask=None,
+        cu_seqlens: torch.Tensor = None,
+        cache_batch_idx: torch.Tensor = None,
+        cache_seq_idx: torch.Tensor = None,
     ) -> torch.Tensor:
         # Flattened format: (total_tokens, n_embd)
         if actual_sequence_lengths is None:
@@ -663,70 +697,22 @@ class CausalSelfAttention(nn.Module):
         ), "partial rope is not supported yet"
         k_cache, v_cache = self.kv_cache.k, self.kv_cache.v
         if self.config.attention_backend == AttentionBackend.FLASH:
-            # For Flash backend, reshape to (B, T, nh, hs) format to match working commit
-            # This allows flash_attn_with_kvcache to work with GQA
-            # VECTORIZED: No .item() calls to avoid CPU sync and graph breaks
+            # For Flash backend: keep tensors flattened throughout
+            # q, k, v are (total_tokens, nh, hs) - pass directly to flash attention
+            # cu_seqlens is pre-computed once in GPT.forward() and passed down
             
-            # For decode, T=1; for prefill, T is max of actual lengths
-            if phase == EnginePhase.PREFILL:
-                # Use block_size as safe upper bound (avoids .item() call)
-                max_T = self.config.block_size
-            else:
-                # Decode: T=1 for each batch
-                max_T = 1
-            
-            seqlens = actual_sequence_lengths.to(torch.int32)
-            cu_seqlens_no_zero = torch.cumsum(seqlens, dim=0)
-            cu_seqlens = torch.zeros(B + 1, dtype=torch.int32, device=q.device)
-            cu_seqlens[1:] = cu_seqlens_no_zero
-            
-            # VECTORIZED reshape to (B, T, nh, hs) format
-            # Create position indices
-            batch_indices = torch.arange(B, device=q.device).unsqueeze(1).expand(B, max_T)
-            seq_indices = torch.arange(max_T, device=q.device).unsqueeze(0).expand(B, max_T)
-            
-            # Create mask for valid positions
-            valid_mask = seq_indices < seqlens.unsqueeze(1)  # (B, max_T)
-            
-            # Compute flat indices: flat_idx[b, t] = cu_seqlens[b] + t
-            flat_indices = cu_seqlens[:-1].unsqueeze(1) + seq_indices  # (B, max_T)
-            
-            # Clamp flat_indices to valid range for gathering
-            flat_indices_clamped = flat_indices.clamp(0, total_tokens - 1)
-            
-            # Initialize output tensors
-            q_4d = torch.zeros(B, max_T, q.size(1), q.size(2), dtype=q.dtype, device=q.device)
-            k_4d = torch.zeros(B, max_T, k.size(1), k.size(2), dtype=k.dtype, device=k.device)
-            v_4d = torch.zeros(B, max_T, v.size(1), v.size(2), dtype=v.dtype, device=v.device)
-            
-            # Gather from flattened tensors using advanced indexing
-            # Get batch and sequence indices for valid positions
-            valid_batch_idx = batch_indices[valid_mask]
-            valid_seq_idx = seq_indices[valid_mask]
-            valid_flat_idx = flat_indices[valid_mask]
-            
-            # Copy valid data to 4D tensors
-            q_4d[valid_batch_idx, valid_seq_idx] = q[valid_flat_idx]
-            k_4d[valid_batch_idx, valid_seq_idx] = k[valid_flat_idx]
-            v_4d[valid_batch_idx, valid_seq_idx] = v[valid_flat_idx]
-            
-            # Now q, k, v are in (B, T, nh, hs) format
-            q = q_4d
-            k = k_4d
-            v = v_4d
-            
-            # Apply rotary embeddings using flash_apply_rotary (like working commit)
-            # q, k, v are now in (B, T, nh, hs) format
-            q = q.contiguous()
-            k = k.contiguous()
-            v = v.contiguous()
-            # Note: flash_attn_with_kvcache handles rotary embeddings internally if cos/sin are passed
-            # But the working commit applied them manually, so we do the same for consistency
+            # Apply rotary directly on flattened tensors using cu_seqlens
             if cos is not None and sin is not None:
-                q = apply_rotary(q, cos, sin, token_counter)
-                k = apply_rotary(k, cos, sin, token_counter)
-                # Keep cos/sin as None since we've already applied rotary
+                # Use Python int for max_seqlen to avoid .item() during CUDA graph capture
+                # For prefill: use config's block_size (max sequence length)
+                # For decode: always 1 token per sequence
+                max_seqlen_int = self.config.block_size if phase == EnginePhase.PREFILL else 1
+                q = apply_rotary(q.contiguous(), cos, sin, token_counter[:B], cu_seqlens, max_seqlen_int)
+                k = apply_rotary(k.contiguous(), cos, sin, token_counter[:B], cu_seqlens, max_seqlen_int)
                 cos, sin = None, None
+            
+            # Keep q, k, v flattened - don't reshape to 4D
+            # cu_seqlens is pre-computed in GPT.forward() and passed as parameter
         else:
             # For non-FLASH backends, reshape back to (B, nh, T, hs) format
             max_T = actual_sequence_lengths.max().item()
@@ -763,6 +749,7 @@ class CausalSelfAttention(nn.Module):
             phase=phase,
             cache_seqlens=token_counter,
             actual_seqlens=actual_sequence_lengths,
+            cu_seqlens=cu_seqlens if self.config.attention_backend == AttentionBackend.FLASH else None,
             block_table=block_table,
             rotary_cos=cos,
             rotary_sin=sin,
@@ -770,47 +757,30 @@ class CausalSelfAttention(nn.Module):
             use_intra_head_parallelism=self.config.use_intra_head_parallelism,
             prestore_kv_cache=self.config.prestore_kv_cache,
             flex_attention_block_mask=flex_attention_block_mask,
+            max_seqlen=self.config.block_size,
+            cache_batch_idx=cache_batch_idx,
+            cache_seq_idx=cache_seq_idx,
         )
         
-        # For Flash backend, reshape output back to flattened format
+        # For Flash backend, output is already flattened (total_tokens, nh, hs)
         if self.config.attention_backend == AttentionBackend.FLASH:
-            # flash_attn_with_kvcache returns output in same format as input: (B, T, nh, hs)
-            # VECTORIZED: No .item() calls to avoid CPU sync
-            if y.dim() == 4:
-                B_out, T_out, nh_out, hs_out = y.shape
-                
-                # Build cu_seqlens for indexing
-                seqlens = actual_sequence_lengths.to(torch.int32)
-                cu_seqlens_no_zero = torch.cumsum(seqlens, dim=0)
-                cu_seqlens = torch.zeros(B_out + 1, dtype=torch.int32, device=y.device)
-                cu_seqlens[1:] = cu_seqlens_no_zero
-                
-                # Create position indices for valid positions
-                batch_indices = torch.arange(B_out, device=y.device).unsqueeze(1).expand(B_out, T_out)
-                seq_indices = torch.arange(T_out, device=y.device).unsqueeze(0).expand(B_out, T_out)
-                
-                # Mask for valid positions
-                valid_mask = seq_indices < seqlens.unsqueeze(1)  # (B_out, T_out)
-                
-                # Flat output indices: where to put in y_flat
-                flat_out_indices = cu_seqlens[:-1].unsqueeze(1) + seq_indices  # (B_out, T_out)
-                
-                # Extract valid tokens directly using mask
-                # y[valid_mask] gives us the valid tokens in order
-                y_valid = y[valid_mask]  # (total_valid_tokens, nh_out, hs_out)
-                
-                # The valid tokens are already in the correct order, so just use them directly
-                # total_valid_tokens should equal total_tokens
-                y = y_valid
-                
-                # Reshape to (total_tokens, nh * hs)
-                y = y.reshape(y.shape[0], nh_out * hs_out)
+            # y is (total_tokens, nh, hs) - reshape to (total_tokens, nh * hs)
+            y = y.reshape(y.shape[0], -1)
         else:
+            # SDPA returns (B, nh, T_max, hs), transpose to (B, T_max, nh, hs)
             y = y.transpose(1, 2).contiguous()
-            y = y.reshape(total_tokens, -1, y.size(-1))
-            y = y.reshape(
-                total_tokens, self.config.head_size * self.config.n_head
-            )  # re-assemble all head outputs side by side
+            
+            # Extract valid (non-padded) tokens using the same masking approach as Flash
+            B_out, T_out, nh_out, hs_out = y.shape
+            seqlens = actual_sequence_lengths.to(torch.int32)
+            seq_indices = torch.arange(T_out, device=y.device).unsqueeze(0).expand(B_out, T_out)
+            valid_mask = seq_indices < seqlens.unsqueeze(1)  # (B_out, T_out)
+            
+            # Gather valid tokens: y[valid_mask] gives (total_valid_tokens, nh, hs)
+            y_valid = y[valid_mask]
+            
+            # Reshape to (total_tokens, nh * hs)
+            y = y_valid.reshape(y_valid.shape[0], nh_out * hs_out)
 
         # output projection
         return self.proj(y)

@@ -61,7 +61,7 @@ precision_to_dtype = {
 
 
 @torch.inference_mode()
-@torch.compile(disable=YALIS_DISABLE_COMPILE)
+@torch.compile(disable=YALIS_DISABLE_COMPILE, fullgraph=True)
 def prefill(
     model,
     tokens,
@@ -516,8 +516,10 @@ class LLMEngine:
         # End timing and calculate elapsed time
         timers.stop("generate")
         times, events = timers.get_times()
+        # NOTE: Use len(prompt_sequence_lengths) for batch_size, NOT prompt_tokens.shape[0]
+        # prompt_tokens is flattened (total_tokens,), not (batch_size, seq_len)
         tput = (
-            prompt_tokens.shape[0]
+            len(prompt_sequence_lengths)
             * tokens_to_generate
             / (times[("generate",)] / 1000)
         )
@@ -896,8 +898,10 @@ class SpeculativeLLMEngine(LLMEngine):
         timers.stop("generate")
         times, events = timers.get_times()
 
+        # NOTE: Use len(prompt_sequence_lengths) for batch_size, NOT prompt_tokens.shape[0]
+        # prompt_tokens is flattened (total_tokens,), not (batch_size, seq_len)
         tput = (
-            prompt_tokens.shape[0]
+            len(prompt_sequence_lengths)
             * tokens_to_generate
             / (times[("generate",)] / 1000)
         )

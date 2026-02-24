@@ -36,7 +36,7 @@ class SlotAllocator:
                 "insufficient free slots. Call free_count() first"
                 "to check if there are any free slots."
             )
-        logger.info(
+        logger.debug(
             f"SlotAllocator allocate req_id: {req_id} "
             f"free_count: {self.free_count()}, _free: {self._free}"
         )
