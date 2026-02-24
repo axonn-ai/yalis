@@ -35,7 +35,7 @@ if __name__ == "__main__":
     ]
 
     # take 16 prompts from this dataset
-    user_prompts = user_prompts[:4]
+    user_prompts = user_prompts[:8]
     print(f"Number of prompts = {len(user_prompts)}")
 
     system_prompt = (
@@ -94,7 +94,7 @@ if __name__ == "__main__":
     # NOTE: WARMUP CODE
     warmup_start = time.perf_counter()
     engine.warmup(
-        prefill_batch_sizes=[4],
+        prefill_batch_sizes=[8],
         prefill_seq_lengths=[57],
     )
     warmup_elapsed = time.perf_counter() - warmup_start
