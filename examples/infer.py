@@ -63,7 +63,7 @@ if __name__ == "__main__":
         input_prompts.append(formatted_prompt)
 
     # Number of tokens to generate
-    tokens_to_gen = 1
+    tokens_to_gen = 2
 
     # Max batch size
     MAX_BATCH_SIZE = 8
