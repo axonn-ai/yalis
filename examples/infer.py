@@ -94,46 +94,48 @@ if __name__ == "__main__":
     # NOTE: WARMUP CODE
     warmup_start = time.perf_counter()
     engine.warmup(
-        prefill_configs = [(1, 64), ((MAX_BATCH_SIZE // 2), 256), (MAX_BATCH_SIZE, 1024)]
+        prefill_configs = [(MAX_BATCH_SIZE, 1024)]
     )
     warmup_elapsed = time.perf_counter() - warmup_start
     print_rank0(f"Warmup completed in {warmup_elapsed:.2f}s")
 
-    if enable_profiling:
-        profiler_context = torch.profiler.profile(
-            activities=[torch.profiler.ProfilerActivity.CUDA],
-            schedule=torch.profiler.schedule(wait=5, warmup=2, active=1),
-        )
-    else:
-        profiler_context = nullcontext()
+# NOTE: temp warmup only 
 
-    with profiler_context as prof:
-        for iter in range(10):
-            output_tokens, metrics = engine.generate(
-                input_prompts,
-                report_throughput=True,
-                tokens_to_generate=tokens_to_gen,
-            )
-            if enable_profiling:
-                prof.step()
-            dist.barrier()
+    # if enable_profiling:
+    #     profiler_context = torch.profiler.profile(
+    #         activities=[torch.profiler.ProfilerActivity.CUDA],
+    #         schedule=torch.profiler.schedule(wait=5, warmup=2, active=1),
+    #     )
+    # else:
+    #     profiler_context = nullcontext()
 
-    output_tokens = output_tokens.cpu()
+    # with profiler_context as prof:
+    #     for iter in range(10):
+    #         output_tokens, metrics = engine.generate(
+    #             input_prompts,
+    #             report_throughput=True,
+    #             tokens_to_generate=tokens_to_gen,
+    #         )
+    #         if enable_profiling:
+    #             prof.step()
+    #         dist.barrier()
 
-    # Decode the token IDs into text
-    detokenized_text = tokenizer.batch_decode(
-        output_tokens, skip_special_tokens=True
-    )
+    # output_tokens = output_tokens.cpu()
 
-    for prompt, output in zip(user_prompts, detokenized_text):
-        print_rank0("==========================\n\n")
-        print_rank0(f"prompt = {prompt}")
-        print_rank0(f"output = {output}")
-        print_rank0("==========================\n\n")
+    # # Decode the token IDs into text
+    # detokenized_text = tokenizer.batch_decode(
+    #     output_tokens, skip_special_tokens=True
+    # )
 
-    if enable_profiling:
-        print_rank0(
-            prof.key_averages().table(
-                sort_by="self_cuda_time_total", row_limit=10
-            )
-        )
+    # for prompt, output in zip(user_prompts, detokenized_text):
+    #     print_rank0("==========================\n\n")
+    #     print_rank0(f"prompt = {prompt}")
+    #     print_rank0(f"output = {output}")
+    #     print_rank0("==========================\n\n")
+
+    # if enable_profiling:
+    #     print_rank0(
+    #         prof.key_averages().table(
+    #             sort_by="self_cuda_time_total", row_limit=10
+    #         )
+    #     )
