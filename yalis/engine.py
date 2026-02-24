@@ -376,7 +376,7 @@ class LLMEngine:
             raise ValueError("batch_sizes and seq_lengths must be provided.")
         
         with torch.inference_mode(), torch.autocast(
-            self.device, dtype=self.dtype, cache_enabled=False
+            self.device, dtype=self.dtype #, cache_enabled=False
         ):
             for bs in batch_sizes:
                 for sl in seq_lengths:
