@@ -371,8 +371,8 @@ class LLMEngine:
         prefill_configs,
     ) -> None:
         """Warmup prefill by calling module level prefill path"""
-        if batch_sizes is None or seq_lengths is None:
-            raise ValueError("batch_sizes and seq_lengths must be provided.")
+        if prefill_configs is None:
+            raise ValueError("prefill_configs must be provided.")
         
         with torch.inference_mode(), torch.autocast(
             self.device, dtype=self.dtype, cache_enabled=False
