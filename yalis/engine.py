@@ -376,12 +376,12 @@ class LLMEngine:
             raise ValueError("batch_sizes and seq_lengths must be provided.")
         
         with torch.inference_mode(), torch.autocast(
-            self.device, dtype=self.dtype
+            self.device, dtype=self.dtype, cache_enabled=False
         ):
             for bs in batch_sizes:
                 for sl in seq_lengths:
                     print_rank0(f"Warmup prefill for batch size {bs} and sequence length {sl}")
-                    # self._reset_warmup_states(bs)
+                    self._reset_warmup_states(bs)
                     tokens = self._fake_tokens(bs, sl)  # (bs, sl)
                     lens = torch.full(
                         (bs,),
@@ -421,7 +421,7 @@ class LLMEngine:
 
                     print_rank0(f"Warmup prefill for batch size {bs} and sequence length {sl} completed")
 
-        # torch.cuda.synchronize()
+        torch.cuda.synchronize()
 
     def warmup(
         self,
