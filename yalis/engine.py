@@ -368,8 +368,7 @@ class LLMEngine:
 
     def warmup_prefill(
         self,
-        batch_sizes,
-        seq_lengths,
+        prefill_configs,
     ) -> None:
         """Warmup prefill by calling module level prefill path"""
         if batch_sizes is None or seq_lengths is None:
@@ -378,61 +377,58 @@ class LLMEngine:
         with torch.inference_mode(), torch.autocast(
             self.device, dtype=self.dtype, cache_enabled=False
         ):
-            for bs in batch_sizes:
-                for sl in seq_lengths:
-                    print_rank0(f"Warmup prefill for batch size {bs} and sequence length {sl}")
-                    self._reset_warmup_states(bs)
-                    tokens = self._fake_tokens(bs, sl)  # (bs, sl)
-                    lens = torch.full(
-                        (bs,),
-                        fill_value=int(sl),
-                        dtype=torch.long,
-                        device=self.device,
-                    )
+            for bs, sl in prefill_configs:
+                print_rank0(f"Warmup prefill for batch size {bs} and sequence length {sl}")
+                self._reset_warmup_states(bs)
+                tokens = self._fake_tokens(bs, sl)  # (bs, sl)
+                lens = torch.full(
+                    (bs,),
+                    fill_value=int(sl),
+                    dtype=torch.long,
+                    device=self.device,
+                )
 
-                    # # Mark B and T dynamic for warmup
-                    # dynamo.mark_dynamic(tokens, 0) # B
-                    # dynamo.mark_dynamic(tokens, 1) # T
-                    # dynamo.mark_dynamic(lens, 0) # B
+                # # Mark B and T dynamic for warmup
+                # dynamo.mark_dynamic(tokens, 0) # B
+                # dynamo.mark_dynamic(tokens, 1) # T
+                # dynamo.mark_dynamic(lens, 0) # B
 
-                    # _ = prefill_logits_last(self.model, tokens, lens, EnginePhase.PREFILL)
-                    
-                    _ = prefill(
-                        model=self.model, 
-                        tokens=tokens, 
-                        unpadded_prompt_lengths=lens,
-                        temperature=self.inference_config.temperature,
-                        top_k=self.inference_config.top_k,
-                        top_p=self.inference_config.top_p,
-                        get_logits=False,
-                        phase=EnginePhase.PREFILL
-                    )
+                # _ = prefill_logits_last(self.model, tokens, lens, EnginePhase.PREFILL)
+                
+                _ = prefill(
+                    model=self.model, 
+                    tokens=tokens, 
+                    unpadded_prompt_lengths=lens,
+                    temperature=self.inference_config.temperature,
+                    top_k=self.inference_config.top_k,
+                    top_p=self.inference_config.top_p,
+                    get_logits=False,
+                    phase=EnginePhase.PREFILL
+                )
 
-                    # NOTE: temp just for reference:
-                    # next_token, logits = prefill(
-                    #     self.model,
-                    #     current_input_to_model,
-                    #     prompt_sequence_lengths,
-                    #     temperature=self.inference_config.temperature,
-                    #     top_k=self.inference_config.top_k,
-                    #     top_p=self.inference_config.top_p,
-                    #     get_logits=get_logits,
-                    # )  # Call prefill function
+                # NOTE: temp just for reference:
+                # next_token, logits = prefill(
+                #     self.model,
+                #     current_input_to_model,
+                #     prompt_sequence_lengths,
+                #     temperature=self.inference_config.temperature,
+                #     top_k=self.inference_config.top_k,
+                #     top_p=self.inference_config.top_p,
+                #     get_logits=get_logits,
+                # )  # Call prefill function
 
-                    print_rank0(f"Warmup prefill for batch size {bs} and sequence length {sl} completed")
+                print_rank0(f"Warmup prefill for batch size {bs} and sequence length {sl} completed")
 
         torch.cuda.synchronize()
 
     def warmup(
         self,
-        prefill_batch_sizes,
-        prefill_seq_lengths,
+        prefill_configs,
     ) -> None:
         """Warmup by calling prefill and decode"""
         print("Prefill warmup start.")
         self.warmup_prefill(
-            batch_sizes=prefill_batch_sizes,
-            seq_lengths=prefill_seq_lengths,
+            prefill_configs=prefill_configs,
         )
         print(f"Prefill warmup end.")
     
