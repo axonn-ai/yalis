@@ -35,7 +35,7 @@ if __name__ == "__main__":
     ]
 
     # take 16 prompts from this dataset
-    user_prompts = user_prompts[:8]
+    user_prompts = user_prompts[:3]
     print(f"Number of prompts = {len(user_prompts)}")
 
     system_prompt = (
@@ -66,7 +66,7 @@ if __name__ == "__main__":
     tokens_to_gen = 2
 
     # Max batch size
-    MAX_BATCH_SIZE = 12
+    MAX_BATCH_SIZE = 4
 
     if len(input_prompts) > MAX_BATCH_SIZE:
         raise ValueError(
