@@ -388,9 +388,9 @@ class LLMEngine:
                     device=self.device,
                 )
 
-                # # Mark B and T dynamic for warmup
-                # dynamo.mark_dynamic(tokens, 0) # B
-                # dynamo.mark_dynamic(tokens, 1) # T
+                # Mark B and T dynamic for warmup
+                dynamo.mark_dynamic(tokens, 0, min=1, max=self.inference_config.max_batch_size) # B
+                dynamo.mark_dynamic(tokens, 1, min=1, max=self.inference_config.max_length_of_generated_sequences) # T
                 # dynamo.mark_dynamic(lens, 0) # B
 
                 # _ = prefill_logits_last(self.model, tokens, lens, EnginePhase.PREFILL)
