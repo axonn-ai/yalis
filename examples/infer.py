@@ -94,7 +94,7 @@ if __name__ == "__main__":
     # NOTE: WARMUP CODE
     warmup_start = time.perf_counter()
     engine.warmup(
-        prefill_configs = [(MAX_BATCH_SIZE, 1024)]
+        prefill_configs = [(1, 2), (4, 8), (12, 24)]
     )
     warmup_elapsed = time.perf_counter() - warmup_start
     print_rank0(f"Warmup completed in {warmup_elapsed:.2f}s")
