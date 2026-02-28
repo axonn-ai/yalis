@@ -23,6 +23,7 @@ from yalis.attention import attention_wrapper
 from yalis.external.config import Config
 from yalis.tensor_parallel import TPLinear, TPMoE
 from yalis.constants import EnginePhase
+
 # from kvcache_manager import KVCacheManager
 from yalis.attention.flash import flash_apply_rotary as apply_rotary
 from yalis.attention.backends import AttentionBackend
@@ -30,11 +31,10 @@ from yalis.attention.masking import create_causal_block_mask_for_flex_attention
 from yalis.external.fused_moe import fused_topk
 import os
 
-from yalis.external.fused_moe import fused_topk
-
 
 # TODO: these should be dynamically set during engine initialization
 NUM_BLOCKS, PAGE_BLOCK_SIZE = 512, 256
+
 
 # switch sequential norm classes to TP norm classes if needed
 def get_norm_class(config):
@@ -75,15 +75,21 @@ class GPT(nn.Module):
 
         if config.use_prefetched:
             for i in range(0, config.n_layer - 1):
-                next_layer_post_norm, next_layer_router = self.transformer.h[i + 1].get_pf_refs()
-                self.transformer.h[i].set_pf_refs(next_layer_post_norm, next_layer_router)
-                self.transformer.h[i].mlp.populate_dv(i, config.prefetch_default_vect_path)
+                next_layer_post_norm, next_layer_router = self.transformer.h[
+                    i + 1
+                ].get_pf_refs()
+                self.transformer.h[i].set_pf_refs(
+                    next_layer_post_norm, next_layer_router
+                )
+                self.transformer.h[i].mlp.populate_dv(
+                    i, config.prefetch_default_vect_path
+                )
 
         self.max_seq_length = (
             self.config.block_size
         )  # rope cache is built here
         self.symmetric_memory_pool = None
-        
+
         # CPU offloading manager - set by engine when offloading is enabled
         self.offload_manager = None
 
@@ -118,16 +124,6 @@ class GPT(nn.Module):
     def reset_parameters(self) -> None:
         # Trigger resetting the rope-cache
         self.cos, self.sin = self.rope_cache(device=self.cos.device)
-    
-    def layer_context(self, layer_idx: int, phase: EnginePhase, prefetch_expert_ids=None):
-        """
-        Returns offload context manager if enabled, otherwise no-op.
-        
-        This allows the forward loop to stay clean without branching.
-        """
-        return nullcontext()
-        if self.offload_manager is not None:
-            return self.offload_manager.layer_context(layer_idx, phase, prefetch_expert_ids)
 
     def _init_weights(self, module: nn.Module) -> None:
         """Meant to be used with `gpt.apply(gpt._init_weights)`."""
@@ -210,19 +206,22 @@ class GPT(nn.Module):
             else None
         )
 
-        prefetch_weights, prefetch_expert_ids = None, None
-        for layer_idx, block in enumerate(self.transformer.h):
-            #with self.layer_context(layer_idx, phase, prefetch_expert_ids):
-            x, prefetch_weights, prefetch_expert_ids = block(
+        ctx = (
+            {"pf_w": None, "pf_ids": None}
+            if self.config.use_prefetched
+            else None
+        )
+
+        for block in self.transformer.h:
+            x = block(
                 x,
                 self.cos,
                 self.sin,
                 phase,
-                prefetch_weights,
-                prefetch_expert_ids,
                 self.token_counter,
                 block_table,
                 flex_attention_block_mask,
+                ctx=ctx,
                 offload_manager=self.offload_manager,
             )
 
@@ -391,7 +390,7 @@ class GPT(nn.Module):
         if self.offload_manager is not None:
             self.offload_manager.cleanup()
             self.offload_manager = None
-    
+
     def create_symmetric_memory_pool(
         self,
         batch_size: int,
@@ -430,11 +429,7 @@ class GPT(nn.Module):
 
 
 class Block(nn.Module):
-    def __init__(self, 
-                 config: Config, 
-                 block_idx: int,
-                 next_layer_post_norm: Optional[nn.Module] = None,
-                 next_layer_router: Optional[nn.Module] = None,) -> None:
+    def __init__(self, config: Config, block_idx: int) -> None:
         super().__init__()
         if not config.parallel_residual and config.shared_attention_norm:
             raise NotImplementedError(
@@ -458,9 +453,6 @@ class Block(nn.Module):
         )
         mlp_class = getattr(sys.modules[__name__], config.mlp_class_name)
         self.mlp = mlp_class(config, block_idx)
-        #if isinstance(self.mlp, LLaMAMoE):
-            #self.mlp.next_layer_post_norm = next_layer_post_norm 
-            #self.mlp.next_layer_router = next_layer_router 
 
         self.post_mlp_norm = (
             get_norm_class(config)(config.n_embd, eps=config.norm_eps)
@@ -470,32 +462,35 @@ class Block(nn.Module):
 
         self.config = config
 
-    def set_pf_refs(self, next_layer_post_norm: nn.Module, next_layer_router: nn.Module) -> None:
+    def set_pf_refs(
+        self,
+        next_layer_post_norm: nn.Module,
+        next_layer_router: nn.Module,
+    ) -> None:
         if isinstance(self.mlp, LLaMAMoE):
             self.mlp.set_pf_refs(next_layer_post_norm, next_layer_router)
-            #self.mlp.next_layer_post_norm = next_layer_post_norm 
-            #self.mlp.next_layer_router = next_layer_router
         else:
-            raise NotImplementedError("Prefetching only implemented for `LLaMAMoE`")
+            raise NotImplementedError(
+                "Prefetching only implemented for `LLaMAMoE`"
+            )
 
     def get_pf_refs(self) -> Tuple[nn.Module, nn.Module]:
         if isinstance(self.mlp, LLaMAMoE):
             return self.norm_2, self.mlp.gate
         return None, None
-        
+
     def forward(
         self,
         x: torch.Tensor,
         cos: torch.Tensor,
         sin: torch.Tensor,
         phase: EnginePhase,
-        prefetch_weights: Optional[torch.Tensor] = None,
-        prefetch_expert_ids: Optional[torch.Tensor] = None,
         token_counter: Optional[torch.Tensor] = None,
         block_table: Optional[torch.Tensor] = None,
         flex_attention_block_mask=None,
+        ctx: Optional[dict] = None,
         offload_manager=None,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+    ) -> torch.Tensor:
         """
         Non-parallel residual       Parallel residual
            ┌─ x                     ┌─ x ──────────────────┐             Note: if `shared_attention_norm` is True,  # noqa: E501
@@ -529,9 +524,6 @@ class Block(nn.Module):
         )
         attention_output = self.post_attention_norm(attention_output)
 
-        # Currently, MLP does not need to be phase-aware
-        # but we might add it in the future
-        next_prefetch_weights, next_prefetch_expert_ids = None, None
         if self.config.parallel_residual:
             x_normed = (
                 x_normed
@@ -540,13 +532,19 @@ class Block(nn.Module):
             )
             x = self.mlp(x_normed) + attention_output + x
         else:
-            sattn = attention_output + x  # sattn
+            sattn = attention_output + x
             if isinstance(self.mlp, LLaMAMoE):
-                x, next_prefetch_weights, next_prefetch_expert_ids = self.mlp(self.norm_2(sattn), phase, sattn, prefetch_weights, prefetch_expert_ids, offload_manager=offload_manager)
+                x = self.mlp(
+                    self.norm_2(sattn),
+                    phase,
+                    sattn,
+                    ctx=ctx,
+                    offload_manager=offload_manager,
+                )
                 x = self.post_mlp_norm(x) + sattn
             else:
                 x = self.post_mlp_norm(self.mlp(self.norm_2(sattn))) + sattn
-        return x, next_prefetch_weights, next_prefetch_expert_ids
+        return x
 
 
 class CausalSelfAttention(nn.Module):
@@ -1098,16 +1096,11 @@ class RMSNorm(torch.nn.Module):
 
 
 class LLaMAMoE(nn.Module):
-    def __init__(self, 
-                 config: Config,
-                 block_idx: int,
-                 next_layer_post_norm: Optional[nn.Module] = None,
-                 next_layer_router: Optional[nn.Module] = None,) -> None:
+    def __init__(self, config: Config, block_idx: int) -> None:
         super().__init__()
         self.gate = nn.Linear(config.n_embd, config.n_expert, bias=False)
         if config.moe_intermediate_size is None:
             config.moe_intermediate_size = config.intermediate_size
-        
 
         self.experts = TPMoE(
             config.n_embd,
@@ -1120,15 +1113,14 @@ class LLaMAMoE(nn.Module):
         self.config = config
         self.block_idx = block_idx
 
-        # store as NON-registered attributes
+        # Store as NON-registered attributes to avoid nn.Module
+        # tracking these as submodules (they are cross-layer refs)
         object.__setattr__(self, "_next_layer_post_norm_ref", None)
         object.__setattr__(self, "_next_layer_router_ref", None)
 
-        # optionally set immediately (still bypass registration)
-        if next_layer_post_norm is not None or next_layer_router is not None:
-            self.set_pf_refs(next_layer_post_norm, next_layer_router)
-
-    def set_pf_refs(self, post_norm: nn.Module | None, router: nn.Module | None) -> None:
+    def set_pf_refs(
+        self, post_norm: nn.Module | None, router: nn.Module | None
+    ) -> None:
         # bypass registration here too
         object.__setattr__(self, "_next_layer_post_norm_ref", post_norm)
         object.__setattr__(self, "_next_layer_router_ref", router)
@@ -1141,102 +1133,129 @@ class LLaMAMoE(nn.Module):
     def next_layer_router(self) -> nn.Module | None:
         return self._next_layer_router_ref
 
-    #def set_pf_refs(self, post_norm: nn.Module | None, router: nn.Module | None) -> None:
-    #    self.register_buffer("next_layer_post_norm", torch.zeros_like(post_norm), persistent = False)
-    #    self.register_buffer("next_layer_router", torch.zeros_like(router), persistent = False)
-    #    self.next_layer_post_norm.copy_(post_norm)
-    #    self.next_layer_router.copy_(router)
-    
-    #@property
-    #def next_layer_post_norm(self):
-    #    return self._next_layer_post_norm_ref() if self._next_layer_post_norm_ref else None
-
-    #@property
-    #def next_layer_router(self):
-    #    return self._next_layer_router_ref() if self._next_layer_router_ref else None
-    
-    #def state_dict(self, *args, **kwargs):
-    #    """Override state_dict to exclude prefetch references."""
-    #    state = super().state_dict(*args, **kwargs)
-    #    # Remove prefetch references from state dict
-    #    state.pop('next_layer_post_norm', None)
-    #    state.pop('next_layer_router', None)
-    #    return state
-    
-    #def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
-    #    """Override to handle missing prefetch references during load."""
-    #    # These keys should not be in state_dict, so we skip them
-    #    super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
-    
     def populate_dv(self, idx, path: str) -> None:
-        self.register_buffer("default_vect", torch.zeros(self.config.n_expert, self.config.n_embd, dtype = torch.float32), persistent = False)
+        self.register_buffer(
+            "default_vect",
+            torch.zeros(
+                self.config.n_expert, self.config.n_embd, dtype=torch.float32
+            ),
+            persistent=False,
+        )
         print(f"Loading default vectors from {path}")
         dv_path = os.path.join(path, f"buff_{idx}.pt")
-        state = torch.load(dv_path, map_location = "cpu")
-        self.default_vect.copy_(state["default_vect"].to(self.default_vect.device))
+        state = torch.load(dv_path, map_location="cpu")
+        self.default_vect.copy_(
+            state["default_vect"].to(self.default_vect.device)
+        )
 
-    def layer_context(self, offload_manager, layer_idx: int, phase: EnginePhase, prefetch_expert_ids=None, next_prefetch_expert_ids=None):
+    def layer_context(
+        self,
+        offload_manager,
+        layer_idx: int,
+        phase: EnginePhase,
+        prefetch_expert_ids=None,
+        next_prefetch_expert_ids=None,
+    ):
         """
         Returns offload context manager if enabled, otherwise no-op.
-        
+
         This allows the forward loop to stay clean without branching.
         """
         if offload_manager is not None:
-            return offload_manager.layer_context(layer_idx, phase, prefetch_expert_ids, next_prefetch_expert_ids)
+            return offload_manager.layer_context(
+                layer_idx, phase, prefetch_expert_ids, next_prefetch_expert_ids
+            )
         return nullcontext()
 
-    def forward(self, 
-                x: torch.Tensor,
-                phase: EnginePhase,
-                sattn: Optional[torch.Tensor] = None,
-                prefetch_weights: Optional[torch.Tensor] = None,
-                prefetch_expert_ids: Optional[torch.Tensor] = None, 
-                offload_manager = None) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
-        B, T, C = (
-            x.size()
-        )  # batch size, sequence length, embedding dimensionality (n_embd)
+    def forward(
+        self,
+        x: torch.Tensor,
+        phase: EnginePhase,
+        sattn: Optional[torch.Tensor] = None,
+        ctx: Optional[dict] = None,
+        offload_manager=None,
+    ) -> torch.Tensor:
+        B, T, C = x.size()
         x = x.view(-1, C)  # (B*T, C)
 
+        prefetch_weights = ctx["pf_w"] if ctx is not None else None
+        prefetch_expert_ids = ctx["pf_ids"] if ctx is not None else None
+
         router = None
-        if (prefetch_weights is None and prefetch_expert_ids is None) or (not self.config.use_prefetched): 
+        if (prefetch_weights is None and prefetch_expert_ids is None) or (
+            not self.config.use_prefetched
+        ):
             router = self.gate(x)  # (B*T, n_expert)
 
-        if (not self.config.use_prefetched) and offload_manager is not None and offload_manager.is_inline_mode():
+        # Inline offloading mode (no prefetch)
+        if (
+            not self.config.use_prefetched
+            and offload_manager is not None
+            and offload_manager.is_inline_mode()
+        ):
             topk_weights, topk_ids = fused_topk(
                 x, router, self.config.n_expert_per_token, True
             )
-
             if phase == EnginePhase.PREFILL:
                 row_indices = None
             else:
                 row_indices = topk_ids.squeeze(0)
-            offload_manager.fetch_layer(self.block_idx, row_indices=row_indices) 
-            y = self.experts(x, router, topk_weights, topk_ids) 
-            return y.view(B, T, C), None, None 
-      
-        next_prefetch_weights, next_prefetch_expert_ids = None, None  # prefetched expert weights and ids for next layer
-        if sattn is not None and self.next_layer_router is not None and self.next_layer_post_norm is not None:
-            
-            if (prefetch_weights is None and prefetch_expert_ids is None) or (not self.config.use_prefetched):
-                w, ids = fused_topk(x, router, self.config.n_expert_per_token, True)
+            offload_manager.fetch_layer(
+                self.block_idx, row_indices=row_indices
+            )
+            y = self.experts(x, router, topk_weights, topk_ids)
+            return y.view(B, T, C)
+
+        # Default-vector prefetch for next layer
+        next_pf_w, next_pf_ids = None, None
+        if (
+            sattn is not None
+            and self.next_layer_router is not None
+            and self.next_layer_post_norm is not None
+        ):
+            if (prefetch_weights is None and prefetch_expert_ids is None) or (
+                not self.config.use_prefetched
+            ):
+                w, ids = fused_topk(
+                    x,
+                    router,
+                    self.config.n_expert_per_token,
+                    True,
+                )
             else:
                 w = prefetch_weights
                 ids = prefetch_expert_ids
 
-            dv = (w.unsqueeze(-1) * self.default_vect[ids]).sum(dim=1).to(sattn.dtype)  # may want to verify the shape/broadcast logic here
+            dv = (
+                (w.unsqueeze(-1) * self.default_vect[ids])
+                .sum(dim=1)
+                .to(sattn.dtype)
+            )
             quasi = self.next_layer_post_norm(sattn.view(-1, C) + dv)
             router_n = self.next_layer_router(quasi)
-            next_prefetch_weights, next_prefetch_expert_ids = fused_topk(quasi, router_n, self.config.n_expert_per_token, True) 
-            # ^ TODO may need to change the `fused_moe` op since you're calling the fused_topk here (i changed it)
-            
+            next_pf_w, next_pf_ids = fused_topk(
+                quasi,
+                router_n,
+                self.config.n_expert_per_token,
+                True,
+            )
+
             if prefetch_weights is None and prefetch_expert_ids is None:
-                # we're the first MoE block
+                # First MoE block — use freshly computed routing
                 prefetch_weights = w
                 prefetch_expert_ids = ids
 
-            # TODO is there any loading logic we need to impl here; it was briefly mentioned
+        # Write next-layer prefetch state into ctx
+        if ctx is not None:
+            ctx["pf_w"] = next_pf_w
+            ctx["pf_ids"] = next_pf_ids
 
-
-        with self.layer_context(offload_manager, self.block_idx, phase, prefetch_expert_ids, next_prefetch_expert_ids):
-            y = self.experts(x, router, prefetch_weights, prefetch_expert_ids) # overlap load with expert computation
-        return y.view(B, T, C), next_prefetch_weights, next_prefetch_expert_ids
+        with self.layer_context(
+            offload_manager,
+            self.block_idx,
+            phase,
+            prefetch_expert_ids,
+            next_pf_ids,
+        ):
+            y = self.experts(x, router, prefetch_weights, prefetch_expert_ids)
+        return y.view(B, T, C)

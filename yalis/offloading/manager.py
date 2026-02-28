@@ -2,6 +2,8 @@
 CPU Offload Manager - coordinates layer-by-layer execution with prefetching.
 """
 
+import warnings
+
 import torch
 import torch.nn as nn
 from typing import Optional, Dict, List, Set, Callable
@@ -78,6 +80,17 @@ class CPUOffloadManager:
         
         # Callback for sparse row indices
         self.row_indices_callback: Optional[Callable[[int], Optional[torch.Tensor]]] = None
+
+        # Install default random row selector for "rows" mode
+        # when no explicit callback is provided.
+        # This is a placeholder — real workloads should supply
+        # prefetched expert IDs via the ctx dict or a proper callback.
+        if (
+            self.prefetch_mode is None
+            and offload_components is not None
+            and "mlp" in offload_components
+        ):
+            self._install_random_row_selector()
 
         self.event_pool = {}
         for i in range(self.num_layers):

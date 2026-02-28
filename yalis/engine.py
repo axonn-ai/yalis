@@ -58,13 +58,13 @@ precision_to_dtype = {
     "fp32": torch.float32,
 }
 
+
 def next_row_indices_callback(next_layer_index: int) -> Optional[list[int]]:
     total_experts = 128
 
     # Choose 8 experts randomly from the total experts
     experts = torch.randint(0, total_experts, (8,), device="cuda")
     return torch.sort(experts).values
-
 
 
 @torch.inference_mode()
@@ -243,7 +243,9 @@ class LLMEngine:
             prefetch_default_vect_path=inference_config.prefetch_default_vect_path,
         )
 
-        model = self._make_params_contiguous(model, use_cpu_offloading=use_cpu_offloading)
+        model = self._make_params_contiguous(
+            model, use_cpu_offloading=use_cpu_offloading
+        )
 
         model.set_kv_cache(
             max_batch_size=inference_config.max_batch_size,
@@ -271,9 +273,13 @@ class LLMEngine:
                 offload_components=inference_config.cpu_offload_components,
                 prefetch_mode=get_mode(inference_config.cpu_offload_mode),
             )
-            print_rank0(f"CPU Offloading Mode: {inference_config.cpu_offload_mode}")
+            print_rank0(
+                f"CPU Offloading Mode: {inference_config.cpu_offload_mode}"
+            )
             if inference_config.cpu_offload_mode in ["rows", "inline"]:
-                offload_manager.set_row_indices_callback(next_row_indices_callback)
+                offload_manager.set_row_indices_callback(
+                    next_row_indices_callback
+                )
             offload_manager.prepare_for_offloading(self.dtype)
             model.offload_manager = offload_manager
             print_rank0(
@@ -461,7 +467,7 @@ class LLMEngine:
         self.model.token_counter.zero_()
         if self.inference_config.use_paged_kv_caching:
             self.model.kv_cache_manager.reset()
-          
+
         if self.inference_config.use_cpu_offloading:
             self.model.offload_manager.reset()
         with torch.inference_mode(), torch.autocast(
