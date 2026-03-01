@@ -19,8 +19,8 @@ def get_model(
     use_paged_kv_caching=False,
     prestore_kv_cache=True,
     disable_tp=False,
-    use_prefetched=False,
-    prefetch_default_vect_path=None,
+    default_vector_prefetching=False,
+    default_vector_path=None,
 ):
     tensor_parallel = dist.get_world_size() > 1
     if disable_tp:
@@ -43,8 +43,8 @@ def get_model(
     config.use_paged_kv_caching = use_paged_kv_caching
     config.prestore_kv_cache = prestore_kv_cache
     config.init_device = device if random_init else "meta"
-    config.use_prefetched = use_prefetched
-    config.prefetch_default_vect_path = prefetch_default_vect_path
+    config.use_prefetched = default_vector_prefetching
+    config.prefetch_default_vect_path = default_vector_path
 
     with _EmptyInit(enabled=(not random_init)):
         model = GPT(config).to(model_dtype)

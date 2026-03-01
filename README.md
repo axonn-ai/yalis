@@ -110,86 +110,113 @@ CPU offloading allows you to run models that don't fit entirely in GPU memory by
 
 ### Enabling CPU Offloading
 
-Set `use_cpu_offloading=True` in your `InferenceConfig`:
+Pass a `CPUOffloadConfig` to `InferenceConfig`:
 
 ```python
-from yalis import ModelConfig, InferenceConfig, LLMEngine
+from yalis import ModelConfig, InferenceConfig, LLMEngine, CPUOffloadConfig
 
 model_config = ModelConfig(model_name="Qwen/Qwen3-30B-A3B-Instruct-2507", precision="bf16")
 
 inference_config = InferenceConfig(
     max_batch_size=1,
     attention_backend="flash",
-    # CPU offloading options
-    use_cpu_offloading=True,
-    cpu_offload_num_prefetch_layers=1,  # Number of layers to prefetch ahead
-    cpu_offload_pin_memory=True,        # Pin CPU memory for faster transfers
-    cpu_offload_use_preallocated_buffers=True,  # Zero-allocation GPU buffers
-    cpu_offload_components=["mlp"],     # Which components to offload (see below)
-    cpu_offload_mode="all",             # Prefetch mode (see below)
+    cpu_offload=CPUOffloadConfig(
+        modules=["mlp.experts"],   # What to offload (None = everything)
+        prefetch_mode="all",       # How to prefetch ("all", "selective", "none")
+        num_prefetch_layers=1,     # Layers to prefetch ahead
+        pin_memory=True,           # Pin CPU memory for faster transfers
+        use_preallocated_buffers=True,  # Zero-allocation GPU buffers
+    ),
 )
 
 engine = LLMEngine(model_config=model_config, inference_config=inference_config)
 ```
 
-### Configuration Options
+Omit `cpu_offload` (or set it to `None`) to disable offloading.
+
+### Configuration: Two Independent Axes
+
+CPU offloading is configured along two independent axes:
+
+**What to offload** (`modules`):
+
+| `modules=` | Effect |
+|---|---|
+| `None` | Offload everything in each block (default) |
+| `["mlp"]` | Offload all MLP params (gate + experts for MoE) |
+| `["mlp.experts"]` | Offload only expert weights (router stays on GPU) |
+| `["mlp.experts", "attn"]` | Offload experts and attention |
+
+Module paths use PyTorch's dotted naming convention (from `named_parameters()`). Saying `"mlp"` offloads everything under `mlp.*`. Saying `"mlp.experts"` offloads only the `mlp.experts.*` subtree.
+
+**How to prefetch** (`prefetch_mode`):
+
+| `prefetch_mode=` | Description |
+|---|---|
+| `"all"` | Prefetch full offloaded params of next layer(s) async. Simple and effective. |
+| `"selective"` | Prefetch only needed expert rows. Requires `use_preallocated_buffers=True`. |
+| `"none"` | No prefetch. Params fetched synchronously when the layer is entered (inline mode). |
+
+### CPUOffloadConfig Reference
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `use_cpu_offloading` | `False` | Enable CPU offloading |
-| `cpu_offload_mode` | `"all"` | Prefetch mode: `"all"` (full layers), `"rows"` (sparse MoE rows), `"inline"` (on-demand after routing) |
-| `cpu_offload_num_prefetch_layers` | `1` | Number of layers to prefetch ahead of execution |
-| `cpu_offload_pin_memory` | `True` | Pin CPU memory for faster CPU-to-GPU transfers |
-| `cpu_offload_use_preallocated_buffers` | `False` | Use fixed GPU buffers with `.copy_()` instead of `.to()` |
-| `cpu_offload_components` | `["mlp", "attn", "norm"]` | Components to offload. Options: `"mlp"`, `"attn"`, `"norm"`. Non-listed components stay on GPU permanently |
+| `modules` | `None` | Module paths to offload. `None` = offload everything. |
+| `prefetch_mode` | `"all"` | Prefetch strategy: `"all"`, `"selective"`, `"none"` |
+| `num_prefetch_layers` | `1` | Number of layers to prefetch ahead |
+| `pin_memory` | `True` | Pin CPU memory for faster CPU-to-GPU transfers |
+| `use_preallocated_buffers` | `False` | Use fixed GPU buffers with `.copy_()` instead of `.to()` |
 
-### Selective Component Offloading
+### Discovery
 
-You can choose which layer components are offloaded to CPU:
+When offloading is enabled, the manager prints the block structure with parameter sizes at init:
 
-- `["mlp", "attn", "norm"]` — Full layer offload (default). Minimum GPU memory usage.
-- `["mlp"]` — Only MLP weights offloaded. Attention and norms stay on GPU. Good for MoE models where expert weights dominate memory.
-- `["attn"]` — Only attention weights offloaded.
+```
+[CPUOffloadManager] Block structure (per layer):
+  mlp                   1.204 GB  [offload]
+    mlp.gate              0.004 GB  [keep]
+    mlp.experts           1.200 GB  [offload]
+  attn                  0.400 GB  [keep]
+  ...
+```
 
-### Prefetch Modes
-
-- **`"all"`** — Prefetches the entire next layer(s) while the current layer runs. Simple and effective for dense models.
-- **`"rows"`** — Prefetches only selected rows (experts) of the next MoE layer. Reduces transfer volume for sparse models.
-- **`"inline"`** — Computes routing first, then fetches only the needed expert rows before execution. Highest precision but no overlap with prior layer.
+This helps you pick the right module prefixes without reading model code.
 
 ### Example
 
 See `examples/infer_cpu_offload.py` for a complete working example.
 
-## Default-Vector MoE Prefetch
+## Default-Vector MoE Routing
 
-For MoE models, YALIS supports a default-vector-based routing prefetch scheme. Instead of waiting for the current layer's MoE output to route the next layer, it uses precomputed default vectors to estimate the next layer's expert routing in advance.
+For MoE models, YALIS supports a default-vector-based routing scheme. Instead of waiting for the current layer's MoE output to route the next layer, it uses precomputed default vectors to estimate the next layer's expert routing in advance.
 
-### Enabling Prefetch
+### Enabling Default Vector Routing
 
 ```python
 inference_config = InferenceConfig(
     # ...
-    use_prefetched=True,
-    prefetch_default_vect_path="./defaultvect/dv_buff_qwen_instruct/",
+    default_vector_prefetching=True,
+    default_vector_path="./defaultvect/dv_buff_qwen_instruct/",
 )
 ```
 
-The `prefetch_default_vect_path` directory should contain one file per MoE layer: `buff_0.pt`, `buff_1.pt`, etc. Each file stores a `{"default_vect": tensor}` dict with shape `(n_expert, n_embd)`.
+The `default_vector_path` directory should contain one file per MoE layer: `buff_0.pt`, `buff_1.pt`, etc. Each file stores a `{"default_vect": tensor}` dict with shape `(n_expert, n_embd)`.
 
 ### Combining with CPU Offloading
 
-Prefetch and CPU offloading can be used together. When both are active, the prefetched expert IDs are forwarded to the offload manager so it can selectively stream only the needed expert rows for the next layer:
+Default vector routing and CPU offloading work together. When both are active, the predicted expert IDs are forwarded to the offload manager so it can selectively stream only the needed expert rows for the next layer:
 
 ```python
 inference_config = InferenceConfig(
     # ...
-    use_cpu_offloading=True,
-    cpu_offload_mode="rows",
-    cpu_offload_components=["mlp"],
-    use_prefetched=True,
-    prefetch_default_vect_path="./defaultvect/dv_buff_qwen_instruct/",
+    cpu_offload=CPUOffloadConfig(
+        modules=["mlp.experts"],
+        prefetch_mode="selective",
+        use_preallocated_buffers=True,
+    ),
+    default_vector_prefetching=True,
+    default_vector_path="./defaultvect/dv_buff_qwen_instruct/",
 )
 ```
 
-See `examples/infer.py` for a complete MoE prefetch example.
+See `examples/infer_cpu_offload.py` for a complete example.

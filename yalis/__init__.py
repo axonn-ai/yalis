@@ -1,5 +1,5 @@
 # Import modules
-from .config import ModelConfig, InferenceConfig
+from .config import ModelConfig, InferenceConfig, CPUOffloadConfig
 from .utils import print_rank0
 from .engine import LLMEngine, SpeculativeLLMEngine
 from .offloading import CPUOffloadManager
@@ -8,6 +8,7 @@ from .offloading import CPUOffloadManager
 __all__ = [
     "ModelConfig",
     "InferenceConfig",
+    "CPUOffloadConfig",
     "print_rank0",
     "LLMEngine",
     "SpeculativeLLMEngine",

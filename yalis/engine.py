@@ -59,14 +59,6 @@ precision_to_dtype = {
 }
 
 
-def next_row_indices_callback(next_layer_index: int) -> Optional[list[int]]:
-    total_experts = 128
-
-    # Choose 8 experts randomly from the total experts
-    experts = torch.randint(0, total_experts, (8,), device="cuda")
-    return torch.sort(experts).values
-
-
 @torch.inference_mode()
 @torch.compile(disable=YALIS_DISABLE_COMPILE)
 def prefill(
@@ -239,8 +231,8 @@ class LLMEngine:
             use_paged_kv_caching=inference_config.use_paged_kv_caching,
             prestore_kv_cache=inference_config.prestore_kv_cache,
             disable_tp=model_config.disable_tp,
-            use_prefetched=inference_config.use_prefetched,
-            prefetch_default_vect_path=inference_config.prefetch_default_vect_path,
+            default_vector_prefetching=inference_config.default_vector_prefetching,
+            default_vector_path=inference_config.default_vector_path,
         )
 
         model = self._make_params_contiguous(
@@ -258,28 +250,22 @@ class LLMEngine:
         )
 
         if use_cpu_offloading:
+            oc = inference_config.cpu_offload
             print_rank0(
                 f"[CPU Offloading] Model loaded to CPU, "
-                f"will stream {inference_config.cpu_offload_num_prefetch_layers} "
+                f"will stream {oc.num_prefetch_layers} "
                 f"layer(s) ahead"
             )
-            # Create offload manager and attach to model
             offload_manager = CPUOffloadManager(
                 model=model,
                 device=torch.device(self.device),
-                num_prefetch_layers=inference_config.cpu_offload_num_prefetch_layers,
-                pin_memory=inference_config.cpu_offload_pin_memory,
-                use_preallocated_buffers=inference_config.cpu_offload_use_preallocated_buffers,
-                offload_components=inference_config.cpu_offload_components,
-                prefetch_mode=get_mode(inference_config.cpu_offload_mode),
+                num_prefetch_layers=oc.num_prefetch_layers,
+                pin_memory=oc.pin_memory,
+                use_preallocated_buffers=oc.use_preallocated_buffers,
+                offload_modules=oc.modules,
+                prefetch_mode=get_mode(oc.prefetch_mode),
             )
-            print_rank0(
-                f"CPU Offloading Mode: {inference_config.cpu_offload_mode}"
-            )
-            if inference_config.cpu_offload_mode in ["rows", "inline"]:
-                offload_manager.set_row_indices_callback(
-                    next_row_indices_callback
-                )
+            print_rank0(f"CPU Offload Config: {oc}")
             offload_manager.prepare_for_offloading(self.dtype)
             model.offload_manager = offload_manager
             print_rank0(

@@ -8,52 +8,34 @@ entirely in GPU memory. The strategy is:
 3. Prefetch next layer(s) while current layer computes
 4. Use CUDA streams to overlap transfer and compute
 
-Features:
-- Selective component offloading (MLP only, attention only, etc.)
-- Pre-allocated GPU buffers for zero-allocation transfers
-- Multi-buffer strategy for any prefetch depth
-- torch.compile compatible
+Configuration axes:
+- **What to offload** (cpu_offload_modules): module paths relative to each
+  block. None = offload everything. e.g. ["mlp.experts"] for experts only.
+- **How to prefetch** (cpu_offload_prefetch_mode): "all", "selective", "none".
 
 Usage:
-    # In engine.py (done automatically when use_cpu_offloading=True):
-    from yalis.offloading import CPUOffloadManager
-    
+    from yalis.offloading import CPUOffloadManager, get_mode
+
     offload_manager = CPUOffloadManager(
         model,
         use_preallocated_buffers=True,
-        offload_components=["mlp"],  # Only offload MLP
+        offload_modules=["mlp.experts"],
+        prefetch_mode=get_mode("all"),
     )
     offload_manager.prepare_for_offloading(dtype)
     model.offload_manager = offload_manager
-    
-    # The model's forward() will automatically use offloading via layer_context()
 """
 
-from .constants import (
-    VALID_COMPONENTS,
-    FULL_OFFLOAD,
-    PrefetchMode,
-    get_component_for_param,
-    get_mode,
-)
+from .constants import PrefetchMode, get_mode
 
-from .buffer_manager import (
-    ComponentBuffers,
-    GPUBufferManager,
-)
+from .buffer_manager import ComponentBuffers, GPUBufferManager
 
 from .manager import CPUOffloadManager
 
 __all__ = [
-    # Constants
-    "VALID_COMPONENTS",
-    "FULL_OFFLOAD",
     "PrefetchMode",
-    "get_component_for_param",
     "get_mode",
-    # Buffer management
     "ComponentBuffers",
     "GPUBufferManager",
-    # Core manager
     "CPUOffloadManager",
 ]

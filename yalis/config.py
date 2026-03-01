@@ -5,14 +5,6 @@ from importlib.metadata import version, PackageNotFoundError
 from yalis.attention.backends import AttentionBackend
 
 
-# Valid component names for CPU offloading
-# - "mlp": MLP layers (experts-only for MoE, full MLP for dense models)
-# - "attn": Attention layers
-# - "norm": Normalization layers
-# Note: For MoE models, the router (gate) always stays on GPU
-VALID_OFFLOAD_COMPONENTS = ["mlp", "attn", "norm"]
-
-
 class ModelConfig:
     """
     Configuration for model initialization and management.
@@ -61,7 +53,9 @@ class ModelConfig:
             # Default to the YALIS_CACHE env variable or a fallback directory
             cache_dir = os.getenv("YALIS_CACHE", "~/.cache/yalis/")
             model_path = os.path.join(
-                os.path.expanduser(cache_dir), "checkpoints", self.model_name
+                os.path.expanduser(cache_dir),
+                "checkpoints",
+                self.model_name,
             )
 
         # Check if the directory exists
@@ -93,6 +87,73 @@ class ModelConfig:
         )
 
 
+class CPUOffloadConfig:
+    """
+    Configuration for CPU offloading.
+
+    Two independent axes:
+    - **What to offload** (modules): which submodules live on CPU.
+      None = offload everything in each block (default, zero config).
+      e.g. ["mlp.experts"] = only offload expert weights.
+    - **How to prefetch** (prefetch_mode): bring params back to GPU.
+      "all" = full async prefetch of next layer(s).
+      "selective" = prefetch only needed rows/experts.
+      "none" = no prefetch, synchronous fetch on demand.
+    """
+
+    def __init__(
+        self,
+        modules: Optional[List[str]] = None,
+        prefetch_mode: Literal["all", "selective", "none"] = "all",
+        num_prefetch_layers: int = 1,
+        pin_memory: bool = True,
+        use_preallocated_buffers: bool = False,
+    ):
+        """
+        Args:
+            modules: Module paths (relative to each block) to offload.
+                None = offload everything in the block.
+                e.g. ["mlp.experts"] = only expert weights.
+                e.g. ["mlp.experts", "attn"] = experts + attention.
+            prefetch_mode: How to prefetch offloaded params.
+                "all" = full async prefetch of next layer(s).
+                "selective" = only needed rows/experts.
+                "none" = synchronous fetch on demand.
+            num_prefetch_layers: Number of layers to prefetch ahead.
+            pin_memory: Pin CPU memory for faster CPU->GPU transfers.
+            use_preallocated_buffers: Use fixed GPU buffers with
+                .copy_() instead of .to() for zero-allocation transfers.
+        """
+        self.modules = modules
+        self.prefetch_mode = prefetch_mode
+        self.num_prefetch_layers = num_prefetch_layers
+        self.pin_memory = pin_memory
+        self.use_preallocated_buffers = use_preallocated_buffers
+        self._validate()
+
+    def _validate(self):
+        valid_modes = {"all", "selective", "none"}
+        if self.prefetch_mode not in valid_modes:
+            raise ValueError(
+                f"Invalid prefetch_mode: '{self.prefetch_mode}'. "
+                f"Valid options: {valid_modes}"
+            )
+        if self.num_prefetch_layers < 1:
+            raise ValueError("num_prefetch_layers must be >= 1")
+
+    def __repr__(self):
+        return (
+            f"CPUOffloadConfig(\n"
+            f"    modules={self.modules},\n"
+            f"    prefetch_mode={self.prefetch_mode!r},\n"
+            f"    num_prefetch_layers={self.num_prefetch_layers},\n"
+            f"    pin_memory={self.pin_memory},\n"
+            f"    use_preallocated_buffers="
+            f"{self.use_preallocated_buffers}\n"
+            f"  )"
+        )
+
+
 class InferenceConfig:
     """
     Configuration for inference parameters.
@@ -114,15 +175,11 @@ class InferenceConfig:
         symmetric_allreduce_strategy: Optional[
             Literal["one-shot", "two-shot", "nvshmem"]
         ] = None,
-        # CPU Offloading options
-        use_cpu_offloading: bool = False,
-        cpu_offload_mode: Optional[Literal["all", "rows", "inline"]] = "all",
-        cpu_offload_num_prefetch_layers: int = 1,
-        cpu_offload_pin_memory: bool = True,
-        cpu_offload_use_preallocated_buffers: bool = False,
-        cpu_offload_components: Optional[List[str]] = None,
-        use_prefetched: bool = False,
-        prefetch_default_vect_path: Optional[str] = None,
+        # CPU Offloading
+        cpu_offload: Optional[CPUOffloadConfig] = None,
+        # Default vector prefetching (for MoE routing)
+        default_vector_prefetching: bool = False,
+        default_vector_path: Optional[str] = None,
     ):
         """
         Initialize the inference configuration.
@@ -132,11 +189,7 @@ class InferenceConfig:
                             parallel. The model will allocate KV cache
                             for this many sequences. During inference,
                             any batch size <= max_batch_size can be used.
-                            This enables dynamic batching for efficient
-                            resource utilization.
             max_length_of_generated_sequences (int): Max generated seq length
-            decoding_strategy (str): Decoding strategy, default is 'greedy'.
-            num_beams (Optional[int]): Number of beams for beam search.
             temperature (Optional[float]): Sampling temperature.
             top_k (Optional[int]): Top-k sampling limit.
             top_p (Optional[float]): Nucleus sampling probability.
@@ -148,23 +201,12 @@ class InferenceConfig:
             use_intra_head_parallelism (bool): Use intra-head parallelism.
             use_paged_kv_caching (bool): Use paged k/v caching for attention.
             prestore_kv_cache (bool): Pre-store k/v cache before attention.
-            use_cpu_offloading (bool): Enable CPU offloading for memory
-                            efficiency. Keeps model on CPU and streams
-                            layers to GPU on demand.
-            cpu_offload_num_prefetch_layers (int): Number of layers to
-                            prefetch when CPU offloading is enabled.
-            cpu_offload_pin_memory (bool): Pin CPU memory for faster
-                            CPU->GPU transfers during offloading.
-            cpu_offload_use_preallocated_buffers (bool): Use fixed GPU 
-                            buffers with .copy_() instead of .to() for
-                            zero-allocation transfers.
-            cpu_offload_components (List[str]): Components to offload/prefetch.
-                            Options: "mlp", "attn", "norm"
-                            Default: ["mlp", "attn", "norm"] (full layer)
-                            Note: For MoE models, "mlp" means experts only
-                                  (router stays on GPU permanently)
-            use_prefetched: bool = False,
-            prefetch_default_vect_path: Optional[str] = None,
+            cpu_offload (Optional[CPUOffloadConfig]): CPU offloading config.
+                            None = offloading disabled.
+                            Pass a CPUOffloadConfig() to enable.
+            default_vector_prefetching (bool): Use precomputed default
+                            vectors for MoE routing.
+            default_vector_path (Optional[str]): Path to default vectors.
         """
         self.max_batch_size = max_batch_size
         # TODO - default max_length should be none.
@@ -179,26 +221,9 @@ class InferenceConfig:
         self.use_paged_kv_caching = use_paged_kv_caching
         self.prestore_kv_cache = prestore_kv_cache
         self.symmetric_allreduce_strategy = symmetric_allreduce_strategy
-        # CPU Offloading
-        self.use_cpu_offloading = use_cpu_offloading
-        self.cpu_offload_mode = cpu_offload_mode
-        self.cpu_offload_num_prefetch_layers = cpu_offload_num_prefetch_layers
-        self.cpu_offload_pin_memory = cpu_offload_pin_memory
-        self.cpu_offload_use_preallocated_buffers = cpu_offload_use_preallocated_buffers
-        
-        # Validate and store offload components
-        if cpu_offload_components is None:
-            self.cpu_offload_components = ["mlp", "attn", "norm"]  # Full layer
-        else:
-            for comp in cpu_offload_components:
-                if comp not in VALID_OFFLOAD_COMPONENTS:
-                    raise ValueError(
-                        f"Invalid component '{comp}' in cpu_offload_components. "
-                        f"Valid options: {VALID_OFFLOAD_COMPONENTS}"
-                    )
-            self.cpu_offload_components = cpu_offload_components
-        self.use_prefetched = use_prefetched
-        self.prefetch_default_vect_path = prefetch_default_vect_path
+        self.cpu_offload = cpu_offload
+        self.default_vector_prefetching = default_vector_prefetching
+        self.default_vector_path = default_vector_path
 
         if attention_backend not in ["flash", "sdpa", "flex"]:
             raise ValueError(
@@ -208,11 +233,15 @@ class InferenceConfig:
         try:
             pkg_ver = version("torch")
         except PackageNotFoundError:
-            raise RuntimeError("torch isn’t installed")
+            raise RuntimeError("torch isn't installed")
         if Version(pkg_ver) < Version("2.6.0"):
             raise RuntimeError(f"torch >= 2.6.0 required (found {pkg_ver})")
 
         self._validate()
+
+    @property
+    def use_cpu_offloading(self) -> bool:
+        return self.cpu_offload is not None
 
     def _validate(self):
         """
@@ -251,7 +280,7 @@ class InferenceConfig:
             and not self.attention_backend == AttentionBackend.SDPA
         ):
             raise ValueError(
-                "use_intra_head_parallelism requires attention_backend=sdpa"
+                "use_intra_head_parallelism requires" " attention_backend=sdpa"
             )
 
         if (
@@ -264,31 +293,24 @@ class InferenceConfig:
                 " 'one-shot', 'two-shot', 'nvshmem', or None."
             )
 
-        # CPU Offloading validation
-        if self.use_cpu_offloading:
-            if self.cpu_offload_num_prefetch_layers < 1:
-                raise ValueError(
-                    "cpu_offload_num_prefetch_layers must be >= 1"
-                )
-
     def __repr__(self):
         return (
             f"{self.__class__.__name__}(\n"
             f"  max_batch_size={self.max_batch_size},\n"
-            f"  max_length_of_generated_sequences={self.max_length},\n"
+            f"  max_length={self.max_length},\n"
             f"  top_k={self.top_k},\n"
             f"  top_p={self.top_p},\n"
             f"  temperature={self.temperature},\n"
             f"  metrics={self.metrics},\n"
             f"  tp_dims={self.tp_dims},\n"
-            f"  use_intra_head_parallelism={self.use_intra_head_parallelism},\n"
+            f"  use_intra_head_parallelism="
+            f"{self.use_intra_head_parallelism},\n"
             f"  attention_backend={self.attention_backend.value},\n"
             f"  use_paged_kv_caching={self.use_paged_kv_caching},\n"
             f"  prestore_kv_cache={self.prestore_kv_cache},\n"
-            f"  use_cpu_offloading={self.use_cpu_offloading},\n"
-            f"  cpu_offload_num_prefetch_layers={self.cpu_offload_num_prefetch_layers},\n"
-            f"  cpu_offload_pin_memory={self.cpu_offload_pin_memory},\n"
-            f"  cpu_offload_use_preallocated_buffers={self.cpu_offload_use_preallocated_buffers},\n"
-            f"  cpu_offload_components={self.cpu_offload_components}\n"
+            f"  cpu_offload={self.cpu_offload},\n"
+            f"  default_vector_prefetching="
+            f"{self.default_vector_prefetching},\n"
+            f"  default_vector_path={self.default_vector_path}\n"
             f")"
         )

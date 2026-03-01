@@ -11,13 +11,14 @@ Key features:
 - Uses CUDA streams to overlap computation with data transfer
 
 Advanced features:
-- Pre-allocated GPU buffers: Uses .copy_() instead of .to() for zero-allocation 
+- Pre-allocated GPU buffers: Uses .copy_() instead of .to() for zero-allocation
   transfers. Enables selective prefetching.
 - Selective prefetching: Prefetch only MLP, only attention, or specific rows
   of weight matrices (useful for sparse/expert computation).
 """
 
 from yalis import ModelConfig, InferenceConfig, print_rank0, LLMEngine
+from yalis.config import CPUOffloadConfig
 from transformers import AutoTokenizer
 import torch
 import torch.distributed as dist
@@ -28,15 +29,15 @@ PROFILE_START_ITERATION = 3
 if __name__ == "__main__":
     # Model ID from Hugging Face
     # CPU offloading is especially useful for larger models like 70B
-    #model_id = "meta-llama/Llama-3.2-1B-Instruct"
+    # model_id = "meta-llama/Llama-3.2-1B-Instruct"
     model_id = "Qwen/Qwen3-30B-A3B-Instruct-2507"
-    #model_id = "mistralai/Mixtral-8x7B-Instruct-v0.1"
+    # model_id = "mistralai/Mixtral-8x7B-Instruct-v0.1"
 
     user_prompts = [
-        " ".join(["How to bake a cake?"] * 160)
-        #"Explain quantum mechanics in simple terms.",
-        #"What are the best practices for time management?",
-        #"How do I write a great resume for a software engineer role?",
+        # " ".join(["How to bake a cake?"] * 160)
+        "Explain quantum mechanics in simple terms.",
+        # "What are the best practices for time management?",
+        # "How do I write a great resume for a software engineer role?",
     ]
 
     system_prompt = (
@@ -48,9 +49,10 @@ if __name__ == "__main__":
 
     input_prompts = []
     for user_prompt in user_prompts:
+        prompt = system_prompt + user_prompt
+        print(prompt)
         conversation = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
+            {"role": "user", "content": prompt},
         ]
         formatted_prompt = tokenizer.apply_chat_template(
             conversation, add_generation_prompt=True, tokenize=False
@@ -58,7 +60,7 @@ if __name__ == "__main__":
         input_prompts.append(formatted_prompt)
 
     # Number of tokens to generate
-    tokens_to_gen = 4
+    tokens_to_gen = 10
 
     # Max batch size (smaller batch sizes work better with CPU offloading
     # due to memory constraints)
@@ -75,36 +77,29 @@ if __name__ == "__main__":
         temperature=0.0,
         tp_dims=None,
         attention_backend="flash",
-        # CPU offloading options
-        use_cpu_offloading=True,  # Enable CPU offloading
-        cpu_offload_num_prefetch_layers=1,  # Prefetch 1 layer ahead
-        cpu_offload_pin_memory=True,  # Pin CPU memory for faster transfers
-        # Advanced: Pre-allocated GPU buffers with .copy_() (zero-allocation)
-        cpu_offload_use_preallocated_buffers=True,  # Set True to enable
-        # Components to offload (others stay on GPU permanently):
-        #   - ["mlp", "attn", "norm"] = full layer offload (default)
-        #   - ["mlp"] = only MLP offloaded, attention+norms stay on GPU
-        #   - ["attn"] = only attention offloaded, MLP+norms stay on GPU
-        cpu_offload_components=["mlp"],  # Full layer
-        cpu_offload_mode="rows",
+        # CPU offloading config
+        cpu_offload=CPUOffloadConfig(
+            modules=["mlp.experts"],
+            prefetch_mode="selective",
+            num_prefetch_layers=1,
+            pin_memory=True,
+            use_preallocated_buffers=True,
+        ),
         use_paged_kv_caching=False,
         prestore_kv_cache=True,
+        default_vector_prefetching=True,
+        default_vector_path="./defaultvect/dv_buff_qwen_instruct",
     )
     # Initialize the engine with CPU offloading
     engine = LLMEngine(
         model_config=model_config, inference_config=inference_config
     )
 
-
     print_rank0("=" * 60)
     print_rank0("CPU Offloading Inference Example")
     print_rank0("=" * 60)
     print_rank0(f"Model: {model_id}")
-    print_rank0(f"CPU Offloading: Enabled")
-    print_rank0(f"Prefetch Layers: {inference_config.cpu_offload_num_prefetch_layers}")
-    print_rank0(f"Pin Memory: {inference_config.cpu_offload_pin_memory}")
-    print_rank0(f"Pre-allocated Buffers: {inference_config.cpu_offload_use_preallocated_buffers}")
-    print_rank0(f"Offload Components: {inference_config.cpu_offload_components}")
+    print_rank0(f"CPU Offload: {inference_config.cpu_offload}")
     print_rank0("=" * 60)
 
     print_rank0("\nRunning inference with CPU offloading...")
@@ -143,6 +138,5 @@ if __name__ == "__main__":
         print_rank0("-" * 40)
 
     # Clean up if using CPU offloading
-    if hasattr(engine.model, 'cleanup'):
+    if hasattr(engine.model, "cleanup"):
         engine.model.cleanup()
-
