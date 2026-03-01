@@ -204,7 +204,13 @@ The `default_vector_path` directory should contain one file per MoE layer: `buff
 
 ### Combining with CPU Offloading
 
-Default vector routing and CPU offloading work together. When both are active, the predicted expert IDs are forwarded to the offload manager so it can selectively stream only the needed expert rows for the next layer:
+Default vector routing and CPU offloading work together. When both are active, the predicted expert IDs are forwarded to the offload manager so it can selectively stream only the needed expert rows for the next layer.
+
+This requires:
+- `prefetch_mode="selective"` — so the manager uses expert IDs to pick rows instead of loading all params
+- `modules=["mlp.experts"]` — only expert weights are offloaded (router, attention, norms stay on GPU)
+- `use_preallocated_buffers=True` — row-level copying requires fixed GPU buffers (`.copy_()` into specific rows)
+- `pin_memory=True` — pinned CPU memory for fast async row transfers
 
 ```python
 inference_config = InferenceConfig(
@@ -213,6 +219,7 @@ inference_config = InferenceConfig(
         modules=["mlp.experts"],
         prefetch_mode="selective",
         use_preallocated_buffers=True,
+        pin_memory=True,
     ),
     default_vector_prefetching=True,
     default_vector_path="./defaultvect/dv_buff_qwen_instruct/",
