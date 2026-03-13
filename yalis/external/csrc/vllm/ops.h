@@ -11,3 +11,5 @@
 
 
 void silu_and_mul(torch::Tensor& out, torch::Tensor& input);
+void swigluoai_and_mul(torch::Tensor& out, torch::Tensor& input,
+                       double alpha, double limit);

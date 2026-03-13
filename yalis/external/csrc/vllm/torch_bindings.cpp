@@ -6,7 +6,11 @@
 TORCH_LIBRARY(vllm_ops, m) {
   m.def("silu_and_mul(Tensor! out, Tensor input) -> ()");
   m.impl("silu_and_mul", torch::kCUDA, &silu_and_mul);
-  
+  m.def(
+    "swigluoai_and_mul(Tensor! out, Tensor input, float alpha, "
+    "float limit) -> ()");
+  m.impl("swigluoai_and_mul", torch::kCUDA, &swigluoai_and_mul);
+
   // MoE Ops
   m.def(
     "topk_softmax(Tensor! topk_weights, Tensor! topk_indices, Tensor! "
@@ -25,4 +29,3 @@ TORCH_LIBRARY(vllm_ops, m) {
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   // no Python-level functions; importing is enough to trigger registration
 }
-

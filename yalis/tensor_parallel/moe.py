@@ -240,9 +240,10 @@ class TPMoE(torch.nn.Module):
                 gate_up_bias, requires_grad=True
             )
 
-            # Projection bias is applied after all_reduce in the tensor
-            # parallel context, so it must be full-size for
-            # correct distributed computation.
+            # Projection bias is divided by TP world_size at load time
+            # (see _modified_load_from_state_dict) so each rank adds
+            # its share inside fused_experts. The all_reduce then
+            # recovers the correct full bias.
             proj_bias = torch.zeros(
                 n_experts,
                 hidden_size,
@@ -316,9 +317,6 @@ class TPMoE(torch.nn.Module):
         x,
         router,
     ):
-        # proj_bias is not passed to fused_moe. In tensor parallel MoE,
-        # the projection bias is applied after all_reduce aggregation
-        # with proper routing weight multiplication. We handle it here.
         y, topk_weights, topk_ids = fused_moe(
             x,
             self.gate_up_proj,
@@ -332,26 +330,12 @@ class TPMoE(torch.nn.Module):
             swiglu_alpha=self.swiglu_alpha,
             swiglu_limit=self.swiglu_limit,
             gate_up_bias=self.gate_up_bias,
-            proj_bias=None,  # handled below
+            proj_bias=self.proj_bias,
+            weight_proj_bias=True,
         )
         y = y.to(x.dtype)
 
         y = self.all_reduce(y)
-
-        # Apply proj_bias after all_reduce with routing weight
-        # multiplication. This ensures correct tensor parallel semantics:
-        # each expert's bias contribution is weighted by its routing
-        # weight before aggregation. Mathematically: y += sum_e(w_e * b_e)
-        if self.proj_bias is not None:
-            # topk_ids: (M, topk), topk_weights: (M, topk)
-            # proj_bias: (E, hidden_size)
-            bias_per_expert = self.proj_bias[topk_ids]  # (M, topk, C)
-            weighted_bias = torch.einsum(
-                "mec,me->mc",
-                bias_per_expert.to(y.dtype),
-                topk_weights.to(y.dtype),
-            )
-            y = y + weighted_bias
 
         return y
 
@@ -485,8 +469,11 @@ class TPMoE(torch.nn.Module):
                 bias = None
 
             if bias is not None:
-                # proj_bias stays full-size [n_experts, hidden_size]
-                # for correct tensor parallel semantics.
-                state_dict[proj_bias_key] = bias
+                # Divide by TP world_size so each rank adds its
+                # share inside fused_experts; all_reduce recovers
+                # the correct full bias.
+                state_dict[proj_bias_key] = (
+                    bias / self.outer_group_size
+                )
 
         self._old_load_from_state_dict(state_dict, prefix, *args, **kwargs)

@@ -535,34 +535,6 @@ def grouped_topk(
     return topk_weights.to(torch.float32), topk_ids.to(torch.int32)
 
 
-def _swiglu_activation(
-    x: torch.Tensor, alpha: float = 1.702, limit: float = 7.0
-) -> torch.Tensor:
-    """
-    Apply SWIGLU activation function.
-
-    Args:
-        x: Input tensor with shape [..., 2*hidden] where the last dimension
-           contains concatenated gate and linear projections
-        alpha: SWIGLU alpha parameter
-        limit: Clamp limit for both gate and linear parts
-
-    Returns:
-        Activated tensor with shape [..., hidden]
-    """
-    # Split into gate and linear parts
-    x_glu = x[..., ::2]  # Even indices (gate)
-    x_lin = x[..., 1::2]  # Odd indices (linear)
-
-    # Apply clamping
-    x_glu = x_glu.clamp(max=limit)
-    x_lin = x_lin.clamp(min=-limit, max=limit)
-
-    # Compute SWIGLU: glu_part * sigmoid(alpha * glu_part) * (lin_part + 1)
-    out_glu = x_glu * torch.sigmoid(alpha * x_glu)
-    return out_glu * (x_lin + 1.0)
-
-
 def get_config_dtype_str(
     dtype: torch.dtype,
     use_int8_w8a16: Optional[bool] = False,
@@ -599,6 +571,7 @@ def fused_experts(
     swiglu_limit: float = 7.0,
     gate_up_bias: Optional[torch.Tensor] = None,
     proj_bias: Optional[torch.Tensor] = None,
+    weight_proj_bias: bool = False,
 ):
     # Check constraints.
     assert hidden_states.shape[1] == w1.shape[2], "Hidden size mismatch"
@@ -717,19 +690,13 @@ def fused_experts(
             intermediate_cache1 = intermediate_cache1 + bias_indexed
 
         # Apply activation function
-        if activation == "swiglu":
-            # SWIGLU: requires reshaping and custom activation
-            intermediate_cache2_swiglu = torch.empty(
-                (M, topk_ids.shape[1], N // 2),
-                device=hidden_states.device,
-                dtype=hidden_states.dtype,
+        if activation == "swigluoai":
+            torch.ops.vllm_ops.swigluoai_and_mul(
+                intermediate_cache2,
+                intermediate_cache1.view(-1, N),
+                swiglu_alpha,
+                swiglu_limit,
             )
-            # Apply SWIGLU to each expert output
-            for i in range(intermediate_cache1.size(1)):  # topk dimension
-                intermediate_cache2_swiglu[:, i, :] = _swiglu_activation(
-                    intermediate_cache1[:, i, :], swiglu_alpha, swiglu_limit
-                )
-            intermediate_cache2 = intermediate_cache2_swiglu.view(-1, N // 2)
         else:
             # Default SiLU activation
             torch.ops.vllm_ops.silu_and_mul(
@@ -760,6 +727,11 @@ def fused_experts(
             # intermediate_cache3 shape: (M, topk, hidden_size)
             # proj_bias shape: (E, hidden_size) -> need to index by expert
             bias_indexed = proj_bias[curr_topk_ids]  # (M, topk, hidden_size)
+            if weight_proj_bias:
+                bias_indexed = (
+                    bias_indexed
+                    * curr_topk_weights.unsqueeze(-1)
+                )
             intermediate_cache3 = intermediate_cache3 + bias_indexed
 
         torch.sum(
@@ -795,6 +767,7 @@ def fused_moe(
     swiglu_limit: float = 7.0,
     gate_up_bias: Optional[torch.Tensor] = None,
     proj_bias: Optional[torch.Tensor] = None,
+    weight_proj_bias: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     This function computes a Mixture of Experts (MoE) layer using two sets of
@@ -871,6 +844,7 @@ def fused_moe(
             swiglu_limit=swiglu_limit,
             gate_up_bias=gate_up_bias,
             proj_bias=proj_bias,
+            weight_proj_bias=weight_proj_bias,
         ),
         topk_weights,
         topk_ids,

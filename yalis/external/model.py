@@ -1210,7 +1210,7 @@ class GptOssMoE(nn.Module):
             n_expert_per_token=self.experts_per_token,
             init_device=getattr(config, "init_device", "cuda"),
             bias=True,  # Enable bias support
-            activation="swiglu",  # Use SWIGLU activation
+            activation="swigluoai",  # Use GPT-OSS SWIGLU activation
             swiglu_alpha=self.swiglu_alpha,
             swiglu_limit=self.swiglu_limit,
             dtype=getattr(config, "dtype", None),
