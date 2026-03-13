@@ -68,6 +68,35 @@ def divide(a, b):
 
 
 @torch.no_grad()
+def shard_tensor_along_dim(tensor, dim, world_size, rank):
+    """
+    Extract the shard of a tensor for the current rank along a specified
+    dimension.
+
+    Used in GptOssMoE for correctly loading unsharded checkpoints when TP is
+    enabled.
+
+    Args:
+        tensor: The full tensor to shard
+        dim: Dimension along which to shard
+        world_size: Total number of ranks
+        rank: Current rank
+
+    Returns:
+        Sharded tensor for the current rank
+    """
+    size_along_dim = tensor.size(dim)
+    if size_along_dim % world_size != 0:
+        raise ValueError(
+            f"Dimension {dim} size {size_along_dim} not divisible by "
+            f"world_size {world_size}"
+        )
+    shard_size = size_along_dim // world_size
+    start_idx = rank * shard_size
+    return tensor.narrow(dim, start_idx, shard_size)
+
+
+@torch.no_grad()
 def extract_local_params_from_full_params(
     params, out_features_group, in_features_group
 ):

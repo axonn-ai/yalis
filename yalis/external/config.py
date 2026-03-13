@@ -70,6 +70,8 @@ class Config:
     attention_scores_scalar: Optional[int] = None
     sliding_window_size: Optional[int] = None
     sliding_window_indices: Optional[List] = None
+    sliding_window_mode: Optional[str] = None
+    sliding_window_layer_placing: int = 1
     # if `attention_logit_softcapping` is used, cannot use optimized
     # `torch.nn.functional.scaled_dot_product_attention` (which implements
     # Flash attention), may result in higher memory and runtime footprint.
@@ -84,7 +86,7 @@ class Config:
     moe_intermediate_size: Optional[int] = None
     bias: bool = True
     mlp_class_name: Literal[
-        "GptNeoxMLP", "LLaMAMLP", "GemmaMLP", "LLaMAMoE"
+        "GptNeoxMLP", "LLaMAMLP", "GemmaMLP", "LLaMAMoE", "GptOssMoE"
     ] = "GptNeoxMLP"
     gelu_approximate: str = "none"
     n_expert: int = 0
@@ -174,8 +176,6 @@ class Config:
             "norm_qk_type",
             "rope_indices",
             "rope_local_base_freq",
-            "sliding_window_indices",
-            "sliding_window_layer_placing",
         ]
         for config in configs:
             conf_dict.pop(config, None)
@@ -3245,5 +3245,50 @@ r1_distill_llama = [
 ]
 
 configs.extend(r1_distill_llama)
+
+###############
+# OpenAI GPT-OSS
+###############
+gpt_oss = [
+    # https://huggingface.co/openai/gpt-oss-20b/blob/main/config.json
+    dict(
+        name="gpt-oss-20b",
+        hf_config=dict(org="openai", name="gpt-oss-20b"),
+        block_size=4096,
+        vocab_size=201088,
+        padded_vocab_size=201216,  # Pad to multiple of 512: ceil(201088/512)*512
+        n_layer=24,
+        n_head=64,
+        n_embd=2880,
+        n_query_groups=8,
+        head_size=64,  # From HF config head_dim=64
+        rotary_percentage=1.0,
+        parallel_residual=False,
+        bias=False,
+        attn_bias=True,  # GPT-OSS uses attention biases
+        norm_class_name="RMSNorm",
+        mlp_class_name="GptOssMoE",
+        intermediate_size=2880,  # Same as hidden_size for GPT-OSS
+        n_expert=32,
+        n_expert_per_token=4,
+        rope_base=150000,  # From HF config rope_theta=150000
+        # GPT-OSS uses NTK/YaRN RoPE with specific parameterization
+        rope_adjustments=dict(
+            mode="yaRN",
+            alpha=1.0,
+            beta=32.0,
+            scaling=32.0,  # From HF config rope_scaling.factor=32
+            initial_context_length=4096,
+        ),
+        # GPT-OSS uses alternating sliding/full attention (sliding_window=128 from HF)
+        sliding_window_size=128,
+        sliding_window_indices=[1, 0]
+        * 12,  # Alternating: 1=sliding, 0=full for 24 layers
+        # GPT-OSS requires special attention mode for proper sinks handling
+        sliding_window_mode="gpt_oss",
+    ),
+]
+
+configs.extend(gpt_oss)
 
 name_to_config = {config["name"]: config for config in configs}

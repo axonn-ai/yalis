@@ -110,6 +110,9 @@ class TPMoE(torch.nn.Module):
         bias=False,
         skip_bias_add=True,
         dtype=None,
+        activation="silu",
+        swiglu_alpha=1.702,
+        swiglu_limit=7.0,
         **kwargs,
     ):
         super(TPMoE, self).__init__()
@@ -219,10 +222,55 @@ class TPMoE(torch.nn.Module):
             ax.comm_handle.intra_layer_group,
         )
 
-        if bias:
-            raise NotImplementedError("Bias is not supported for MoE")
+        # Store activation parameters
+        self.activation = activation
+        self.swiglu_alpha = swiglu_alpha
+        self.swiglu_limit = swiglu_limit
 
-        self.bias = None
+        # Initialize bias parameters if needed
+        if bias:
+            # gate_up_proj bias: [n_experts, 2 * local_intermediate_size]
+            gate_up_bias = torch.zeros(
+                n_experts,
+                2 * self.local_intermediate_size,
+                device=self.init_device,
+                dtype=dtype,
+            )
+            self.gate_up_bias = torch.nn.Parameter(
+                gate_up_bias, requires_grad=True
+            )
+
+            # Projection bias is divided by TP world_size at load time
+            # (see _modified_load_from_state_dict) so each rank adds
+            # its share inside fused_experts. The all_reduce then
+            # recovers the correct full bias.
+            proj_bias = torch.zeros(
+                n_experts,
+                hidden_size,
+                device=self.init_device,
+                dtype=dtype,
+            )
+            self.proj_bias = torch.nn.Parameter(proj_bias, requires_grad=True)
+
+            # Set tensor parallel attributes for biases
+            setattr(self.gate_up_bias, "is_tensor_parallel", True)
+            setattr(self.proj_bias, "is_tensor_parallel", False)
+            setattr(
+                self.gate_up_bias, "needs_depth_parallel_gradient_sync", False
+            )
+            setattr(
+                self.proj_bias, "needs_depth_parallel_gradient_sync", False
+            )
+            setattr(
+                self.gate_up_bias,
+                "process_group_for_norm_reduction",
+                ax.comm_handle.intra_layer_group,
+            )
+        else:
+            self.gate_up_bias = None
+            self.proj_bias = None
+
+        self.bias = bias
 
         self.skip_bias_add = skip_bias_add
         self._old_load_from_state_dict = self._load_from_state_dict
@@ -269,8 +317,7 @@ class TPMoE(torch.nn.Module):
         x,
         router,
     ):
-
-        y = fused_moe(
+        y, topk_weights, topk_ids = fused_moe(
             x,
             self.gate_up_proj,
             self.proj,
@@ -278,9 +325,18 @@ class TPMoE(torch.nn.Module):
             self.n_expert_per_token,
             True,
             inplace=False,
-            moe_configs=self._moe_configs,  # Pass pre-loaded configs
-        ).to(x.dtype)
+            moe_configs=self._moe_configs,
+            activation=self.activation,
+            swiglu_alpha=self.swiglu_alpha,
+            swiglu_limit=self.swiglu_limit,
+            gate_up_bias=self.gate_up_bias,
+            proj_bias=self.proj_bias,
+            weight_proj_bias=True,
+        )
+        y = y.to(x.dtype)
+
         y = self.all_reduce(y)
+
         return y
 
     def _is_full_weight_matrix(self, weight, in_features, out_features):
@@ -371,5 +427,51 @@ class TPMoE(torch.nn.Module):
                 self.outer_group,
                 self.inner_group,
             )
+
+        # Handle bias parameters if they exist
+        if self.bias:
+            # Handle gate_up_bias (named mlp1_bias in GPT-OSS)
+            gate_up_bias_key = prefix + "gate_up_bias"
+            mlp1_bias_key = prefix + "mlp1_bias"
+
+            if gate_up_bias_key in state_dict:
+                bias = state_dict[gate_up_bias_key]
+            elif mlp1_bias_key in state_dict:
+                bias = state_dict[mlp1_bias_key]
+                # Move to expected key name
+                state_dict[gate_up_bias_key] = bias
+                if mlp1_bias_key != gate_up_bias_key:
+                    del state_dict[mlp1_bias_key]
+            else:
+                bias = None
+
+            if bias is not None:
+                # bias shape: [n_experts, 2 * intermediate_size]
+                # Shard the features dim (dim -1) across outer_group
+                # to get [n_experts, 2 * local_intermediate_size]
+                if bias.size(-1) == 2 * self.intermediate_size:
+                    bias = Drop.apply(bias, self.outer_group, -1)
+                    state_dict[gate_up_bias_key] = bias
+
+            # Handle proj_bias (named mlp2_bias in GPT-OSS)
+            proj_bias_key = prefix + "proj_bias"
+            mlp2_bias_key = prefix + "mlp2_bias"
+
+            if proj_bias_key in state_dict:
+                bias = state_dict[proj_bias_key]
+            elif mlp2_bias_key in state_dict:
+                bias = state_dict[mlp2_bias_key]
+                # Move to expected key name
+                state_dict[proj_bias_key] = bias
+                if mlp2_bias_key != proj_bias_key:
+                    del state_dict[mlp2_bias_key]
+            else:
+                bias = None
+
+            if bias is not None:
+                # Divide by TP world_size so each rank adds its
+                # share inside fused_experts; all_reduce recovers
+                # the correct full bias.
+                state_dict[proj_bias_key] = bias / self.outer_group_size
 
         self._old_load_from_state_dict(state_dict, prefix, *args, **kwargs)

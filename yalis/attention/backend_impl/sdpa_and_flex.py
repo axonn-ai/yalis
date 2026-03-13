@@ -68,7 +68,8 @@ def intra_head_sdpa(
     if parallel:
         q = Drop.apply(q, process_group).contiguous()
         # k = Drop.apply(k, process_group).contiguous()
-    scale = 1.0 / math.sqrt(d)
+    # keep scale in the same dtype/device as `q` to avoid dtype promotion
+    scale = torch.tensor(1.0 / math.sqrt(d), dtype=q.dtype, device=q.device)
     if enable_gqa:
         q = q * scale
         S = (
@@ -106,6 +107,7 @@ def rotary_kv_update_sdpa_gen(
     use_intra_head_parallelism: bool = False,
     use_flex: bool = False,
     flex_attention_block_mask=None,
+    sliding_window: int = 0,
 ) -> torch.Tensor:
     # Get current batch size
     B = q.size(0)
@@ -134,19 +136,48 @@ def rotary_kv_update_sdpa_gen(
     b_indices = torch.arange(B, device=k_cache.device)
     t_indices = token_counter[:B].view(-1)
 
-    if ax.config.G_intra_c > 1 and use_intra_head_parallelism:
+    if (
+        hasattr(ax.config, "G_intra_c")
+        and ax.config.G_intra_c > 1
+        and use_intra_head_parallelism
+    ):
         k_cache[b_indices, :, t_indices, :] = Drop.apply(
             k[:, :, 0, :], ax.comm_handle.inner_intra_layer_parallel_group
-        )
+        ).to(k_cache.dtype)
         v_cache[b_indices, :, t_indices, :] = Drop.apply(
             v[:, :, 0, :], ax.comm_handle.inner_intra_layer_parallel_group
-        )
+        ).to(v_cache.dtype)
     else:
-        k_cache[b_indices, :, t_indices, :] = k[:, :, 0, :]
-        v_cache[b_indices, :, t_indices, :] = v[:, :, 0, :]
-    mask = build_mask_from_index(token_counter[:B], t_max=k_cache.size(-2))
+        k_cache[b_indices, :, t_indices, :] = k[:, :, 0, :].to(k_cache.dtype)
+        v_cache[b_indices, :, t_indices, :] = v[:, :, 0, :].to(v_cache.dtype)
+    # Build causal mask (allows keys up to the current index)
+    # Optionally constrain to a fixed sliding window if `sliding_window > 0`.
+    t_max = k_cache.size(-2)
+    arange_t = torch.arange(t_max, device=k_cache.device).view(1, -1)
+    upper_mask = arange_t <= token_counter[:B].view(-1, 1)
+    if sliding_window and sliding_window > 0:
+        lower_bound = (token_counter[:B].view(-1, 1) - sliding_window).clamp(
+            min=0
+        )
+        lower_mask = arange_t >= lower_bound
+        mask = upper_mask & lower_mask
+    else:
+        mask = upper_mask
 
     enable_gqa = q.size(1) != k.size(1)
+
+    # For GQA, expand K and V to match Q's head count
+    # PyTorch SDPA doesn't natively support GQA, so we repeat K/V heads
+    if enable_gqa:
+        q_heads = q.size(1)
+        kv_heads = k.size(1)
+        q_per_kv = q_heads // kv_heads
+        # Expand K and V caches by repeating each head q_per_kv times
+        k_cache_expanded = k_cache.repeat_interleave(q_per_kv, dim=1)
+        v_cache_expanded = v_cache.repeat_interleave(q_per_kv, dim=1)
+    else:
+        k_cache_expanded = k_cache
+        v_cache_expanded = v_cache
 
     # Pass sliced K V caches for current batch size
     if use_intra_head_parallelism:
@@ -159,8 +190,8 @@ def rotary_kv_update_sdpa_gen(
         mask_float = mask_float.unsqueeze(1)
         out = intra_head_sdpa(
             q,
-            k_cache[:B],
-            v_cache[:B],
+            k_cache_expanded[:B],
+            v_cache_expanded[:B],
             mask_float,
             ax.comm_handle.inner_intra_layer_parallel_group,
             enable_gqa,
@@ -174,20 +205,310 @@ def rotary_kv_update_sdpa_gen(
             ), "flex attention requires a block mask"
             out = flex_attention(
                 q,
-                k_cache[:B],
-                v_cache[:B],
+                k_cache_expanded[:B],
+                v_cache_expanded[:B],
                 enable_gqa=enable_gqa,
                 block_mask=flex_attention_block_mask,
             )
+            # Ensure output matches original Q dtype
+            return out.to(dtype=q.dtype)
         else:
             out = torch.nn.functional.scaled_dot_product_attention(
                 q,
-                k_cache[:B],
-                v_cache[:B],
+                k_cache_expanded[:B],
+                v_cache_expanded[:B],
                 attn_mask=mask[:, None, None, :],
-                enable_gqa=enable_gqa,
             )
-        return out
+        # Ensure output matches original Q dtype
+        return out.to(dtype=q.dtype)
+
+
+def rotary_kv_update_sdpa_gen_gptoss(
+    q: torch.Tensor,  # B, nh, T, hs (T can be 1 for decode or >1 for prefill)
+    k: torch.Tensor,  # B, nh, T, hs
+    v: torch.Tensor,  # B, nh, T, hs
+    cos: torch.Tensor,
+    sin: torch.Tensor,
+    token_counter: torch.Tensor,  # B,1
+    k_cache: torch.Tensor,  # B,nh,t_max,hs
+    v_cache: torch.Tensor,  # B,nh,t_max,hs,
+    sinks: Optional[torch.Tensor] = None,
+    sliding_window: int = 0,
+    use_intra_head_parallelism: bool = False,
+    use_flex: bool = False,
+    flex_attention_block_mask=None,
+) -> torch.Tensor:
+    """
+    Implements GPT-OSS-specific semantics: a sliding-window lower-bound
+    on the causal mask and an optional per-head "sink" logit column
+    appended to the attention logits. This function is intentionally
+    kept separate from :func:`rotary_kv_update_sdpa_gen` to avoid
+    adding branching inside the optimized, backend-aware path
+    (Flash/Flex/intra-head-parallelism) to reduce regression risk.
+
+    Behavior: compute Q@K^T, apply the combined mask, optionally
+    append sink logits, softmax, drop the sink column, and apply the
+    resulting weights to V.
+
+    Inputs are the per-batch Q and the key/value caches.
+
+    Now supports both PREFILL (T > 1) and DECODE (T = 1) phases.
+    """
+    B = q.size(0)
+    _, nh, T, hs = q.shape
+
+    process_group = ax.comm_handle.inner_intra_layer_parallel_group
+    if use_intra_head_parallelism:
+        assert not use_flex, "GPT-OSS helper does not support flex attention"
+        q = Drop.apply(q, process_group).contiguous()
+        # If `sinks` is provided it is per-head. Expand to the 4D
+        # layout expected by downstream code, then apply Drop along the
+        # head dimension so the reduced-per-inner-rank sinks match the
+        # dropped `q` shape.
+        if sinks is not None:
+            sinks_expanded = sinks.view(1, -1, 1, 1)
+            sinks_dropped = Drop.apply(sinks_expanded, process_group, 1)
+            sinks = sinks_dropped.contiguous()
+    else:
+        # When not using intra-head parallelism but tensor parallelism is
+        # active, sinks is still (n_head_global, 1, 1) from Block
+        # initialization. We need to slice it to match the per-rank head count
+        # (nh). Determine per-rank head count from q shape
+        if sinks is not None:
+            # `ax.is_initialized` may be a boolean attribute in some
+            # axonn versions or a callable in others; handle both.
+            is_ax_init = getattr(ax, "is_initialized", False)
+            ax_initialized = (
+                is_ax_init() if callable(is_ax_init) else bool(is_ax_init)
+            )
+
+            # Defaults for single-process / non-distributed runs
+            tp_rank = 0
+            tp_size = 1
+            if ax_initialized:
+                # Prefer an explicit intra-layer row rank when available.
+                tp_rank = getattr(
+                    ax.comm_handle, "intra_layer_row_parallel_rank", None
+                )
+                if tp_rank is None:
+                    # Fallback: derive a row-rank from the generic intra-layer
+                    # parallel rank and the G_intra_c configuration.
+                    raw_rank = getattr(
+                        ax.comm_handle, "intra_layer_parallel_rank", 0
+                    )
+                    g_intra_c = getattr(ax.config, "G_intra_c", 1)
+                    tp_rank = (raw_rank // g_intra_c) % getattr(
+                        ax.config, "G_intra_r", 1
+                    )
+
+                tp_size = getattr(ax.config, "G_intra_r", 1) or 1
+
+            # Slice the global sinks to obtain the per-rank subset. Require
+            # that the total head count divides evenly across parallel ranks
+            # to avoid silent misalignment.
+            n_head_global = int(sinks.size(0))
+            if n_head_global % tp_size != 0:
+                raise ValueError(
+                    f"sinks head count ({n_head_global}) not divisible by "
+                    f"tp_size ({tp_size})"
+                )
+            n_head_per_rank = n_head_global // tp_size
+            start_idx = int(tp_rank) * n_head_per_rank
+            end_idx = start_idx + n_head_per_rank
+            sinks = sinks[start_idx:end_idx]
+
+    # Apply RoPE to Q and K
+    # For PREFILL (T > 1): use cos/sin[:T] directly (positions 0 to T-1)
+    # For DECODE (T = 1): use token_counter to index into RoPE cache
+    if cos is not None and sin is not None:
+        if T == 1:
+            # DECODE: single token at position token_counter
+            cos = index_into_rope_cache_gen(cos, token_counter[:B])
+            sin = index_into_rope_cache_gen(sin, token_counter[:B])
+            if cos.dim() > 1:
+                cos = cos.unsqueeze(-3)
+                sin = sin.unsqueeze(-3)
+        else:
+            # PREFILL: T tokens starting at position 0
+            cos, sin = cos[:T], sin[:T]
+            # cos and sin are of shape (T, hs)
+            # Add singleton dimensions - (1, 1, T, hs)
+            cos = cos[None, None, :, :]
+            sin = sin[None, None, :, :]
+
+        # Apply RoPE to both Q and K
+        roped_tensors = []
+        for x in [q, k]:
+            head_size = x.size(-1)
+            x1 = x[..., : head_size // 2]
+            x2 = x[..., head_size // 2 :]
+            rotated = torch.cat((-x2, x1), dim=-1)
+            roped = ((x * cos) + (rotated * sin)).to(dtype=x.dtype)
+            roped_tensors.append(roped)
+
+        q, k = roped_tensors
+
+    # Write the newly generated K and V to the cache at the current position
+    # For PREFILL (T > 1): write T tokens starting at position 0
+    # For DECODE (T = 1): write 1 token at position token_counter
+    if T == 1:
+        # DECODE: single token
+        b_indices = torch.arange(B, device=k_cache.device)
+        t_indices = token_counter[:B].view(-1)
+
+        if use_intra_head_parallelism:
+            k_cache[b_indices, :, t_indices, :] = Drop.apply(
+                k[:, :, 0, :], process_group
+            ).to(k_cache.dtype)
+            v_cache[b_indices, :, t_indices, :] = Drop.apply(
+                v[:, :, 0, :], process_group
+            ).to(v_cache.dtype)
+        else:
+            k_cache[b_indices, :, t_indices, :] = k[:, :, 0, :].to(
+                k_cache.dtype
+            )
+            v_cache[b_indices, :, t_indices, :] = v[:, :, 0, :].to(
+                v_cache.dtype
+            )
+    else:
+        # PREFILL: T tokens starting at position 0
+        if use_intra_head_parallelism:
+            k_cache[:B, :, :T, :] = Drop.apply(k, process_group).to(
+                k_cache.dtype
+            )
+            v_cache[:B, :, :T, :] = Drop.apply(v, process_group).to(
+                v_cache.dtype
+            )
+        else:
+            k_cache[:B, :, :T, :] = k.to(k_cache.dtype)
+            v_cache[:B, :, :T, :] = v.to(v_cache.dtype)
+
+    # Build mask for attention
+    # For PREFILL: attend only to the T tokens being prefilled (causal within
+    # T)
+    # For DECODE: attend to all cached tokens up to token_counter
+
+    if T == 1:
+        # DECODE: Q is (B, h, 1, d), attend to cache up to token_counter
+        # K and V are from cache (B, h, t_max, d)
+        Q = q
+        K = k_cache[:B]
+        V = v_cache[:B]
+
+        # Mask: attend to all positions 0..token_counter
+        t_max = k_cache.size(-2)
+        arange_t = torch.arange(t_max, device=k_cache.device).view(1, -1)
+        upper_mask = arange_t <= token_counter[:B].view(-1, 1)
+
+        if sliding_window and sliding_window > 0:
+            lower_bound = (
+                token_counter[:B].view(-1, 1) - sliding_window
+            ).clamp(min=0)
+            lower_mask = arange_t >= lower_bound
+            mask = upper_mask & lower_mask
+        else:
+            mask = upper_mask
+        # mask shape: (B, t_max)
+        n_k = t_max
+    else:
+        # PREFILL: Q is (B, h, T, d), attend to the T tokens (causal)
+        # K and V are the T tokens we just wrote to cache
+        Q = q
+        K = k_cache[:B, :, :T, :]
+        V = v_cache[:B, :, :T, :]
+
+        # Causal mask: query i attends to keys 0..i
+        # Create lower-triangular mask (T, T)
+        causal_mask = torch.tril(
+            torch.ones(T, T, dtype=torch.bool, device=q.device)
+        )
+
+        if sliding_window and sliding_window > 0:
+            # Sliding window: query i attends to keys max(0, i-window)..i
+            # Create band matrix
+            row_indices = torch.arange(T, device=q.device).view(T, 1)
+            col_indices = torch.arange(T, device=q.device).view(1, T)
+            window_mask = (row_indices - col_indices) <= sliding_window
+            mask = causal_mask & window_mask
+        else:
+            mask = causal_mask
+        # mask shape: (T, T) - will broadcast to (B, 1, T, T) later
+        n_k = T
+
+    # Handle GQA: Q may have more heads than K/V
+    # Q, K, V were set above based on PREFILL vs DECODE
+    enable_gqa = Q.size(1) != K.size(1)
+
+    # keep scale in the same dtype/device as `Q` to avoid dtype promotion
+    scale = torch.tensor(1.0 / math.sqrt(hs), dtype=Q.dtype, device=Q.device)
+
+    # Extract dimensions for later use
+    B_q, h, n_q, d = Q.shape
+    g = None
+    hpg = None
+
+    if enable_gqa:
+        # Reshape for GQA: Q has h heads, K/V have g groups
+        # Following OpenAI's convention: expand K/V to match Q's head count
+        g = K.size(1)  # number of key/value groups
+        hpg = h // g  # heads per group (q_mult in OpenAI's code)
+        # Expand K and V by repeating each head hpg times to match
+        # Q's head count
+        K_expanded = K.repeat_interleave(hpg, dim=1)  # (B, h, t_max, hs)
+        V_expanded = V.repeat_interleave(hpg, dim=1)  # (B, h, t_max, hs)
+        # Now both Q and K/V have the same number of heads
+        Q_scaled = (Q * scale).to(dtype=K_expanded.dtype)
+        QK = torch.einsum("b h q d, b h k d -> b h q k", Q_scaled, K_expanded)
+    else:
+        # Standard MHA path
+        # Ensure both operands are in the same dtype before einsum
+        Q_scaled = (Q * scale).to(dtype=K.dtype)
+        QK = torch.einsum("b h q d, b h k d -> b h q k", Q_scaled, K)
+
+    # Apply mask (broadcast over batch & heads)
+    # For DECODE: mask is (B, t_max), QK is (B, h, 1, t_max)
+    # For PREFILL: mask is (T, T), QK is (B, h, T, T)
+    mask_float = torch.zeros_like(mask, dtype=torch.float32)
+    mask_float = mask_float.masked_fill(~mask, float("-inf"))
+
+    if T == 1:
+        # DECODE: mask shape (B, n_k) -> (B, 1, 1, n_k)
+        QK = QK + mask_float.view(B, 1, 1, n_k)
+    else:
+        # PREFILL: mask shape (T, T) -> (1, 1, T, T)
+        QK = QK + mask_float.view(1, 1, T, T)
+
+    # sinks is expected to be shaped (n_head_local, 1, 1). We
+    # reshape it to (1, n_head_local, 1, 1) and then expand to match the
+    # QK tensor shape (B, h, n_q, n_k) along the final dimension so the
+    # sink becomes a length-1 key for softmax.
+    if sinks is not None:
+        S = sinks.view(1, -1, 1, 1)  # -> (1, n_head_local, 1, 1)
+        S_expanded = S.expand(B, h, n_q, 1)  # -> (B, h, n_q, 1)
+        QK = torch.cat((QK, S_expanded), dim=-1)
+
+    if use_intra_head_parallelism:
+        dist.all_reduce(QK, op=dist.ReduceOp.SUM, group=process_group)
+    W = torch.nn.functional.softmax(QK, dim=-1, dtype=torch.float).to(
+        dtype=QK.dtype
+    )
+    # drop sinks column
+    if sinks is not None:
+        W = W[..., :-1]
+
+    # weighted sum over KV: W (B, nh, 1, t_max) @ V (B, nh, t_max, hs) ->
+    # (B, nh, 1, hs)
+    if enable_gqa:
+        # Both W and V_expanded now have matching head dimensions
+        Out = torch.einsum("b h q k, b h k d -> b h q d", W, V_expanded)
+    else:
+        Out = torch.einsum("b h q k, b h k d -> b h q d", W, V)
+    # Ensure output matches original Q dtype (may have been promoted to float
+    # during softmax)
+    Out = Out.to(dtype=q.dtype)
+    if use_intra_head_parallelism:
+        Out = Gather.apply(Out, process_group)
+    return Out
 
 
 def rotary_kv_update_sdpa_prefill(
@@ -224,34 +545,26 @@ def rotary_kv_update_sdpa_prefill(
     B = q.size(0)
 
     # Index K V caches with respect to current batch size
-    if ax.config.G_intra_c > 1 and use_intra_head_parallelism:
+    if (
+        hasattr(ax.config, "G_intra_c")
+        and ax.config.G_intra_c > 1
+        and use_intra_head_parallelism
+    ):
         k_cache[:B, :, :T, :] = Drop.apply(
             k[:B, :, :T, :], ax.comm_handle.inner_intra_layer_parallel_group
-        )
+        ).to(k_cache.dtype)
         v_cache[:B, :, :T, :] = Drop.apply(
             v[:B, :, :T, :], ax.comm_handle.inner_intra_layer_parallel_group
-        )
+        ).to(v_cache.dtype)
     else:
-        k_cache[:B, :, :T, :] = k[:B, :, :T, :]
-        v_cache[:B, :, :T, :] = v[:B, :, :T, :]
+        k_cache[:B, :, :T, :] = k[:B, :, :T, :].to(k_cache.dtype)
+        v_cache[:B, :, :T, :] = v[:B, :, :T, :].to(v_cache.dtype)
 
     enable_gqa = q.size(1) != k.size(1)
-    if False:  # do not use intra head in
-        out = intra_head_sdpa(
-            q,
-            k,
-            v,
-            None,
-            ax.comm_handle.inner_intra_layer_parallel_group,
-            enable_gqa,
-            parallel=True,
-        )
-        return out
-    else:
-        out = torch.nn.functional.scaled_dot_product_attention(
-            q, k, v, is_causal=True, enable_gqa=enable_gqa
-        )
-        return out
+    out = torch.nn.functional.scaled_dot_product_attention(
+        q, k, v, is_causal=True, enable_gqa=enable_gqa
+    )
+    return out.to(dtype=q.dtype)
 
 
 def rotary_kv_update_sdpa_multi(
@@ -278,6 +591,7 @@ def rotary_kv_update_sdpa_multi(
         index_rotary = index_pos.view(B, 1, T, 1).expand(B, 1, T, hs)
         cos = cos[None, None, :, :].expand(B, 1, t_max, hs)
         sin = sin[None, None, :, :].expand(B, 1, t_max, hs)
+
         cos = torch.gather(cos, dim=2, index=index_rotary)
         sin = torch.gather(sin, dim=2, index=index_rotary)
 
@@ -294,8 +608,9 @@ def rotary_kv_update_sdpa_multi(
         q, k = roped_tensors
 
     index_kv = index_pos.view(B, 1, T, 1).expand(B, nh, T, hs)
-    k_cache[:B].scatter_(dim=2, index=index_kv, src=k)
-    v_cache[:B].scatter_(dim=2, index=index_kv, src=v)
+
+    k_cache[:B].scatter_(dim=2, index=index_kv, src=k.to(k_cache.dtype))
+    v_cache[:B].scatter_(dim=2, index=index_kv, src=v.to(v_cache.dtype))
 
     # Create the mask
     arange_t = torch.arange(k_cache.size(-2), device=k_cache.device).view(
@@ -340,19 +655,41 @@ def sdpa_and_flex_attention(
         ), "flex attention requires a block mask"
 
     if phase == EnginePhase.DECODE_SINGLE:
-        y = rotary_kv_update_sdpa_gen(
-            q,
-            k,
-            v,
-            rotary_cos,
-            rotary_sin,
-            cache_seqlens,  # B,1
-            k_cache,  # B,nh,t_max,hs
-            v_cache,  # B,nh,t_max,hs
-            use_intra_head_parallelism,
-            use_flex,
-            flex_attention_block_mask,
-        )
+        sliding_window = kwargs.get("sliding_window", 0)
+        sliding_window_mode = kwargs.get("sliding_window_mode", None)
+        # opt-in GPT-OSS style SDPA
+        if sliding_window_mode == "gpt_oss":
+            sinks = kwargs.get("sinks", None)
+            y = rotary_kv_update_sdpa_gen_gptoss(
+                q,
+                k,
+                v,
+                rotary_cos,
+                rotary_sin,
+                cache_seqlens,
+                k_cache,
+                v_cache,
+                sinks=sinks,
+                sliding_window=sliding_window,
+                use_intra_head_parallelism=use_intra_head_parallelism,
+                use_flex=use_flex,
+                flex_attention_block_mask=flex_attention_block_mask,
+            )
+        else:
+            y = rotary_kv_update_sdpa_gen(
+                q,
+                k,
+                v,
+                rotary_cos,
+                rotary_sin,
+                cache_seqlens,  # B,1
+                k_cache,  # B,nh,t_max,hs
+                v_cache,  # B,nh,t_max,hs
+                use_intra_head_parallelism,
+                use_flex,
+                flex_attention_block_mask,
+                sliding_window=sliding_window,
+            )
     elif phase == EnginePhase.DECODE_MULTI:
         y = rotary_kv_update_sdpa_multi(
             q,
@@ -365,16 +702,37 @@ def sdpa_and_flex_attention(
             v_cache,
         )
     else:  # Prefill
-        y = rotary_kv_update_sdpa_prefill(
-            q,
-            k,
-            v,
-            rotary_cos,
-            rotary_sin,
-            k_cache,  # B,nh,t_max,hs
-            v_cache,  # B,nh,t_max,hs
-            use_intra_head_parallelism,
-        )
+        sliding_window = kwargs.get("sliding_window", 0)
+        sliding_window_mode = kwargs.get("sliding_window_mode", None)
+        # opt-in GPT-OSS style SDPA for prefill
+        if sliding_window_mode == "gpt_oss":
+            sinks = kwargs.get("sinks", None)
+            y = rotary_kv_update_sdpa_gen_gptoss(
+                q,
+                k,
+                v,
+                rotary_cos,
+                rotary_sin,
+                cache_seqlens,
+                k_cache,
+                v_cache,
+                sinks=sinks,
+                sliding_window=sliding_window,
+                use_intra_head_parallelism=use_intra_head_parallelism,
+                use_flex=use_flex,
+                flex_attention_block_mask=flex_attention_block_mask,
+            )
+        else:
+            y = rotary_kv_update_sdpa_prefill(
+                q,
+                k,
+                v,
+                rotary_cos,
+                rotary_sin,
+                k_cache,  # B,nh,t_max,hs
+                v_cache,  # B,nh,t_max,hs
+                use_intra_head_parallelism,
+            )
     return y
 
 

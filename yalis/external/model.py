@@ -8,6 +8,7 @@ https://github.com/EleutherAI/gpt-neox/tree/main/megatron/model.
 """
 
 from typing import Any, Optional, Tuple
+import math
 from typing_extensions import Self
 from copy import deepcopy
 import warnings
@@ -148,9 +149,9 @@ class GPT(nn.Module):
             update_token_counter = True
             token_counter = self.token_counter
 
-        # flash attention wants the rope cache to be
-        # in the same dtype as the query
-        # ToDO: confirm if this is okay, or if we should do rope in fp32?
+        # Flash Attention requires RoPE cache in the same dtype as query for
+        # numerical stability. Converting to query dtype (typically bf16)
+        # ensures efficient computation and memory usage.
         if self.config.attention_backend == AttentionBackend.FLASH:
             self.cos = self.cos.to(x.dtype)
             self.sin = self.sin.to(x.dtype)
@@ -203,53 +204,100 @@ class GPT(nn.Module):
     def rope_cache(
         self, device: Optional[torch.device] = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        # Support two RoPE modes:
+        # 1) legacy/simple RoPE via `rope_adjustments`
+        # 2) GPT-OSS NTK/YaRN parameterization when the config exposes
+        #    `rope_ntk_alpha`, `rope_ntk_beta`, `rope_scaling_factor`,
+        #    and `initial_context_length`.
+        # If neither is present, fall back to standard RoPE.
 
-        if self.config.rope_adjustments is None:
-            extra_config = None
+        extra_config = None
 
-        else:
-            adjusted_params_required = [
-                "factor",
-                "low_freq_factor",
-                "high_freq_factor",
-                "original_max_seq_len",
-            ]
-            params_present = [
-                param in self.config.rope_adjustments
-                for param in adjusted_params_required
-            ]
-            num_params_present = sum(params_present)
+        # Check for yaRN mode in rope_adjustments
+        if getattr(self.config, "rope_adjustments", None) is not None:
+            rope_adj = self.config.rope_adjustments
 
-            if num_params_present == 0:
-                extra_config = None  # uses standard RoPE
-            elif num_params_present == 4:
-                # These parameters should always be used together so that
-                # we don't interfere with standard rope
+            # Check if this is yaRN mode
+            if rope_adj.get("mode") == "yaRN":
                 extra_config = {
-                    "original_max_seq_len": self.config.rope_adjustments[
-                        "original_max_seq_len"
-                    ],
-                    "factor": self.config.rope_adjustments["factor"],
-                    "low_freq_factor": self.config.rope_adjustments[
-                        "low_freq_factor"
-                    ],
-                    "high_freq_factor": self.config.rope_adjustments[
-                        "high_freq_factor"
-                    ],
+                    "mode": "yaRN",
+                    "initial_context_length": rope_adj.get(
+                        "initial_context_length", self.max_seq_length
+                    ),
+                    "rope_scaling_factor": rope_adj.get("scaling", 1.0),
+                    "rope_ntk_alpha": rope_adj.get("alpha", 1.0),
+                    "rope_ntk_beta": rope_adj.get("beta", 32.0),
+                    "base": getattr(self.config, "rope_base", 10000),
                 }
             else:
-                # Some but not all parameters are specified; raise an error
-                missing_params = [
-                    param
-                    for param, present in zip(
-                        adjusted_params_required, params_present
-                    )
-                    if not present
+                # Legacy rope_adjustments handling
+                adjusted_params_required = [
+                    "factor",
+                    "low_freq_factor",
+                    "high_freq_factor",
+                    "original_max_seq_len",
                 ]
-                raise ValueError(
-                    f"The following adjusted RoPE parameters are missing in rope_adjustments: {', '.join(missing_params)}. "  # noqa: E501
-                    "All adjusted RoPE parameters must be specified together."
-                )
+                params_present = [
+                    param in rope_adj for param in adjusted_params_required
+                ]
+                num_params_present = sum(params_present)
+
+                if num_params_present == 0:
+                    extra_config = None  # uses standard RoPE
+                elif num_params_present == 4:
+                    # These parameters should always be used together so that
+                    # we don't interfere with standard rope
+                    extra_config = {
+                        "mode": "adjust",
+                        "original_max_seq_len": rope_adj[
+                            "original_max_seq_len"
+                        ],
+                        "factor": rope_adj["factor"],
+                        "low_freq_factor": rope_adj["low_freq_factor"],
+                        "high_freq_factor": rope_adj["high_freq_factor"],
+                    }
+                else:
+                    # Some but not all parameters are specified; raise an error
+                    missing_params = [
+                        param
+                        for param, present in zip(
+                            adjusted_params_required, params_present
+                        )
+                        if not present
+                    ]
+                    raise ValueError(
+                        f"The following adjusted RoPE parameters are "
+                        f"missing in rope_adjustments: "
+                        f"{', '.join(missing_params)}. "
+                        "All adjusted RoPE parameters must be specified "
+                        "together."
+                    )
+
+        # GPT-OSS NTK/YaRN parameterization support (opt-in via config attrs)
+        # If any of these attributes are present on `config`, enable GPT-OSS
+        # style RoPE. We pack params into `extra_config` and let
+        # `build_rope_cache` detect and compute accordingly.
+        elif any(
+            getattr(self.config, opt, None) is not None
+            for opt in (
+                "rope_ntk_alpha",
+                "rope_ntk_beta",
+                "rope_scaling_factor",
+                "initial_context_length",
+            )
+        ):
+            extra_config = {
+                "mode": "yaRN",
+                "initial_context_length": getattr(
+                    self.config, "initial_context_length", self.max_seq_length
+                ),
+                "rope_scaling_factor": getattr(
+                    self.config, "rope_scaling_factor", 1.0
+                ),
+                "rope_ntk_alpha": getattr(self.config, "rope_ntk_alpha", 1.0),
+                "rope_ntk_beta": getattr(self.config, "rope_ntk_beta", 32.0),
+                "base": getattr(self.config, "rope_base", 10000),
+            }
 
         return build_rope_cache(
             seq_len=self.max_seq_length,
@@ -378,6 +426,12 @@ class Block(nn.Module):
         )
 
         self.config = config
+        # Sink logits used by GPT-OSS sdpa implementation for sliding-window
+        # (shape: n_head x 1 x 1). Only created for GPT-OSS models to avoid
+        # state dict incompatibility when loading non-GPT-OSS checkpoints.
+        is_gpt_oss = getattr(config, "sliding_window_mode", None) == "gpt_oss"
+        if is_gpt_oss:
+            self.sinks = nn.Parameter(torch.zeros(self.config.n_head, 1, 1))
 
     def forward(
         self,
@@ -389,6 +443,7 @@ class Block(nn.Module):
         block_table: Optional[torch.Tensor] = None,
         actual_sequence_lengths: Optional[torch.Tensor] = None,
         flex_attention_block_mask=None,
+        sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Non-parallel residual       Parallel residual
@@ -412,6 +467,10 @@ class Block(nn.Module):
         """
 
         x_normed = self.norm_1(x)
+        # Use self.sinks if available (GPT-OSS models), otherwise None
+        effective_sinks = (
+            sinks if sinks is not None else getattr(self, "sinks", None)
+        )
         attention_output = self.attn(
             x_normed,
             cos,
@@ -421,6 +480,7 @@ class Block(nn.Module):
             block_table,
             actual_sequence_lengths,
             flex_attention_block_mask,
+            sinks=effective_sinks,
         )
         attention_output = self.post_attention_norm(attention_output)
 
@@ -458,26 +518,53 @@ class CausalSelfAttention(nn.Module):
         # output projection
         # if `head_size` is explicitly specified in the config,
         # `n_embd` might not be equal to `head_size * n_head`
+        # Use attn_bias for output projection as well
         if not config.tensor_parallel:
             self.proj = nn.Linear(
                 config.head_size * config.n_head,
                 config.n_embd,
-                bias=config.bias,
+                bias=attn_bias,
             )
         else:
             self.proj = TPLinear(
                 config.head_size * config.n_head,
                 config.n_embd,
-                bias=config.bias,
+                bias=attn_bias,
                 transpose=True,
                 init_device=config.init_device,
             )
         # disabled by default
         self.kv_cache: Optional[KVCache] = None
-        self.apply_sliding_window_attention = (
-            config.sliding_window_size is not None
-            and block_idx % config.sliding_window_layer_placing == 0
-        )
+
+        # Determine if this layer uses sliding window attention
+        # Priority: sliding_window_indices (per-layer) >
+        # sliding_window_layer_placing (modulo)
+        if (
+            block_idx == 0
+            and config.sliding_window_indices is not None
+            and len(config.sliding_window_indices) != config.n_layer
+        ):
+            warnings.warn(
+                f"sliding_window_indices has length "
+                f"{len(config.sliding_window_indices)} but n_layer is "
+                f"{config.n_layer}. Layers beyond the list will use "
+                "modulo-based placement.",
+                stacklevel=2,
+            )
+        if config.sliding_window_indices is not None and block_idx < len(
+            config.sliding_window_indices
+        ):
+            # Use per-layer indices: 1 = sliding window, 0 = full attention
+            self.apply_sliding_window_attention = (
+                config.sliding_window_size is not None
+                and config.sliding_window_indices[block_idx] == 1
+            )
+        else:
+            # Fallback to modulo-based placement
+            self.apply_sliding_window_attention = (
+                config.sliding_window_size is not None
+                and block_idx % config.sliding_window_layer_placing == 0
+            )
 
         if config.norm_qk:
             assert config.norm_qk_type == "default"
@@ -532,6 +619,7 @@ class CausalSelfAttention(nn.Module):
         block_table: torch.Tensor = None,
         actual_sequence_lengths: torch.Tensor = None,
         flex_attention_block_mask=None,
+        sinks: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         B, T, C = (
             x.size()
@@ -595,6 +683,15 @@ class CausalSelfAttention(nn.Module):
             use_intra_head_parallelism=self.config.use_intra_head_parallelism,
             prestore_kv_cache=self.config.prestore_kv_cache,
             flex_attention_block_mask=flex_attention_block_mask,
+            sliding_window=(
+                self.config.sliding_window_size
+                if self.apply_sliding_window_attention
+                else 0
+            ),
+            sliding_window_mode=getattr(
+                self.config, "sliding_window_mode", None
+            ),
+            sinks=sinks,
         )
 
         if not self.config.attention_backend == AttentionBackend.FLASH:
@@ -782,12 +879,70 @@ def build_rope_cache(
         Tuple[torch.Tensor, torch.Tensor]: Cosine and sine caches for RoPE.
     """
 
-    # Compute the inverse frequencies theta
+    # NTK/YaRN parameterization: compute concentration and
+    # inv_freq following the YaRN/NTK rotary parameterization. If
+    # `extra_config` has `mode == "yaRN"`, use that branch; if
+    # `mode == "adjust"`, use the legacy adjustment branch; if
+    # `extra_config` is None, use the plain theta computation.
+    if extra_config is not None and extra_config.get("mode") == "yaRN":
+        scaling_factor = extra_config.get("rope_scaling_factor", 1.0)
+        ntk_alpha = extra_config.get("rope_ntk_alpha", 1.0)
+        ntk_beta = extra_config.get("rope_ntk_beta", 32.0)
+        initial_context_length = extra_config.get(
+            "initial_context_length", seq_len
+        )
+        base = extra_config.get("base", base)
+
+        # compute base frequency vector (half-dimension)
+        freq = base ** (
+            torch.arange(0, n_elem, 2, device=device).float() / n_elem
+        )
+
+        if scaling_factor > 1.0:
+            concentration = 0.1 * math.log(scaling_factor) + 1.0
+            # Use the actual number of frequency elements (handles odd n_elem)
+            d_half = freq.numel()
+
+            low = (
+                d_half
+                * math.log(initial_context_length / (ntk_beta * 2 * math.pi))
+                / math.log(base)
+            )
+            high = (
+                d_half
+                * math.log(initial_context_length / (ntk_alpha * 2 * math.pi))
+                / math.log(base)
+            )
+
+            interpolation = 1.0 / (scaling_factor * freq)
+            extrapolation = 1.0 / freq
+
+            ramp = (
+                torch.arange(d_half, dtype=torch.float32, device=device) - low
+            ) / (high - low)
+            mask = 1 - ramp.clamp(0, 1)
+
+            inv_freq = interpolation * (1 - mask) + extrapolation * mask
+        else:
+            concentration = 1.0
+            inv_freq = 1.0 / freq
+
+        seq_idx = torch.arange(seq_len, device=device).float()
+        freqs = torch.einsum("i,j->ij", seq_idx, inv_freq)
+        cos = freqs.cos() * concentration
+        sin = freqs.sin() * concentration
+
+        if not is_attention_backend_flash:
+            cos = cos.repeat(1, 2)
+            sin = sin.repeat(1, 2)
+        return cos, sin
+
+    # Legacy/simple RoPE path
     theta = 1.0 / (
         base ** (torch.arange(0, n_elem, 2, device=device).float() / n_elem)
     )
 
-    if extra_config is not None:
+    if extra_config is not None and extra_config.get("mode") == "adjust":
         orig_context_len = extra_config["original_max_seq_len"]
         factor = extra_config["factor"]
         low_freq_factor = extra_config["low_freq_factor"]
@@ -800,23 +955,15 @@ def build_rope_cache(
         )
         smooth_factor = torch.clamp(smooth_factor, min=0.0, max=1.0)
 
-        # Compute adjusted_theta without masked indexing
         adjusted_theta = (1 - smooth_factor) * (
             theta / factor
         ) + smooth_factor * theta
         theta = adjusted_theta
 
-    # Create position indices `[0, 1, ..., seq_len - 1]`
     seq_idx = torch.arange(seq_len, device=device) / condense_ratio
-
-    # Calculate the product of position index and $\theta_i$
-    idx_theta = torch.outer(
-        seq_idx, theta
-    )  # .repeat(1, 2) repeat is not needed for flash attention
-
+    idx_theta = torch.outer(seq_idx, theta)
     if not is_attention_backend_flash:
         idx_theta = idx_theta.repeat(1, 2)
-
     return torch.cos(idx_theta), torch.sin(idx_theta)
 
 
@@ -1016,3 +1163,106 @@ class LLaMAMoE(nn.Module):
 
         y = self.experts(x, router)
         return y.view(B, T, C)
+
+
+class GptOssMoE(nn.Module):
+    """
+    GPT-OSS compatible MoE MLP that now uses the extended TPMoE for better
+    performance while maintaining functional parity.
+
+    This implementation uses the fused MoE kernels with SWIGLU activation
+    and per-expert biases, providing the same behavior as the original
+    PyTorch implementation but with better performance.
+    """
+
+    def __init__(self, config: Config) -> None:
+        super().__init__()
+
+        self.config = config
+        self.num_experts = config.n_expert
+        self.experts_per_token = config.n_expert_per_token
+
+        # SWIGLU params from config with defaults
+        self.swiglu_alpha = getattr(config, "swiglu_alpha", 1.702)
+        self.swiglu_limit = getattr(config, "swiglu_limit", 7.0)
+
+        # gate
+        self.gate = nn.Linear(config.n_embd, self.num_experts, bias=False)
+
+        if config.intermediate_size is None:
+            raise ValueError(
+                "config.intermediate_size must be set for GptOssMoE"
+            )
+
+        # Get tensor parallel dims from config if specified, otherwise use
+        # AxoNN defaults. This ensures correct sharding in hybrid parallel
+        # configurations where TP groups are a subset of global ranks.
+        tensor_parallel_dims = getattr(config, "tensor_parallel_dims", None)
+
+        # Use TPMoE with SWIGLU activation and bias support
+        # TPMoE handles all parameter sharding based on TP group sizes,
+        # not global world size, ensuring correctness in hybrid parallel
+        # setups.
+        self.experts = TPMoE(
+            hidden_size=config.n_embd,
+            intermediate_size=config.intermediate_size,
+            n_experts=self.num_experts,
+            n_expert_per_token=self.experts_per_token,
+            init_device=getattr(config, "init_device", "cuda"),
+            bias=True,  # Enable bias support
+            activation="swigluoai",  # Use GPT-OSS SWIGLU activation
+            swiglu_alpha=self.swiglu_alpha,
+            swiglu_limit=self.swiglu_limit,
+            dtype=getattr(config, "dtype", None),
+            tensor_parallel_dims=tensor_parallel_dims,
+        )
+
+        # Override state dict loading to handle GPT-OSS naming
+        self._old_load_from_state_dict = self._load_from_state_dict
+        self._load_from_state_dict = self._modified_load_from_state_dict
+
+    @torch.no_grad()
+    def _modified_load_from_state_dict(
+        self, state_dict, prefix, *args, **kwargs
+    ):
+        """
+        Custom state dict loader for GptOssMoE.
+
+        Maps GPT-OSS parameter names to TPMoE parameter names:
+        - mlp1_weight -> experts.gate_up_proj
+        - mlp1_bias -> experts.gate_up_bias
+        - mlp2_weight -> experts.proj
+        - mlp2_bias -> experts.proj_bias
+        """
+        # Map GPT-OSS names to TPMoE names
+        name_mapping = {
+            prefix + "mlp1_weight": prefix + "experts.gate_up_proj",
+            prefix + "mlp1_bias": prefix + "experts.gate_up_bias",
+            prefix + "mlp2_weight": prefix + "experts.proj",
+            prefix + "mlp2_bias": prefix + "experts.proj_bias",
+        }
+
+        # Create a new state_dict with mapped names
+        for gpt_oss_key, tpmoe_key in name_mapping.items():
+            if gpt_oss_key in state_dict:
+                state_dict[tpmoe_key] = state_dict[gpt_oss_key]
+                del state_dict[gpt_oss_key]
+
+        # Let TPMoE handle the actual loading and sharding
+        self._old_load_from_state_dict(state_dict, prefix, *args, **kwargs)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (B, T, C)
+        B, T, C = x.size()
+        # Flatten batch and sequence dims
+        t = x.view(-1, C)  # (M, C) where M = B * T
+
+        # gating
+        g = self.gate(t)  # (M, E)
+
+        # Use TPMoE for expert computation with SWIGLU and biases
+        out = self.experts(t, g)  # (M, C)
+
+        # reshape back to (B, T, C). Do NOT add residual here; `Block`
+        # handles it.
+        return out.view(B, T, C)

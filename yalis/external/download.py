@@ -73,13 +73,14 @@ def download_from_hub(
     download_files = ["tokenizer*", "generation_config.json", "config.json"]
     if not tokenizer_only:
         bins, safetensors = find_weight_files(repo_id, access_token)
-        if bins:
-            # covers `.bin` files and `.bin.index.json`
-            download_files.append("*.bin*")
-        elif safetensors:
+        # Prefer safetensors (more robust, standard HF format) over .bin files
+        if safetensors:
             if not _SAFETENSORS_AVAILABLE:
                 raise ModuleNotFoundError(str(_SAFETENSORS_AVAILABLE))
             download_files.append("*.safetensors*")
+        elif bins:
+            # covers `.bin` files and `.bin.index.json`
+            download_files.append("*.bin*")
         else:
             raise ValueError(f"Couldn't find weight files for {repo_id}")
 
@@ -104,10 +105,58 @@ def download_from_hub(
     constants.HF_HUB_ENABLE_HF_TRANSFER = previous
     download.HF_HUB_ENABLE_HF_TRANSFER = previous
 
+    def _find_weights_dir(root: Path) -> Path:
+        """Find the directory under `root` that contains HF weight files.
+
+        The function checks the root, then immediate subdirectories, then one
+        level deeper for files like `*.bin`, `*.safetensors` or index jsons
+        (e.g., `pytorch_model.bin.index.json`, `model.safetensors.index.json`).
+        """
+
+        def _has_weights(p: Path) -> bool:
+            if (p / "pytorch_model.bin.index.json").is_file() or (
+                p / "model.safetensors.index.json"
+            ).is_file():
+                return True
+            # look for .bin or .safetensors files (ignore training_args.bin)
+            for ext in ("*.bin", "*.safetensors"):
+                for f in p.glob(ext):
+                    if f.is_file() and f.name != "training_args.bin":
+                        return True
+            return False
+
+        if _has_weights(root):
+            return root
+
+        # check immediate subdirectories
+        for child in sorted(root.iterdir()):
+            if child.is_dir() and _has_weights(child):
+                return child
+
+        # check one level deeper
+        for child in sorted(root.iterdir()):
+            if child.is_dir():
+                for subchild in sorted(child.iterdir()):
+                    if subchild.is_dir() and _has_weights(subchild):
+                        return subchild
+
+        # not found; return the original root so the converter can raise a
+        # meaningful error if necessary
+        return root
+
     if convert_checkpoint and not tokenizer_only:
         print("Converting checkpoint files to LitGPT format.")
+        resolved_dir = _find_weights_dir(directory)
+        if resolved_dir != directory:
+            print(f"Detected weight files in nested directory: {resolved_dir}")
+        # If user did not provide an explicit model_name, prefer the top-level
+        # directory name (e.g., 'gpt-oss-20b') rather than the nested folder name
+        # (e.g., 'metal') which is not a model config name.
+        local_model_name = model_name or directory.name
         convert_hf_checkpoint(
-            checkpoint_dir=directory, dtype=dtype, model_name=model_name
+            checkpoint_dir=resolved_dir,
+            dtype=dtype,
+            model_name=local_model_name,
         )
 
 

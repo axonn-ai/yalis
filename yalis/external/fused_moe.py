@@ -566,6 +566,12 @@ def fused_experts(
     a1_scale: Optional[torch.Tensor] = None,
     a2_scale: Optional[torch.Tensor] = None,
     moe_configs: Optional[Dict[int, Any]] = None,
+    activation: str = "silu",
+    swiglu_alpha: float = 1.702,
+    swiglu_limit: float = 7.0,
+    gate_up_bias: Optional[torch.Tensor] = None,
+    proj_bias: Optional[torch.Tensor] = None,
+    weight_proj_bias: bool = False,
 ):
     # Check constraints.
     assert hidden_states.shape[1] == w1.shape[2], "Hidden size mismatch"
@@ -676,9 +682,26 @@ def fused_experts(
             use_int8_w8a16=use_int8_w8a16,
         )
 
-        torch.ops.vllm_ops.silu_and_mul(
-            intermediate_cache2, intermediate_cache1.view(-1, N)
-        )
+        # Apply bias if provided (for w1/gate_up projection)
+        if gate_up_bias is not None:
+            # intermediate_cache1 shape: (M, topk, N)
+            # gate_up_bias shape: (E, N) -> need to index by expert
+            bias_indexed = gate_up_bias[curr_topk_ids]  # (M, topk, N)
+            intermediate_cache1 = intermediate_cache1 + bias_indexed
+
+        # Apply activation function
+        if activation == "swigluoai":
+            torch.ops.vllm_ops.swigluoai_and_mul(
+                intermediate_cache2,
+                intermediate_cache1.view(-1, N),
+                swiglu_alpha,
+                swiglu_limit,
+            )
+        else:
+            # Default SiLU activation
+            torch.ops.vllm_ops.silu_and_mul(
+                intermediate_cache2, intermediate_cache1.view(-1, N)
+            )
 
         invoke_fused_moe_kernel(
             intermediate_cache2,
@@ -698,6 +721,15 @@ def fused_experts(
             use_fp8_w8a8=use_fp8_w8a8,
             use_int8_w8a16=use_int8_w8a16,
         )
+
+        # Apply bias if provided (for w2/proj)
+        if proj_bias is not None:
+            # intermediate_cache3 shape: (M, topk, hidden_size)
+            # proj_bias shape: (E, hidden_size) -> need to index by expert
+            bias_indexed = proj_bias[curr_topk_ids]  # (M, topk, hidden_size)
+            if weight_proj_bias:
+                bias_indexed = bias_indexed * curr_topk_weights.unsqueeze(-1)
+            intermediate_cache3 = intermediate_cache3 + bias_indexed
 
         torch.sum(
             intermediate_cache3.view(*intermediate_cache3.shape),
@@ -727,7 +759,13 @@ def fused_moe(
     a1_scale: Optional[torch.Tensor] = None,
     a2_scale: Optional[torch.Tensor] = None,
     moe_configs: Optional[Dict[int, Any]] = None,
-) -> torch.Tensor:
+    activation: str = "silu",
+    swiglu_alpha: float = 1.702,
+    swiglu_limit: float = 7.0,
+    gate_up_bias: Optional[torch.Tensor] = None,
+    proj_bias: Optional[torch.Tensor] = None,
+    weight_proj_bias: bool = False,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     This function computes a Mixture of Experts (MoE) layer using two sets of
     weights, w1 and w2, and top-k gating mechanism.
@@ -782,19 +820,29 @@ def fused_moe(
             hidden_states, gating_output, topk, renormalize
         )
 
-    return fused_experts(
-        hidden_states,
-        w1,
-        w2,
+    return (
+        fused_experts(
+            hidden_states,
+            w1,
+            w2,
+            topk_weights,
+            topk_ids,
+            inplace=inplace,
+            override_config=override_config,
+            use_fp8_w8a8=use_fp8_w8a8,
+            use_int8_w8a16=use_int8_w8a16,
+            w1_scale=w1_scale,
+            w2_scale=w2_scale,
+            a1_scale=a1_scale,
+            a2_scale=a2_scale,
+            moe_configs=moe_configs,
+            activation=activation,
+            swiglu_alpha=swiglu_alpha,
+            swiglu_limit=swiglu_limit,
+            gate_up_bias=gate_up_bias,
+            proj_bias=proj_bias,
+            weight_proj_bias=weight_proj_bias,
+        ),
         topk_weights,
         topk_ids,
-        inplace=inplace,
-        override_config=override_config,
-        use_fp8_w8a8=use_fp8_w8a8,
-        use_int8_w8a16=use_int8_w8a16,
-        w1_scale=w1_scale,
-        w2_scale=w2_scale,
-        a1_scale=a1_scale,
-        a2_scale=a2_scale,
-        moe_configs=moe_configs,
     )

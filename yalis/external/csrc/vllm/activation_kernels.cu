@@ -82,6 +82,90 @@ void silu_and_mul(torch::Tensor& out,    // [..., d]
   LAUNCH_ACTIVATION_GATE_KERNEL(vllm::silu_kernel);
 }
 
+namespace vllm {
+
+__device__ __forceinline__ bool is_16byte_aligned(const void* ptr) {
+  return (reinterpret_cast<uintptr_t>(ptr) & 15) == 0;
+}
+
+template <typename T>
+__device__ __forceinline__ T swigluoai_and_mul_fn(const T& gate, const T& up,
+                                                  float alpha, float limit) {
+  const float g = fminf((float)gate, limit);
+  const float u = fmaxf(fminf((float)up, limit), -limit);
+  return (T)((u + 1.0f) * g / (1.0f + expf(-g * alpha)));
+}
+
+template <typename scalar_t,
+          scalar_t (*ACT_FN)(const scalar_t&, const scalar_t&, const float,
+                             const float)>
+__global__ void swigluoai_and_mul_kernel(
+    scalar_t* __restrict__ out,          // [..., d]
+    const scalar_t* __restrict__ input,  // [..., 2 * d] interleaved
+    const int d, const float alpha, const float limit) {
+  constexpr int VEC_SIZE = 16 / sizeof(scalar_t);
+  constexpr int PAIRS = VEC_SIZE / 2;
+  const int64_t token_idx = blockIdx.x;
+  const scalar_t* in_ptr = input + token_idx * 2 * d;
+  scalar_t* out_ptr = out + token_idx * d;
+
+  const bool in_aligned = is_16byte_aligned(in_ptr);
+  const bool out_aligned =
+      (reinterpret_cast<uintptr_t>(out_ptr) & 7) == 0;
+
+  if (in_aligned && out_aligned && d >= PAIRS) {
+    const int4* in_vec = reinterpret_cast<const int4*>(in_ptr);
+    int2* out_vec = reinterpret_cast<int2*>(out_ptr);
+    const int num_vecs = d / PAIRS;
+    const int vec_end = num_vecs * PAIRS;
+
+    for (int i = threadIdx.x; i < num_vecs; i += blockDim.x) {
+      int4 v = VLLM_LDG(&in_vec[i]);
+      int2 r;
+      auto* vp = reinterpret_cast<scalar_t*>(&v);
+      auto* rp = reinterpret_cast<scalar_t*>(&r);
+#pragma unroll
+      for (int j = 0; j < PAIRS; j++) {
+        rp[j] = ACT_FN(vp[2 * j], vp[2 * j + 1], alpha, limit);
+      }
+      out_vec[i] = r;
+    }
+    for (int i = vec_end + threadIdx.x; i < d; i += blockDim.x) {
+      out_ptr[i] = ACT_FN(VLLM_LDG(&in_ptr[2 * i]),
+                           VLLM_LDG(&in_ptr[2 * i + 1]), alpha, limit);
+    }
+  } else {
+    for (int64_t idx = threadIdx.x; idx < d; idx += blockDim.x) {
+      const scalar_t gate = VLLM_LDG(&in_ptr[2 * idx]);
+      const scalar_t up = VLLM_LDG(&in_ptr[2 * idx + 1]);
+      out_ptr[idx] = ACT_FN(gate, up, alpha, limit);
+    }
+  }
+}
+
+}  // namespace vllm
+
+#define LAUNCH_SWIGLUOAI_AND_MUL(KERNEL, ALPHA, LIMIT)                         \
+  int d = input.size(-1) / 2;                                                  \
+  int64_t num_tokens = input.numel() / input.size(-1);                         \
+  dim3 grid(num_tokens);                                                       \
+  dim3 block(std::min(d, 1024));                                               \
+  const at::cuda::OptionalCUDAGuard device_guard(device_of(input));            \
+  const cudaStream_t stream = at::cuda::getCurrentCUDAStream();                \
+  VLLM_DISPATCH_FLOATING_TYPES(                                                \
+      input.scalar_type(), "swigluoai_and_mul_kernel", [&] {                   \
+        vllm::swigluoai_and_mul_kernel<scalar_t, KERNEL<scalar_t>>             \
+            <<<grid, block, 0, stream>>>(out.data_ptr<scalar_t>(),             \
+                                         input.data_ptr<scalar_t>(), d, ALPHA, \
+                                         LIMIT);                               \
+      });
+
+void swigluoai_and_mul(torch::Tensor& out,    // [..., d]
+                       torch::Tensor& input,  // [..., 2 * d]
+                       double alpha, double limit) {
+  LAUNCH_SWIGLUOAI_AND_MUL(vllm::swigluoai_and_mul_fn, alpha, limit);
+}
+
 void gelu_and_mul(torch::Tensor& out,    // [..., d]
                   torch::Tensor& input)  // [..., 2 * d]
 {
