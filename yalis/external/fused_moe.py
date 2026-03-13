@@ -728,10 +728,7 @@ def fused_experts(
             # proj_bias shape: (E, hidden_size) -> need to index by expert
             bias_indexed = proj_bias[curr_topk_ids]  # (M, topk, hidden_size)
             if weight_proj_bias:
-                bias_indexed = (
-                    bias_indexed
-                    * curr_topk_weights.unsqueeze(-1)
-                )
+                bias_indexed = bias_indexed * curr_topk_weights.unsqueeze(-1)
             intermediate_cache3 = intermediate_cache3 + bias_indexed
 
         torch.sum(

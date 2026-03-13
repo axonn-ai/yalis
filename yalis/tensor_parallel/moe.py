@@ -472,8 +472,6 @@ class TPMoE(torch.nn.Module):
                 # Divide by TP world_size so each rank adds its
                 # share inside fused_experts; all_reduce recovers
                 # the correct full bias.
-                state_dict[proj_bias_key] = (
-                    bias / self.outer_group_size
-                )
+                state_dict[proj_bias_key] = bias / self.outer_group_size
 
         self._old_load_from_state_dict(state_dict, prefix, *args, **kwargs)
