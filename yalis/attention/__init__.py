@@ -15,6 +15,7 @@ def attention_wrapper(
     v_cache: Optional[torch.Tensor] = None,
     cache_seqlens: Optional[torch.Tensor] = None,
     actual_seqlens: Optional[torch.Tensor] = None,
+    cu_seqlens: Optional[torch.Tensor] = None,
     block_table: Optional[torch.Tensor] = None,
     rotary_cos: Optional[torch.Tensor] = None,
     rotary_sin: Optional[torch.Tensor] = None,
@@ -22,6 +23,9 @@ def attention_wrapper(
     prestore_kv_cache: bool = True,
     backend: AttentionBackend = AttentionBackend.FLASH,
     flex_attention_block_mask=None,
+    max_seqlen: int = 0,
+    cache_batch_idx: Optional[torch.Tensor] = None,
+    cache_seq_idx: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     fn = get_attention(backend.value)
     return fn(
@@ -33,10 +37,14 @@ def attention_wrapper(
         v_cache=v_cache,
         cache_seqlens=cache_seqlens,
         actual_seqlens=actual_seqlens,
+        cu_seqlens=cu_seqlens,
         block_table=block_table,
         rotary_cos=rotary_cos,
         rotary_sin=rotary_sin,
         use_intra_head_parallelism=use_intra_head_parallelism,
         prestore_kv_cache=prestore_kv_cache,
         flex_attention_block_mask=flex_attention_block_mask,
+        max_seqlen=max_seqlen,
+        cache_batch_idx=cache_batch_idx,
+        cache_seq_idx=cache_seq_idx,
     )

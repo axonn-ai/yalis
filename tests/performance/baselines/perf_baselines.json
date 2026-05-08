@@ -1,0 +1,84 @@
+{
+  "metadata": {
+    "model": "meta-llama/Llama-3.1-8B-Instruct",
+    "attention_backend": "sdpa",
+    "precision": "bf16",
+    "use_paged_kv_caching": false,
+    "updated_at": "2026-02-25T22:25:15.783537+00:00",
+    "git_commit": "cf5b144"
+  },
+  "benchmarks": {
+    "batch_1_prompt_128_decode_32": {
+      "batch_size": 1,
+      "prompt_length": 128,
+      "decode_length": 32,
+      "ttft_ms": 22.984090042114257,
+      "tbt_ms": 12.5585936515562,
+      "throughput_tps": 77.54688720611956,
+      "e2e_ms": 412.65459594726565
+    },
+    "batch_8_prompt_128_decode_32": {
+      "batch_size": 8,
+      "prompt_length": 128,
+      "decode_length": 32,
+      "ttft_ms": 112.35717163085937,
+      "tbt_ms": 16.980093629898562,
+      "throughput_tps": 400.55798342547644,
+      "e2e_ms": 639.1142333984375
+    },
+    "batch_1_prompt_512_decode_32": {
+      "batch_size": 1,
+      "prompt_length": 512,
+      "decode_length": 32,
+      "ttft_ms": 42.9641731262207,
+      "tbt_ms": 12.554325879004693,
+      "throughput_tps": 73.98920850515003,
+      "e2e_ms": 432.4970458984375
+    },
+    "batch_8_prompt_512_decode_32": {
+      "batch_size": 8,
+      "prompt_length": 512,
+      "decode_length": 32,
+      "ttft_ms": 357.631787109375,
+      "tbt_ms": 16.98760512567336,
+      "throughput_tps": 289.39120099278887,
+      "e2e_ms": 884.6184448242187
+    },
+    "batch_1_prompt_128_decode_128": {
+      "batch_size": 1,
+      "prompt_length": 128,
+      "decode_length": 128,
+      "ttft_ms": 22.88394241333008,
+      "tbt_ms": 12.521673589991773,
+      "throughput_tps": 79.31711959931337,
+      "e2e_ms": 1613.7754638671875
+    },
+    "batch_8_prompt_128_decode_128": {
+      "batch_size": 8,
+      "prompt_length": 128,
+      "decode_length": 128,
+      "ttft_ms": 114.40414733886719,
+      "tbt_ms": 16.936879357765978,
+      "throughput_tps": 451.883268535996,
+      "e2e_ms": 2266.072705078125
+    },
+    "batch_1_prompt_512_decode_128": {
+      "batch_size": 1,
+      "prompt_length": 512,
+      "decode_length": 128,
+      "ttft_ms": 55.70478134155273,
+      "tbt_ms": 12.558705289345088,
+      "throughput_tps": 77.51360454853938,
+      "e2e_ms": 1651.3235107421874
+    },
+    "batch_8_prompt_512_decode_128": {
+      "batch_size": 8,
+      "prompt_length": 512,
+      "decode_length": 128,
+      "ttft_ms": 434.8588073730469,
+      "tbt_ms": 17.021995502381813,
+      "throughput_tps": 394.25133366336723,
+      "e2e_ms": 2597.330322265625
+    }
+  }
+}

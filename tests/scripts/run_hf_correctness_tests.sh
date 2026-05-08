@@ -19,7 +19,7 @@ export CUDA_VISIBLE_DEVICES=0
 export HF_HOME="$SCRATCH/hf_cache"
 export TRANSFORMERS_HOME="$SCRATCH/hf_cache"
 export HF_DATASETS_CACHE="$SCRATCH/hf_cache"
-export YALIS_CACHE="/pscratch/sd/p/prajwal/SpecDec/yalis/yalis/external"
+export YALIS_CACHE="/scratch/11195/akshitab/yalis/yalis/external"
 export TORCHINDUCTOR_CACHE_DIR="${SCRATCH}/.cache/torch_inductor"
 
 SCRIPT_SDPA="-c tests/basic_correctness/sdpa.ini tests/basic_correctness/test_yalis_vs_hf.py"
@@ -30,11 +30,12 @@ export PYTHONPATH="$PYTHONPATH:."
 chmod +x tests/get_rank_tests.sh
 
 # SDPA Tests
-sdpa_cmd="NCCL_CUMEM_ENABLE=0 srun -N $NNODES -n $GPUS -G $GPUS -c 16 --cpu-bind=cores ./tests/get_rank_tests.sh pytest $SCRIPT_SDPA"
+# SDPA Tests (line 33)
+sdpa_cmd="NCCL_CUMEM_ENABLE=0 srun -N $NNODES -n $GPUS -c 16 --cpu-bind=cores ./tests/get_rank_tests.sh pytest $SCRIPT_SDPA"
 echo $sdpa_cmd
 eval $sdpa_cmd
 
-# Flash Tests
-flash_cmd="NCCL_CUMEM_ENABLE=0 srun -N $NNODES -n $GPUS -G $GPUS -c 16 --cpu-bind=cores ./tests/get_rank_tests.sh pytest $SCRIPT_FLASH"
+# Flash Tests (line 38)
+flash_cmd="NCCL_CUMEM_ENABLE=0 srun -N $NNODES -n $GPUS -c 16 --cpu-bind=cores ./tests/get_rank_tests.sh pytest $SCRIPT_FLASH"
 echo $flash_cmd
 eval $flash_cmd

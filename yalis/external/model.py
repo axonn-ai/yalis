@@ -28,6 +28,7 @@ from yalis.attention.backend_impl.flash import flash_apply_rotary as apply_rotar
 from yalis.attention.utils.flex_utils import create_causal_block_mask_for_flex_attention
 
 
+
 # TODO: these should be dynamically set during engine initialization
 NUM_BLOCKS, PAGE_BLOCK_SIZE = 512, 256
 
@@ -122,17 +123,36 @@ class GPT(nn.Module):
         actual_sequence_lengths: torch.Tensor = None,
         block_table: torch.Tensor = None,
         token_counter: torch.Tensor = None,
+        sdpa_max_T: int = 0,
     ) -> torch.Tensor:
         idx = input_ids
-        T = idx.size(1)
-        if self.max_seq_length < T:
+        # Speculative decoding feeds 2D tokens — (B, 1) for draft/target decode and
+        # (B, gamma+1) during target verify. Reshape to the unified 1D pipeline and
+        # synthesize per-request lengths when the caller didn't pass them. For the
+        # multi-token case (T > 1), reshape logits back to 3D at the end so the
+        # speculative sampler keeps its expected (B, T, vocab) layout.
+        unflatten_logits = False
+        if idx.dim() == 2:
+            B_orig, T_orig = idx.shape
+            idx = idx.reshape(-1)
+            if T_orig > 1:
+                if actual_sequence_lengths is None:
+                    actual_sequence_lengths = torch.full(
+                        (B_orig,), T_orig, dtype=torch.int32, device=idx.device
+                    )
+                unflatten_logits = True
+        elif idx.dim() != 1:
             raise ValueError(
-                f"Cannot forward sequence of length {T}, max seq length is only {self.max_seq_length}."  # noqa: E501
+                f"Expected 1D or 2D input_ids, got {idx.dim()}D with shape {idx.shape}"
             )
 
-        x = self.transformer.wte(
-            idx
-        )  # token embeddings of shape (b, t, n_embd)
+        if actual_sequence_lengths is not None:
+            B = len(actual_sequence_lengths)
+        else:
+            B = idx.size(0)
+
+        x = self.transformer.wte(idx)  # (total_tokens, n_embd) or (B, n_embd)
+        
         if self.config.scale_embeddings:
             x = x * torch.tensor(self.config.n_embd**0.5, dtype=x.dtype)
         if self.config.tensor_parallel:
@@ -142,15 +162,6 @@ class GPT(nn.Module):
         if token_counter is None:
             token_counter = self.token_counter
 
-        # flash attention wants the rope cache to be
-        # in the same dtype as the query
-        # ToDO: confirm if this is okay, or if we should do rope in fp32?
-        if self.config.attention_backend == AttentionBackend.FLASH:
-            self.cos = self.cos.to(x.dtype)
-            self.sin = self.sin.to(x.dtype)
-
-        B = x.size(0)
-
         flex_attention_block_mask = (
             create_causal_block_mask_for_flex_attention(
                 token_counter, self.kv_length, B
@@ -158,6 +169,27 @@ class GPT(nn.Module):
             if self.config.attention_backend == AttentionBackend.FLEX
             else None
         )
+
+        # Pre-compute cu_seqlens and scatter/gather indices for flattened multi-token
+        # input. Computed once per forward (not per layer); used by SDPA prefill
+        # scatter/gather, the Flash rotary apply (all phases), and the paged Flash
+        # cache update.
+        cu_seqlens = None
+        cache_batch_idx = None
+        cache_seq_idx = None
+        if phase == EnginePhase.DECODE_SINGLE:
+            # One new token per request, so cu_seqlens is just [0, 1, ..., B].
+            cu_seqlens = torch.arange(B + 1, dtype=torch.int32, device=x.device)
+        elif actual_sequence_lengths is not None:
+            cu_seqlens_no_zero = torch.cumsum(actual_sequence_lengths, dim=0)
+            cu_seqlens = torch.zeros(B + 1, dtype=torch.int32, device=x.device)
+            cu_seqlens[1:] = cu_seqlens_no_zero
+
+            if phase == EnginePhase.PREFILL:
+                total_tokens = x.shape[0]
+                token_indices = torch.arange(total_tokens, device=x.device)
+                cache_batch_idx = torch.searchsorted(cu_seqlens_no_zero, token_indices, right=True)
+                cache_seq_idx = token_indices - cu_seqlens[cache_batch_idx]
 
         for block in self.transformer.h:
             x = block(
@@ -169,23 +201,37 @@ class GPT(nn.Module):
                 block_table,
                 actual_sequence_lengths,
                 flex_attention_block_mask,
+                cu_seqlens,
+                cache_batch_idx,
+                cache_seq_idx,
+                sdpa_max_T,
             )
         if self.config.tensor_parallel:
             x = Gather.apply(
                 x, ax.comm_handle.inner_intra_layer_parallel_group
             )
         x = self.transformer.ln_f(x)
-        x = self.lm_head(x)  # (b, t, vocab_size)
+        x = self.lm_head(x)  # (total_tokens, vocab_size)
         if self.config.final_logit_softcapping is not None:
             x = (
                 torch.tanh(x / self.config.final_logit_softcapping)
                 * self.config.final_logit_softcapping
             )
 
+        if unflatten_logits:
+            # Restore (B, T, vocab) layout for speculative verify callers.
+            x = x.view(B_orig, T_orig, x.size(-1))
+
         if token_counter is None:
-            self.token_counter[:B].add_(
-                T if actual_sequence_lengths is None else actual_sequence_lengths
-            )
+            if idx.dim() == 1:
+                # Flattened case: actual_sequence_lengths is required
+                self.token_counter[:B].add_(actual_sequence_lengths)
+            else:
+                # Original case
+                T = idx.size(1)
+                self.token_counter[:B].add_(
+                    T if actual_sequence_lengths is None else actual_sequence_lengths
+                )
         return {"logits": x}
 
     @classmethod
@@ -391,6 +437,10 @@ class Block(nn.Module):
         block_table: Optional[torch.Tensor] = None,
         actual_sequence_lengths: Optional[torch.Tensor] = None,
         flex_attention_block_mask=None,
+        cu_seqlens: Optional[torch.Tensor] = None,
+        cache_batch_idx: Optional[torch.Tensor] = None,
+        cache_seq_idx: Optional[torch.Tensor] = None,
+        sdpa_max_T: int = 0,
     ) -> torch.Tensor:
         """
         Non-parallel residual       Parallel residual
@@ -423,6 +473,10 @@ class Block(nn.Module):
             block_table,
             actual_sequence_lengths,
             flex_attention_block_mask,
+            cu_seqlens,
+            cache_batch_idx,
+            cache_seq_idx,
+            sdpa_max_T,
         )
         attention_output = self.post_attention_norm(attention_output)
 
@@ -522,12 +576,19 @@ class CausalSelfAttention(nn.Module):
         block_table: torch.Tensor = None,
         actual_sequence_lengths: torch.Tensor = None,
         flex_attention_block_mask=None,
+        cu_seqlens: torch.Tensor = None,
+        cache_batch_idx: torch.Tensor = None,
+        cache_seq_idx: torch.Tensor = None,
+        sdpa_max_T: int = 0,
     ) -> torch.Tensor:
-        B, T, C = (
-            x.size()
-        )  # batch size, sequence length, embedding dimensionality (n_embd)
+        if x.dim() == 2:
+            B = x.size(0) if actual_sequence_lengths is None else len(actual_sequence_lengths)
+        else:
+            raise ValueError(f"Expected x to be 2D, got {x.dim()}D with shape {x.shape}")
+        
+        total_tokens = x.size(0)
 
-        qkv = self.attn(x)
+        qkv = self.attn(x)  # (total_tokens, qkv_dim)
 
         # assemble into a number of query groups to support
         # MHA, MQA and GQA together (see `config.n_query_groups`)
@@ -535,36 +596,74 @@ class CausalSelfAttention(nn.Module):
         total_qkv = (
             q_per_kv + 2
         )  # each group has 1+ queries, 1 key, and 1 value
+        
         qkv = qkv.view(
-            B, T, self.config.n_query_groups, total_qkv, self.config.head_size
+            total_tokens, self.config.n_query_groups, total_qkv, self.config.head_size
         )
 
         # split batched computation into three
-        q, k, v = qkv.split((q_per_kv, 1, 1), dim=3)
+        q, k, v = qkv.split((q_per_kv, 1, 1), dim=2)
 
-        q = q.reshape(B, T, -1, self.config.head_size)  # (B, T, nh_q, hs)
-        k = k.reshape(B, T, -1, self.config.head_size)  # (B, T, nh_k, hs)
-        v = v.reshape(B, T, -1, self.config.head_size)  # (B, T, nh_v, hs)
+        q = q.reshape(total_tokens, -1, self.config.head_size)  # (total_tokens, nh_q, hs)
+        k = k.reshape(total_tokens, -1, self.config.head_size)  # (total_tokens, nh_k, hs)
+        v = v.reshape(total_tokens, -1, self.config.head_size)  # (total_tokens, nh_v, hs)
 
         assert (
             self.config.rope_n_elem == self.config.head_size
         ), "partial rope is not supported yet"
         k_cache, v_cache = self.kv_cache.k, self.kv_cache.v
         if self.config.attention_backend == AttentionBackend.FLASH:
-            q = q.contiguous()
-            k = k.contiguous()
-            v = v.contiguous()
-            q = apply_rotary(q, cos, sin, token_counter)
-            k = apply_rotary(k, cos, sin, token_counter)
-
-            cos, sin = None, None
+            # For Flash backend: keep tensors flattened throughout
+            # q, k, v are (total_tokens, nh, hs) - pass directly to flash attention
+            # cu_seqlens is pre-computed once in GPT.forward() and passed down
+            
+            # Apply rotary directly on flattened tensors using cu_seqlens
+            if cos is not None and sin is not None:
+                # Use Python int for max_seqlen to avoid .item() during CUDA graph capture.
+                # DECODE_SINGLE has 1 token per sequence; PREFILL and DECODE_MULTI may have
+                # many — block_size is a safe upper bound for kernel tiling.
+                max_seqlen_int = 1 if phase == EnginePhase.DECODE_SINGLE else self.config.block_size
+                q = apply_rotary(q.contiguous(), cos, sin, token_counter[:B], cu_seqlens, max_seqlen_int)
+                k = apply_rotary(k.contiguous(), cos, sin, token_counter[:B], cu_seqlens, max_seqlen_int)
+                cos, sin = None, None
+            
+            # Keep q, k, v flattened - don't reshape to 4D
+            # cu_seqlens is pre-computed in GPT.forward() and passed as parameter
         else:
-            q = q.transpose(1, 2).contiguous()
-            k = k.transpose(1, 2).contiguous()
-            v = v.transpose(1, 2).contiguous()
+            if phase == EnginePhase.DECODE_SINGLE:
+                q = q.unsqueeze(2)  # (B, nh, hs) → (B, nh, 1, hs)
+                k = k.unsqueeze(2)
+                v = v.unsqueeze(2)
+            elif phase == EnginePhase.DECODE_MULTI:
+                # Speculative verify packs B sequences of equal length T
+                # (gamma+1) into the flat (B*T, nh, hs) layout. Reshape directly
+                # to (B, nh, T, hs) — no scatter needed since T is uniform.
+                nh_q, hs = q.size(1), q.size(2)
+                nh_k = k.size(1)
+                T_dec = total_tokens // B
+                q = q.view(B, T_dec, nh_q, hs).transpose(1, 2).contiguous()
+                k = k.view(B, T_dec, nh_k, hs).transpose(1, 2).contiguous()
+                v = v.view(B, T_dec, nh_k, hs).transpose(1, 2).contiguous()
+            else:
+                # Prefill with flattened input: scatter to padded 4D for SDPA
+                pad_T = sdpa_max_T if sdpa_max_T > 0 else k_cache.shape[2]
+                flat_idx = cache_batch_idx * pad_T + cache_seq_idx
+                BT = B * pad_T
+                nh_q, hs = q.size(1), q.size(2)
+                nh_k = k.size(1)
 
-        # NOTE: Pass full k_cache, v_cache, and token_counter.
-        # Slicing for current batch size is done in the respective backends.
+                q_pad = q.new_zeros(BT, nh_q, hs)
+                q_pad[flat_idx] = q
+                q = q_pad.view(B, pad_T, nh_q, hs).transpose(1, 2).contiguous()
+
+                k_pad = k.new_zeros(BT, nh_k, hs)
+                k_pad[flat_idx] = k
+                k = k_pad.view(B, pad_T, nh_k, hs).transpose(1, 2).contiguous()
+
+                v_pad = v.new_zeros(BT, nh_k, hs)
+                v_pad[flat_idx] = v
+                v = v_pad.view(B, pad_T, nh_k, hs).transpose(1, 2).contiguous()
+
         y = attention_wrapper(
             q=q,
             k_cache=k_cache,
@@ -574,6 +673,7 @@ class CausalSelfAttention(nn.Module):
             phase=phase,
             cache_seqlens=token_counter,
             actual_seqlens=actual_sequence_lengths,
+            cu_seqlens=cu_seqlens if self.config.attention_backend == AttentionBackend.FLASH else None,
             block_table=block_table,
             rotary_cos=cos,
             rotary_sin=sin,
@@ -581,18 +681,29 @@ class CausalSelfAttention(nn.Module):
             use_intra_head_parallelism=self.config.use_intra_head_parallelism,
             prestore_kv_cache=self.config.prestore_kv_cache,
             flex_attention_block_mask=flex_attention_block_mask,
+            max_seqlen=self.config.block_size,
+            cache_batch_idx=cache_batch_idx,
+            cache_seq_idx=cache_seq_idx,
         )
 
-        if not self.config.attention_backend == AttentionBackend.FLASH:
-            y = y.transpose(1, 2).contiguous()
+        if self.config.attention_backend == AttentionBackend.FLASH:
+            y = y.reshape(y.shape[0], -1)
+        else:
+            if phase == EnginePhase.DECODE_SINGLE:
+                y = y.squeeze(2).reshape(y.shape[0], -1)
+            elif phase == EnginePhase.DECODE_MULTI:
+                # (B, nh, T, hs) → (B*T, nh*hs)
+                y = y.transpose(1, 2).contiguous().reshape(total_tokens, -1)
+            else:
+                # Gather from padded 4D back to flattened
+                y = y.transpose(1, 2).contiguous()            # (B, pad_T, nh, hs)
+                y = y.reshape(BT, y.size(2), y.size(3))       # (B*pad_T, nh, hs)
+                y = y[flat_idx]                                # (total_tokens, nh, hs)
+                y = y.reshape(total_tokens, -1)                # (total_tokens, nh*hs)
 
-        y = y.reshape(
-            B, T, self.config.head_size * self.config.n_head
-        )  # re-assemble all head outputs side by side
-
-        # output projection
-        return self.proj(y)
-
+        y = self.proj(y)
+        return y
+        
     def build_kv_cache(
         self,
         batch_size: int,
