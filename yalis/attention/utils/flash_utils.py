@@ -1,7 +1,6 @@
 import triton
 import triton.language as tl
 import torch
-from typing import Optional
 
 @triton.jit
 def update_paged_kv_cache_kernel(
@@ -91,29 +90,12 @@ def compute_slot_mapping(
 ) -> torch.Tensor:
     """
     Pre-compute slot_mapping from positions and block_table.
-    This matches vLLM's BlockTable.compute_slot_mapping() logic.
-
-    Returns:
-        slot_mapping: [num_tokens] - slot indices for each token
+    Vectorized so it stays inside torch.compile / CUDA graph capture.
     """
-    num_tokens = positions.shape[0]
-    slot_mapping = torch.zeros(num_tokens, dtype=torch.int64, device=positions.device)
-
-    for token_idx in range(num_tokens):
-        req_idx = req_indices[token_idx].item()
-        pos = positions[token_idx].item()
-
-        # Compute which block this position belongs to
-        block_idx_in_seq = pos // block_size
-        offset_in_block = pos % block_size
-
-        # Get physical block number from block table
-        block_number = block_table[req_idx, block_idx_in_seq].item()
-
-        # Compute slot: block_number * block_size + offset_in_block
-        slot_mapping[token_idx] = block_number * block_size + offset_in_block
-
-    return slot_mapping
+    block_idx_in_seq = positions // block_size
+    offset_in_block = positions % block_size
+    block_numbers = block_table[req_indices.to(torch.int64), block_idx_in_seq.to(torch.int64)]
+    return block_numbers.to(torch.int64) * block_size + offset_in_block.to(torch.int64)
 
 
 def update_paged_kv_cache(

@@ -277,7 +277,7 @@ def _flash_attention_prefill_varlen(
 ) -> torch.Tensor:
     """
     Prefill using flash_attn_varlen_func for variable-length sequences.
-    
+
     Args:
         q, k, v: Shape (total_tokens, nh, hs) if is_flattened else (B, T, nh, hs)
         actual_seqlens: Actual sequence lengths for each batch item, shape (B,)
@@ -291,16 +291,27 @@ def _flash_attention_prefill_varlen(
         # Input is already flattened (total_tokens, nh, hs)
         assert cu_seqlens is not None, "cu_seqlens required for flattened input"
         q_flat, k_flat, v_flat = q, k, v
-        
+
         # Store in KV cache if needed
         if prestore_kv_cache and k_cache is not None and v_cache is not None:
             if block_table is None:
                 # Use pre-computed indices for scatter - no per-layer computation
                 _update_kv_cache_flattened(k_cache, v_cache, k_flat, v_flat, cache_batch_idx, cache_seq_idx)
             else:
-                # Paged cache - need 4D for update_paged_kv_cache
-                # TODO: support flattened paged cache
-                raise NotImplementedError("Paged cache with flattened input not yet supported")
+                # Paged cache: absolute positions = within-request offset + prior cache len
+                # cache_seqlens is per-request (B,), broadcast to per-token via cache_batch_idx
+                positions = cache_seq_idx + cache_seqlens[cache_batch_idx]
+                update_paged_kv_cache(
+                    k=k_flat,
+                    v=v_flat,
+                    positions=positions,
+                    req_indices=cache_batch_idx,
+                    block_table=block_table,
+                    k_cache=k_cache,
+                    v_cache=v_cache,
+                    block_size=k_cache.shape[1],
+                    layout_mode=0,
+                )
         
         # Run varlen flash attention - output is flattened
         # max_seqlen is already a Python int from config
@@ -404,23 +415,35 @@ def _flash_attention_decode(
         )
 
     if is_flattened:
-        # Flattened input (total_tokens, nh, hs)
-        # For decode, each sequence has T=1 (single token), so total_tokens = B
-        # Reshape to (B, 1, nh, hs) for flash_attn_with_kvcache
-        B = q.shape[0]  # total_tokens = B for decode (each seq has 1 token)
-        T = 1
+        # Flattened input (total_tokens, nh, hs).
+        # DECODE_SINGLE: T=1 per request → total_tokens = B.
+        # DECODE_MULTI (speculative verify): uniform T per request → total_tokens = B * T,
+        #   recover B from actual_seqlens.
         n_heads, hs = q.shape[1], q.shape[2]
         n_kv_heads = k.shape[1]
-        
+
+        if phase == EnginePhase.DECODE_MULTI and actual_seqlens is not None:
+            B = actual_seqlens.shape[0]
+            T = q.shape[0] // B
+        else:
+            B = q.shape[0]
+            T = 1
+
+        # Keep flat copies for the paged cache update (kernel wants (total_tokens, nh, hs)).
+        k_flat, v_flat = k, v
+
         # Reshape for flash_attn_with_kvcache which expects (B, T, nh, hs)
-        q = q.unsqueeze(1)  # (B, 1, nh, hs)
-        k = k.unsqueeze(1)  # (B, 1, nh_kv, hs)
-        v = v.unsqueeze(1)  # (B, 1, nh_kv, hs)
+        q = q.view(B, T, n_heads, hs)
+        k = k.view(B, T, n_kv_heads, hs)
+        v = v.view(B, T, n_kv_heads, hs)
     else:
         B, T = q.shape[0], q.shape[1]
         n_heads, hs = q.shape[2], q.shape[3]
         n_kv_heads = k.shape[2]
-    
+        # Non-flattened decode collapses T=1 into the flat (B, nh_kv, hs) view the kernel needs.
+        k_flat = k.reshape(B * T, n_kv_heads, hs) if k is not None else None
+        v_flat = v.reshape(B * T, n_kv_heads, hs) if v is not None else None
+
     if block_table is not None:
         block_table = block_table[:B]
 
@@ -439,16 +462,22 @@ def _flash_attention_decode(
                 k_cache[:B].scatter_(dim=1, index=index_kv, src=k)
                 v_cache[:B].scatter_(dim=1, index=index_kv, src=v)
         else:
+            # Paged decode: one new token per request, position = current cache length.
+            # DECODE_MULTI is unreachable here - SpeculativeLLMEngine rejects paged at init.
+            positions = cache_seqlens[:B]
+            req_indices = torch.arange(B, device=k_cache.device, dtype=positions.dtype)
             update_paged_kv_cache(
-                k=k,
-                v=v,
+                k=k_flat,
+                v=v_flat,
+                positions=positions,
+                req_indices=req_indices,
                 block_table=block_table,
-                cache_seq_len=cache_seqlens,
-                actual_seqlens=actual_seqlens,
                 k_cache=k_cache,
                 v_cache=v_cache,
+                block_size=k_cache.shape[1],
+                layout_mode=0,
             )
-        
+
         # Update cache_seqlens for the attention call
         cache_seqlens = cache_seqlens + T
         k, v = None, None
@@ -459,7 +488,9 @@ def _flash_attention_decode(
         v_cache=v_cache,
         k=k,
         v=v,
-        causal=False,  # For decode, we attend to all cached tokens
+        # DECODE_SINGLE has only one query token so causal is a no-op; DECODE_MULTI
+        # (speculative verify) needs the new tokens to be causal against each other.
+        causal=phase == EnginePhase.DECODE_MULTI,
         cache_seqlens=cache_seqlens,
         block_table=block_table,
         rotary_cos=rotary_cos,
@@ -467,10 +498,11 @@ def _flash_attention_decode(
         rotary_interleaved=False,
         window_size=(-1, -1),
     )
-    
-    # If input was flattened, return flattened output
+
+    # If input was flattened, return flattened output: (B, T, nh, hs) → (B*T, nh, hs).
+    # For DECODE_SINGLE T=1 so this collapses back to (B, nh, hs).
     if is_flattened:
-        # out is (B, 1, nh, hs), flatten to (B, nh, hs)
-        out = out.squeeze(1)
-    
+        B_out, T_out, nh_out, hs_out = out.shape
+        out = out.reshape(B_out * T_out, nh_out, hs_out)
+
     return out

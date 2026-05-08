@@ -126,7 +126,25 @@ class GPT(nn.Module):
         sdpa_max_T: int = 0,
     ) -> torch.Tensor:
         idx = input_ids
-        assert idx.dim() == 1, f"Expected 1D input_ids, got {idx.dim()}D with shape {idx.shape}"
+        # Speculative decoding feeds 2D tokens — (B, 1) for draft/target decode and
+        # (B, gamma+1) during target verify. Reshape to the unified 1D pipeline and
+        # synthesize per-request lengths when the caller didn't pass them. For the
+        # multi-token case (T > 1), reshape logits back to 3D at the end so the
+        # speculative sampler keeps its expected (B, T, vocab) layout.
+        unflatten_logits = False
+        if idx.dim() == 2:
+            B_orig, T_orig = idx.shape
+            idx = idx.reshape(-1)
+            if T_orig > 1:
+                if actual_sequence_lengths is None:
+                    actual_sequence_lengths = torch.full(
+                        (B_orig,), T_orig, dtype=torch.int32, device=idx.device
+                    )
+                unflatten_logits = True
+        elif idx.dim() != 1:
+            raise ValueError(
+                f"Expected 1D or 2D input_ids, got {idx.dim()}D with shape {idx.shape}"
+            )
 
         if actual_sequence_lengths is not None:
             B = len(actual_sequence_lengths)
@@ -152,16 +170,22 @@ class GPT(nn.Module):
             else None
         )
 
-        # Pre-compute cu_seqlens and scatter/gather indices for flattened prefill input.
+        # Pre-compute cu_seqlens and scatter/gather indices for flattened multi-token
+        # input. Computed once per forward (not per layer); used by SDPA prefill
+        # scatter/gather, the Flash rotary apply (all phases), and the paged Flash
+        # cache update.
         cu_seqlens = None
         cache_batch_idx = None
         cache_seq_idx = None
-        if actual_sequence_lengths is not None and phase == EnginePhase.PREFILL:
+        if phase == EnginePhase.DECODE_SINGLE:
+            # One new token per request, so cu_seqlens is just [0, 1, ..., B].
+            cu_seqlens = torch.arange(B + 1, dtype=torch.int32, device=x.device)
+        elif actual_sequence_lengths is not None:
             cu_seqlens_no_zero = torch.cumsum(actual_sequence_lengths, dim=0)
             cu_seqlens = torch.zeros(B + 1, dtype=torch.int32, device=x.device)
             cu_seqlens[1:] = cu_seqlens_no_zero
 
-            if self.config.attention_backend != AttentionBackend.FLASH:
+            if phase == EnginePhase.PREFILL:
                 total_tokens = x.shape[0]
                 token_indices = torch.arange(total_tokens, device=x.device)
                 cache_batch_idx = torch.searchsorted(cu_seqlens_no_zero, token_indices, right=True)
@@ -187,12 +211,16 @@ class GPT(nn.Module):
                 x, ax.comm_handle.inner_intra_layer_parallel_group
             )
         x = self.transformer.ln_f(x)
-        x = self.lm_head(x)  # (b, t, vocab_size) or (total_tokens, vocab_size) if flattened
+        x = self.lm_head(x)  # (total_tokens, vocab_size)
         if self.config.final_logit_softcapping is not None:
             x = (
                 torch.tanh(x / self.config.final_logit_softcapping)
                 * self.config.final_logit_softcapping
             )
+
+        if unflatten_logits:
+            # Restore (B, T, vocab) layout for speculative verify callers.
+            x = x.view(B_orig, T_orig, x.size(-1))
 
         if token_counter is None:
             if idx.dim() == 1:
@@ -591,10 +619,10 @@ class CausalSelfAttention(nn.Module):
             
             # Apply rotary directly on flattened tensors using cu_seqlens
             if cos is not None and sin is not None:
-                # Use Python int for max_seqlen to avoid .item() during CUDA graph capture
-                # For prefill: use config's block_size (max sequence length)
-                # For decode: always 1 token per sequence
-                max_seqlen_int = self.config.block_size if phase == EnginePhase.PREFILL else 1
+                # Use Python int for max_seqlen to avoid .item() during CUDA graph capture.
+                # DECODE_SINGLE has 1 token per sequence; PREFILL and DECODE_MULTI may have
+                # many — block_size is a safe upper bound for kernel tiling.
+                max_seqlen_int = 1 if phase == EnginePhase.DECODE_SINGLE else self.config.block_size
                 q = apply_rotary(q.contiguous(), cos, sin, token_counter[:B], cu_seqlens, max_seqlen_int)
                 k = apply_rotary(k.contiguous(), cos, sin, token_counter[:B], cu_seqlens, max_seqlen_int)
                 cos, sin = None, None
@@ -606,6 +634,16 @@ class CausalSelfAttention(nn.Module):
                 q = q.unsqueeze(2)  # (B, nh, hs) → (B, nh, 1, hs)
                 k = k.unsqueeze(2)
                 v = v.unsqueeze(2)
+            elif phase == EnginePhase.DECODE_MULTI:
+                # Speculative verify packs B sequences of equal length T
+                # (gamma+1) into the flat (B*T, nh, hs) layout. Reshape directly
+                # to (B, nh, T, hs) — no scatter needed since T is uniform.
+                nh_q, hs = q.size(1), q.size(2)
+                nh_k = k.size(1)
+                T_dec = total_tokens // B
+                q = q.view(B, T_dec, nh_q, hs).transpose(1, 2).contiguous()
+                k = k.view(B, T_dec, nh_k, hs).transpose(1, 2).contiguous()
+                v = v.view(B, T_dec, nh_k, hs).transpose(1, 2).contiguous()
             else:
                 # Prefill with flattened input: scatter to padded 4D for SDPA
                 pad_T = sdpa_max_T if sdpa_max_T > 0 else k_cache.shape[2]
@@ -653,6 +691,9 @@ class CausalSelfAttention(nn.Module):
         else:
             if phase == EnginePhase.DECODE_SINGLE:
                 y = y.squeeze(2).reshape(y.shape[0], -1)
+            elif phase == EnginePhase.DECODE_MULTI:
+                # (B, nh, T, hs) → (B*T, nh*hs)
+                y = y.transpose(1, 2).contiguous().reshape(total_tokens, -1)
             else:
                 # Gather from padded 4D back to flattened
                 y = y.transpose(1, 2).contiguous()            # (B, pad_T, nh, hs)
